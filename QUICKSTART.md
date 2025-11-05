@@ -5,6 +5,7 @@
 ```bash
 # Download docker-compose.yml.example, rename it, and start Chronarr
 wget -O docker-compose.yml https://raw.githubusercontent.com/sbcrumb/chronarr/main/docker-compose.yml.example && \
+echo "DB_PASSWORD=change_me_please" > .env && \
 docker-compose up -d
 ```
 
@@ -13,9 +14,10 @@ That's it! Config files (`.env` and `.env.secrets`) will be auto-generated in `.
 ## What Just Happened?
 
 1. **Downloaded** docker-compose.yml.example as docker-compose.yml
-2. **Created** `./config/.env` from embedded example
-3. **Created** `./config/.env.secrets` from embedded example
-4. **Started** all 3 containers (core, web, database)
+2. **Created** root `.env` with temporary database password
+3. **Created** `./config/.env` from embedded example
+4. **Created** `./config/.env.secrets` from embedded example
+5. **Started** all 3 containers (core, web, database)
 
 ## Next Steps
 
@@ -31,10 +33,21 @@ nano ./config/.env.secrets
 
 **Required Settings:**
 ```bash
-# In ./config/.env.secrets:
-DB_PASSWORD=your_secure_password
+# IMPORTANT: Update root .env file (next to docker-compose.yml)
+# This is used by Docker Compose for ${DB_PASSWORD} variable substitution
+# Edit the root .env file:
+nano .env
 
-# Optional but recommended (in .env.secrets):
+# Set a secure password:
+DB_PASSWORD=your_secure_database_password
+
+# Then also update ./config/.env.secrets with the SAME password:
+nano ./config/.env.secrets
+
+# In ./config/.env.secrets:
+DB_PASSWORD=your_secure_database_password  # Must match root .env!
+
+# Optional but recommended (in ./config/.env.secrets):
 RADARR_API_KEY=your_radarr_api_key
 SONARR_API_KEY=your_sonarr_api_key
 TMDB_API_KEY=your_tmdb_api_key
@@ -48,14 +61,14 @@ RADARR_URL=http://radarr:7878
 # Sonarr connection
 SONARR_URL=http://sonarr:8989
 
-# Media paths (update volume mounts in your docker-compose.yml)
+# Media paths (update volume mounts in docker-compose.yml)
 MOVIE_PATHS=/media/Movies/movies
 TV_PATHS=/media/TV/tv
 ```
 
 ### 2. Update Media Paths
 
-Edit your `docker-compose.yml` to point to your media:
+Edit `docker-compose.yml` to point to your media:
 
 ```yaml
 chronarr:
@@ -89,9 +102,18 @@ docker-compose restart
 
 ## Configuration Files Location
 
-All config files are in `./config/`:
-- `./config/.env` - Main configuration
-- `./config/.env.secrets` - API keys and passwords
+**Two locations for config files:**
+
+1. **Root directory** (same location as docker-compose.yml):
+   - `.env` - Docker Compose variables (DB_PASSWORD for PostgreSQL initialization)
+
+2. **Config directory** (`./config/`):
+   - `./config/.env` - Main application configuration
+   - `./config/.env.secrets` - API keys and passwords (including DB_PASSWORD)
+
+**Important:** The `DB_PASSWORD` must be set in BOTH places:
+- Root `.env` → Used by Docker Compose to create the PostgreSQL database
+- `./config/.env.secrets` → Used by Chronarr to connect to the database
 
 ## Webhook Setup (Optional)
 
@@ -192,7 +214,7 @@ The Radarr API doesn't expose all import history data needed for accurate date t
 
 To auto-deploy the Chronarr Emby plugin:
 
-1. Edit your `docker-compose.yml`
+1. Edit `docker-compose.yml`
 2. Uncomment the emby-plugins volume:
 ```yaml
 chronarr:

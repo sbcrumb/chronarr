@@ -429,9 +429,15 @@ class RadarrDbClient:
             if file_date:
                 _log("WARNING", f"Using file dateAdded as fallback for movie_id {movie_id}")
                 return file_date, "radarr:db.file.dateAdded"
-        
+
         return None, "radarr:db.no_date_found"
-    
+
+    def get_movie_import_date(self, movie_id: int, fallback_to_file_date: bool = True) -> Tuple[Optional[str], str]:
+        """
+        Alias for get_movie_import_date_optimized - for compatibility
+        """
+        return self.get_movie_import_date_optimized(movie_id, fallback_to_file_date)
+
     def bulk_import_dates(self, imdb_ids: List[str]) -> Dict[str, Tuple[Optional[str], str]]:
         """
         Get import dates for multiple movies in a single query

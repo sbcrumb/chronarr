@@ -1,14 +1,17 @@
 # Chronarr Production Docker Compose - Auto-Configuration Enabled
 #
-# SIMPLIFIED SETUP: Just run `docker-compose up -d` and config files are auto-generated!
-#
-# This configuration automatically creates .env and .env.secrets from examples
-# if they don't exist in the ./config directory.
+# SIMPLIFIED SETUP: Run the one-command setup and config files are auto-generated!
 #
 # First-time setup:
-# 1. Run: docker-compose up -d
-# 2. Edit: ./config/.env and ./config/.env.secrets with your settings
-# 3. Run: docker-compose restart
+# 1. Run: echo "DB_PASSWORD=change_me_please" > .env
+# 2. Run: docker-compose up -d
+# 3. Edit: .env (root directory) with secure DB_PASSWORD
+# 4. Edit: ./config/.env and ./config/.env.secrets with your settings
+# 5. Run: docker-compose restart
+#
+# IMPORTANT: DB_PASSWORD must be in TWO places:
+# - Root .env (next to this file) → Used by Docker Compose to create PostgreSQL
+# - ./config/.env.secrets → Used by Chronarr to connect to PostgreSQL
 #
 # Features:
 # - Auto-generates config files from embedded examples

@@ -161,14 +161,183 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
+def test_database_connections():
+    """Test and report all database connections at startup with actual connection tests"""
+    import psycopg2
+    import sqlite3
+    from pathlib import Path
+
+    print("\n" + "="*70)
+    print("  DATABASE CONNECTION STATUS")
+    print("="*70)
+
+    # Test Chronarr internal database
+    print(f"\n  Chronarr Database:")
+    if config.db_type == "postgresql":
+        print(f"  Type: PostgreSQL")
+        print(f"  Host: {config.db_host}:{config.db_port}")
+        print(f"  Database: {config.db_name}")
+        print(f"  User: {config.db_user}")
+
+        try:
+            # Attempt actual connection
+            conn = psycopg2.connect(
+                host=config.db_host,
+                port=config.db_port,
+                database=config.db_name,
+                user=config.db_user,
+                password=config.db_password
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            conn.close()
+            print(f"  Status: ✅ CONNECTED")
+        except Exception as e:
+            print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+    else:
+        print(f"  Type: SQLite")
+        print(f"  Path: {config.db_path}")
+        try:
+            if Path(config.db_path).exists():
+                conn = sqlite3.connect(config.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                print(f"  Status: ✅ CONNECTED")
+            else:
+                print(f"  Status: ⚠️  Database file will be created on first use")
+        except Exception as e:
+            print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+
+    # Test Radarr database
+    print(f"\n  Radarr Database:")
+    radarr_db_type = os.environ.get("RADARR_DB_TYPE", "").lower()
+
+    if radarr_db_type == "postgresql":
+        radarr_db_host = os.environ.get("RADARR_DB_HOST", "")
+        radarr_db_port = os.environ.get("RADARR_DB_PORT", "5432")
+        radarr_db_name = os.environ.get("RADARR_DB_NAME", "")
+        radarr_db_user = os.environ.get("RADARR_DB_USER", "")
+        radarr_db_password = os.environ.get("RADARR_DB_PASSWORD", "")
+
+        print(f"  Type: PostgreSQL")
+        print(f"  Host: {radarr_db_host}:{radarr_db_port}")
+        print(f"  Database: {radarr_db_name}")
+        print(f"  User: {radarr_db_user}")
+
+        if not radarr_db_host or not radarr_db_name:
+            print(f"  Status: ⚠️  NOT CONFIGURED (missing host or database name)")
+        else:
+            try:
+                conn = psycopg2.connect(
+                    host=radarr_db_host,
+                    port=int(radarr_db_port),
+                    database=radarr_db_name,
+                    user=radarr_db_user,
+                    password=radarr_db_password
+                )
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                print(f"  Status: ✅ CONNECTED - Using direct database access")
+            except Exception as e:
+                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+
+    elif radarr_db_type == "sqlite":
+        radarr_db_path = os.environ.get("RADARR_DB_PATH", "")
+        print(f"  Type: SQLite")
+        print(f"  Path: {radarr_db_path}")
+
+        if not radarr_db_path:
+            print(f"  Status: ⚠️  NOT CONFIGURED (missing database path)")
+        elif not Path(radarr_db_path).exists():
+            print(f"  Status: ❌ ERROR - Database file not found")
+        else:
+            try:
+                conn = sqlite3.connect(radarr_db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                print(f"  Status: ✅ CONNECTED - Using direct database access")
+            except Exception as e:
+                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+    else:
+        print(f"  Type: Not configured")
+        print(f"  Status: ⚠️  Will use Radarr API instead of direct database access")
+
+    # Test Sonarr database
+    print(f"\n  Sonarr Database:")
+    sonarr_db_type = os.environ.get("SONARR_DB_TYPE", "").lower()
+
+    if sonarr_db_type == "postgresql":
+        sonarr_db_host = os.environ.get("SONARR_DB_HOST", "")
+        sonarr_db_port = os.environ.get("SONARR_DB_PORT", "5432")
+        sonarr_db_name = os.environ.get("SONARR_DB_NAME", "")
+        sonarr_db_user = os.environ.get("SONARR_DB_USER", "")
+        sonarr_db_password = os.environ.get("SONARR_DB_PASSWORD", "")
+
+        print(f"  Type: PostgreSQL")
+        print(f"  Host: {sonarr_db_host}:{sonarr_db_port}")
+        print(f"  Database: {sonarr_db_name}")
+        print(f"  User: {sonarr_db_user}")
+
+        if not sonarr_db_host or not sonarr_db_name:
+            print(f"  Status: ⚠️  NOT CONFIGURED (missing host or database name)")
+        else:
+            try:
+                conn = psycopg2.connect(
+                    host=sonarr_db_host,
+                    port=int(sonarr_db_port),
+                    database=sonarr_db_name,
+                    user=sonarr_db_user,
+                    password=sonarr_db_password
+                )
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                print(f"  Status: ✅ CONNECTED - Using direct database access")
+            except Exception as e:
+                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+
+    elif sonarr_db_type == "sqlite":
+        sonarr_db_path = os.environ.get("SONARR_DB_PATH", "")
+        print(f"  Type: SQLite")
+        print(f"  Path: {sonarr_db_path}")
+
+        if not sonarr_db_path:
+            print(f"  Status: ⚠️  NOT CONFIGURED (missing database path)")
+        elif not Path(sonarr_db_path).exists():
+            print(f"  Status: ❌ ERROR - Database file not found")
+        else:
+            try:
+                conn = sqlite3.connect(sonarr_db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                print(f"  Status: ✅ CONNECTED - Using direct database access")
+            except Exception as e:
+                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+    else:
+        print(f"  Type: Not configured")
+        print(f"  Status: ⚠️  Will use Sonarr API instead of direct database access")
+
+    print("\n" + "="*70 + "\n")
+
+
 def main():
     """Main application entry point"""
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     version = get_version()
-    
+
     _log("INFO", "Starting Chronarr")
     _log("INFO", f"Version: {version}")
     _log("INFO", f"TV paths: {[str(p) for p in config.tv_paths]}")
@@ -180,6 +349,9 @@ def main():
         _log("INFO", f"Database: {config.db_path}")
     _log("INFO", f"Config: manage_nfo={config.manage_nfo}, fix_mtimes={config.fix_dir_mtimes}")
     _log("INFO", f"Movie priority: {config.movie_priority}")
+
+    # Test and display all database connections
+    test_database_connections()
     
     # Create FastAPI app
     app = create_app()

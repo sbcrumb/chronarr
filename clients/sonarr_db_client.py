@@ -163,6 +163,44 @@ class SonarrDbClient:
 
         return None
 
+    def get_all_series(self) -> List[Dict[str, Any]]:
+        """
+        Get all series from the database
+
+        Returns:
+            List of series dictionaries with id, imdb_id, title, path
+        """
+        query = """
+        SELECT
+            "Id" as id,
+            "ImdbId" as imdb_id,
+            "TvdbId" as tvdb_id,
+            "Title" as title,
+            "Path" as path,
+            "Added" as added
+        FROM "Series"
+        ORDER BY "Title"
+        """
+
+        try:
+            with self._get_connection() as conn:
+                if self.db_type == "postgresql":
+                    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                else:
+                    cursor = conn.cursor()
+
+                cursor.execute(query)
+                rows = cursor.fetchall()
+
+                if self.db_type == "sqlite":
+                    return [dict(row) for row in rows]
+                else:
+                    return rows
+
+        except Exception as e:
+            _log("ERROR", f"Database query error getting all series: {e}")
+            return []
+
     def get_all_episodes_for_series(self, series_id: int) -> List[Dict[str, Any]]:
         """
         Get all episodes for a series

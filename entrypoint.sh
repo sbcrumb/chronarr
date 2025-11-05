@@ -7,16 +7,27 @@ set -e
 # 3. Starts the application
 
 CONFIG_DIR="/config"
-ENV_FILE="${CONFIG_DIR}/.env"
-SECRETS_FILE="${CONFIG_DIR}/.env.secrets"
 
 # ========================================
 # Configuration File Auto-Generation
 # ========================================
 echo "🔧 Chronarr Configuration Check..."
 
-# Ensure config directory exists
-mkdir -p "${CONFIG_DIR}"
+# Try to use /config if it's writable, otherwise fall back to /app
+if [ -d "${CONFIG_DIR}" ] && [ -w "${CONFIG_DIR}" ]; then
+    echo "✅ Using /config directory for configuration files"
+    ENV_FILE="${CONFIG_DIR}/.env"
+    SECRETS_FILE="${CONFIG_DIR}/.env.secrets"
+elif mkdir -p "${CONFIG_DIR}" 2>/dev/null; then
+    echo "✅ Created /config directory for configuration files"
+    ENV_FILE="${CONFIG_DIR}/.env"
+    SECRETS_FILE="${CONFIG_DIR}/.env.secrets"
+else
+    echo "⚠️  /config directory not accessible, using /app for configuration files"
+    echo "   To persist config across container restarts, mount a volume at /config"
+    ENV_FILE="/app/.env"
+    SECRETS_FILE="/app/.env.secrets"
+fi
 
 # Copy .env.example to .env if it doesn't exist
 if [ ! -f "${ENV_FILE}" ]; then
@@ -38,9 +49,11 @@ else
     echo "✅ Found existing ${SECRETS_FILE}"
 fi
 
-# Symlink config files to /app so application can find them
-ln -sf "${ENV_FILE}" /app/.env
-ln -sf "${SECRETS_FILE}" /app/.env.secrets
+# Symlink config files to /app if using /config directory
+if [ "${ENV_FILE}" != "/app/.env" ]; then
+    ln -sf "${ENV_FILE}" /app/.env
+    ln -sf "${SECRETS_FILE}" /app/.env.secrets
+fi
 
 # ========================================
 # Emby Plugin Deployment (Optional)

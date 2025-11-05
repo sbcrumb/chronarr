@@ -101,19 +101,72 @@ def setup_static_files(app: FastAPI) -> None:
             raise HTTPException(status_code=503, detail=f"Health check failed: {e}")
 
 
+def test_database_connection():
+    """Test and report Chronarr database connection (web container only needs this)"""
+    import psycopg2
+    import sqlite3
+    from pathlib import Path
+
+    print("\n" + "="*70)
+    print("  WEB INTERFACE - DATABASE CONNECTION")
+    print("="*70)
+
+    print(f"\n  Chronarr Database:")
+    if config.db_type == "postgresql":
+        print(f"  Type: PostgreSQL")
+        print(f"  Host: {config.db_host}:{config.db_port}")
+        print(f"  Database: {config.db_name}")
+        print(f"  User: {config.db_user}")
+
+        try:
+            # Attempt actual connection
+            conn = psycopg2.connect(
+                host=config.db_host,
+                port=config.db_port,
+                database=config.db_name,
+                user=config.db_user,
+                password=config.db_password
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            conn.close()
+            print(f"  Status: ✅ CONNECTED")
+        except Exception as e:
+            print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+    else:
+        print(f"  Type: SQLite")
+        print(f"  Path: {config.db_path}")
+        try:
+            if Path(config.db_path).exists():
+                conn = sqlite3.connect(config.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                print(f"  Status: ✅ CONNECTED")
+            else:
+                print(f"  Status: ⚠️  Database file will be created on first use")
+        except Exception as e:
+            print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+
+    print("\n  Note: Radarr/Sonarr database connections tested in Core container")
+    print("="*70 + "\n")
+
+
 def main():
     """Main entry point for Chronarr Web Interface"""
     print("🌐 Starting Chronarr Web Interface...")
-    
+
     # Use existing config system
     web_host = os.environ.get("WEB_HOST", "0.0.0.0")
     web_port = int(os.environ.get("WEB_PORT", "8081"))
-    
+
     print(f"📊 Configuration: Port {web_port}")
-    
+
     # Create FastAPI app
     app = create_web_app()
-    
+
     # Initialize database using existing system
     try:
         db = ChronarrDatabase(config)
@@ -121,6 +174,9 @@ def main():
     except Exception as e:
         print(f"❌ Failed to connect to database: {e}")
         sys.exit(1)
+
+    # Test and display Chronarr database connection
+    test_database_connection()
     
     # Setup authentication if enabled
     auth_enabled = getattr(config, 'web_auth_enabled', False)
