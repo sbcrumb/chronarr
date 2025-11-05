@@ -1,0 +1,177 @@
+# Chronarr Production Docker Compose - Auto-Configuration Enabled
+#
+# SIMPLIFIED SETUP: Just run `docker-compose up -d` and config files are auto-generated!
+#
+# This configuration automatically creates .env and .env.secrets from examples
+# if they don't exist in the ./config directory.
+#
+# First-time setup:
+# 1. Run: docker-compose up -d
+# 2. Edit: ./config/.env and ./config/.env.secrets with your settings
+# 3. Run: docker-compose restart
+#
+# Features:
+# - Auto-generates config files from embedded examples
+# - 3-container architecture (core, web, database)
+# - Performance isolation between web and processing
+# - Webhook responsiveness during scans
+# - Professional web interface with branding
+
+services:
+  # PostgreSQL Database
+  chronarr-db:
+    image: postgres:15-alpine
+    container_name: chronarr-db
+    restart: unless-stopped
+    env_file:
+      - ./config/.env
+      - ./config/.env.secrets
+    environment:
+      - POSTGRES_DB=${DB_NAME:-chronarr}
+      - POSTGRES_USER=${DB_USER:-chronarr}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_EXTERNAL_PORT:-5432}:5432"  # Optional external access
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-chronarr} -d ${DB_NAME:-chronarr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chronarr-network
+
+  # Chronarr Core (Processing Engine)
+  chronarr:
+    image: sbcrumb/chronarr:latest
+    container_name: chronarr-core
+    restart: unless-stopped
+    env_file:
+      - ./config/.env
+      - ./config/.env.secrets
+    environment:
+      - TZ=${TZ:-UTC}
+      - WEB_EXTERNAL_PORT=${WEB_EXTERNAL_PORT:-8081}
+    volumes:
+      # Config directory (auto-generates .env files)
+      - ./config:/config
+      # Media paths (adjust to your setup - these are examples)
+      - /mnt/unionfs/Media/TV:/media/TV:ro
+      - /mnt/unionfs/Media/Movies:/media/Movies:ro
+      # Data persistence
+      - chronarr_data:/app/data
+      # Logs
+      - chronarr_logs:/app/data/logs
+      # Optional: Emby plugin deployment
+      # - /path/to/emby/plugins:/emby-plugins
+    ports:
+      - "${CORE_API_PORT:-8080}:8080"  # Core API (webhooks, processing)
+    depends_on:
+      chronarr-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    networks:
+      - chronarr-network
+
+  # Chronarr Web Interface
+  chronarr-web:
+    image: sbcrumb/chronarr:latest  # Same image as core!
+    container_name: chronarr-web
+    restart: unless-stopped
+    command: ["python", "start_web.py"]  # Different entry point
+    env_file:
+      - ./config/.env
+      - ./config/.env.secrets
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      # Config directory (shares with chronarr-core)
+      - ./config:/config
+    ports:
+      - "${WEB_API_PORT:-8081}:8081"  # Web Interface
+    depends_on:
+      chronarr-db:
+        condition: service_healthy
+      chronarr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    networks:
+      - chronarr-network
+
+volumes:
+  postgres_data:
+    driver: local
+  chronarr_data:
+    driver: local
+  chronarr_logs:
+    driver: local
+
+networks:
+  chronarr-network:
+    driver: bridge
+
+# ========================================
+# Quick Start Guide
+# ========================================
+#
+# 1. First Run:
+#    docker-compose up -d
+#
+#    This will:
+#    - Create ./config/.env from .env.example
+#    - Create ./config/.env.secrets from .env.secrets.example
+#    - Start all containers
+#
+# 2. Configure:
+#    nano ./config/.env
+#    nano ./config/.env.secrets
+#
+#    Required settings:
+#    - DB_PASSWORD (in .env.secrets)
+#    - RADARR_URL, RADARR_API_KEY (optional)
+#    - SONARR_URL, SONARR_API_KEY (optional)
+#
+# 3. Apply Configuration:
+#    docker-compose restart
+#
+# 4. Access Web Interface:
+#    http://your-server:8081
+#
+#    Then click Admin → Populate Database
+#
+# ========================================
+# Configuration Notes
+# ========================================
+#
+# Port Configuration:
+# - Core API: ${CORE_API_PORT:-8080} (webhooks, processing)
+# - Web Interface: ${WEB_API_PORT:-8081} (dashboard)
+# - Database: ${DB_EXTERNAL_PORT:-5432} (optional external access)
+#
+# Media Path Configuration:
+# - Update the volume mounts under chronarr: section
+# - Example: - /your/movies:/media/Movies:ro
+# - Example: - /your/tv:/media/TV:ro
+#
+# Emby Plugin Deployment:
+# - Uncomment the emby-plugins volume mount
+# - Update path to your Emby plugins directory
+# - Plugin auto-deploys on container start
+#
+# Performance Benefits:
+# - Web interface operations don't impact core processing
+# - Webhooks remain responsive during long scans
+# - Independent scaling and resource allocation
+# - Separated concerns for maintenance and updates
