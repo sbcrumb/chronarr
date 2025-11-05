@@ -1,4 +1,4 @@
-# Maintainarr Webhook Integration(Still under Development)
+# Maintainarr Webhook Integration
 
 This document describes how to configure Chronarr to receive webhooks from Maintainarr for automatic database cleanup when media is removed.
 

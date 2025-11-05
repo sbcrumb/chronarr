@@ -10,9 +10,12 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
+import os
 from core.database import ChronarrDatabase
 from clients.radarr_client import RadarrClient
+from clients.radarr_db_client import RadarrDbClient
 from clients.sonarr_client import SonarrClient
+from clients.sonarr_db_client import SonarrDbClient
 from utils.logging import _log
 from utils.imdb_utils import parse_imdb_from_path
 
@@ -20,10 +23,65 @@ from utils.imdb_utils import parse_imdb_from_path
 class DatabasePopulator:
     """Populates Chronarr database from Radarr/Sonarr sources"""
 
-    def __init__(self, db: ChronarrDatabase, radarr_client: RadarrClient, sonarr_client: SonarrClient):
+    def __init__(self, db: ChronarrDatabase, radarr_client: RadarrClient = None, sonarr_client: SonarrClient = None):
         self.db = db
-        self.radarr = radarr_client
-        self.sonarr = sonarr_client
+
+        # Try database clients first, fall back to API clients
+        self.radarr_db = None
+        self.radarr_api = None
+        self.sonarr_db = None
+        self.sonarr_api = None
+        self.using_radarr_db = False
+        self.using_sonarr_db = False
+
+        # Radarr setup
+        try:
+            self.radarr_db = RadarrDbClient.from_env()
+            if self.radarr_db:
+                _log("INFO", "DatabasePopulator: Using Radarr direct database access")
+                self.radarr = self.radarr_db
+                self.using_radarr_db = True
+            else:
+                raise Exception("Database not configured")
+        except Exception:
+            self.radarr_api = radarr_client if radarr_client else RadarrClient(
+                os.environ.get("RADARR_URL", ""),
+                os.environ.get("RADARR_API_KEY", "")
+            )
+            self.radarr = self.radarr_api
+            _log("INFO", "DatabasePopulator: Using Radarr API client")
+
+        # Sonarr setup
+        try:
+            self.sonarr_db = SonarrDbClient.from_env()
+            if self.sonarr_db:
+                _log("INFO", "DatabasePopulator: Using Sonarr direct database access")
+                self.sonarr = self.sonarr_db
+                self.using_sonarr_db = True
+            else:
+                raise Exception("Database not configured")
+        except Exception:
+            self.sonarr_api = sonarr_client if sonarr_client else SonarrClient(
+                os.environ.get("SONARR_URL", ""),
+                os.environ.get("SONARR_API_KEY", "")
+            )
+            self.sonarr = self.sonarr_api
+            _log("INFO", "DatabasePopulator: Using Sonarr API client")
+
+    def get_episode_import_history(self, episode_id: int) -> Optional[str]:
+        """
+        Get episode import history from either database or API
+        Wraps both SonarrDbClient.get_episode_import_date and SonarrClient.get_episode_import_history
+        """
+        if self.using_sonarr_db and self.sonarr_db:
+            # Database client returns (date_iso, source)
+            date_iso, source = self.sonarr_db.get_episode_import_date(episode_id)
+            return date_iso
+        elif self.sonarr_api:
+            # API client returns Optional[str]
+            return self.sonarr_api.get_episode_import_history(episode_id)
+        else:
+            return None
 
     def populate_movies(self) -> Dict[str, any]:
         """
@@ -53,13 +111,16 @@ class DatabasePopulator:
         }
 
         try:
-            # Get all movies from Radarr database
-            if not hasattr(self.radarr, 'db_client') or not self.radarr.db_client:
-                _log("ERROR", "Radarr database client not available - cannot populate movies")
+            # Get all movies from Radarr (database or API)
+            if self.using_radarr_db and self.radarr_db:
+                movies = self.radarr_db.get_all_movies()
+            elif hasattr(self.radarr, 'db_client') and self.radarr.db_client:
+                # Legacy API client with db_client attribute
+                movies = self.radarr.db_client.get_all_movies()
+            else:
+                _log("ERROR", "Radarr database/API client not available - cannot populate movies")
                 stats['errors'] += 1
                 return stats
-
-            movies = self.radarr.db_client.get_all_movies()
             if not movies:
                 _log("WARNING", "No movies found in Radarr database")
                 return stats
@@ -151,7 +212,12 @@ class DatabasePopulator:
                     radarr_movie_id = movie.get('id')
                     if radarr_movie_id:
                         # get_movie_import_date returns tuple (date, source)
-                        import_date, import_source = self.radarr.get_movie_import_date(radarr_movie_id)
+                        if self.using_radarr_db and self.radarr_db:
+                            import_date, import_source = self.radarr_db.get_movie_import_date(radarr_movie_id)
+                        else:
+                            # API client doesn't have this method
+                            import_date = None
+                            import_source = "radarr:api.no_history"
                         if import_date:
                             dateadded = import_date
                             source = import_source
@@ -290,10 +356,17 @@ class DatabasePopulator:
             # Process each series
             for series in all_series:
                 try:
-                    imdb_id = series.get('imdbId')
+                    # Database client returns snake_case (imdb_id), API returns camelCase (imdbId)
+                    imdb_id = series.get('imdb_id') or series.get('imdbId')
                     series_id = series.get('id')
                     series_path = series.get('path', '')
                     series_title = series.get('title', 'Unknown')
+
+                    if not imdb_id and series_path:
+                        # Try to extract from path first
+                        imdb_id = parse_imdb_from_path(Path(series_path))
+                        if imdb_id:
+                            _log("DEBUG", f"Extracted IMDb ID {imdb_id} from path for {series_title}")
 
                     if not imdb_id:
                         # Generate placeholder IMDb ID using hash of path
@@ -305,19 +378,21 @@ class DatabasePopulator:
                     self.db.upsert_series(imdb_id, series_path)
 
                     # Try high-performance database bulk query first
-                    sonarr_db = getattr(self.sonarr, 'db_client', None)
                     bulk_import_dates = {}
 
-                    if sonarr_db:
+                    if self.using_sonarr_db and self.sonarr_db:
                         try:
                             _log("DEBUG", f"Using DB bulk query for {series_title}")
-                            bulk_import_dates = sonarr_db.bulk_import_dates_for_series(series_id)
+                            bulk_import_dates = self.sonarr_db.bulk_import_dates_for_series(series_id)
                             _log("DEBUG", f"✅ Got {len(bulk_import_dates)} import dates from DB for {series_title}")
                         except Exception as e:
                             _log("WARNING", f"DB bulk query failed for {series_title}, falling back to API: {e}")
 
                     # Get all episodes for this series
-                    episodes = self.sonarr.episodes_for_series(series_id)
+                    if self.using_sonarr_db and self.sonarr_db:
+                        episodes = self.sonarr_db.get_all_episodes_for_series(series_id)
+                    else:
+                        episodes = self.sonarr_api.episodes_for_series(series_id)
                     if not episodes:
                         continue
 
@@ -326,8 +401,9 @@ class DatabasePopulator:
                     # Process each episode
                     for episode in episodes:
                         try:
-                            season_num = episode.get('seasonNumber', 0)
-                            episode_num = episode.get('episodeNumber', 0)
+                            # Database client returns snake_case (season, episode), API returns camelCase (seasonNumber, episodeNumber)
+                            season_num = episode.get('season') or episode.get('seasonNumber', 0)
+                            episode_num = episode.get('episode') or episode.get('episodeNumber', 0)
                             episode_title = episode.get('title', 'Unknown')
 
                             if season_num < 0 or episode_num <= 0:
@@ -360,13 +436,15 @@ class DatabasePopulator:
                                 continue
 
                             # Only process episodes that have video files
-                            has_file = episode.get('hasFile', False)
+                            # Database returns episode_file_id, API returns hasFile
+                            has_file = episode.get('hasFile', False) or (episode.get('episode_file_id') is not None and episode.get('episode_file_id') > 0)
                             if not has_file:
                                 # No video file - skip silently (intentionally filtered)
                                 continue
 
                             # Get air date
-                            aired = episode.get('airDate')
+                            # Database returns air_date (snake_case), API returns airDate (camelCase)
+                            aired = episode.get('air_date') or episode.get('airDate')
 
                             # Get import date
                             dateadded = None
@@ -379,7 +457,7 @@ class DatabasePopulator:
                             else:
                                 episode_id = episode.get('id')
                                 if episode_id:
-                                    import_date = self.sonarr.get_episode_import_history(episode_id)
+                                    import_date = self.get_episode_import_history(episode_id)
                                     if import_date:
                                         dateadded = import_date
                                         source = 'sonarr:api.import_history'

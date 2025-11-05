@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from core.database import ChronarrDatabase
 from core.path_mapper import PathMapper
 from clients.radarr_client import RadarrClient
+from clients.radarr_db_client import RadarrDbClient
 from clients.external_clients import ExternalClientManager
 from config.settings import config
 from utils.logging import _log
@@ -67,15 +68,34 @@ def convert_utc_to_local(utc_iso_string: str) -> str:
 
 class MovieProcessor:
     """Handles movie processing"""
-    
+
     def __init__(self, db: ChronarrDatabase, nfo_manager, path_mapper: PathMapper):
         # nfo_manager parameter kept for backward compatibility but no longer used (Phase 3)
         self.db = db
         self.path_mapper = path_mapper
-        self.radarr = RadarrClient(
-            os.environ.get("RADARR_URL", ""),
-            os.environ.get("RADARR_API_KEY", "")
-        )
+
+        # Try database client first, fall back to API client
+        self.radarr_db = None
+        self.radarr_api = None
+        self.using_db = False
+
+        try:
+            self.radarr_db = RadarrDbClient.from_env()
+            if self.radarr_db:
+                _log("INFO", "Using Radarr direct database access")
+                self.radarr = self.radarr_db  # Primary client
+                self.using_db = True
+            else:
+                raise Exception("Database not configured")
+        except Exception:
+            # Fall back to API client
+            self.radarr_api = RadarrClient(
+                os.environ.get("RADARR_URL", ""),
+                os.environ.get("RADARR_API_KEY", "")
+            )
+            self.radarr = self.radarr_api  # Primary client
+            _log("INFO", "Using Radarr API client (database not configured)")
+
         self.external_clients = ExternalClientManager()
     
     def find_movie_path(self, movie_title: str, imdb_id: str, radarr_path: str = None) -> Optional[Path]:

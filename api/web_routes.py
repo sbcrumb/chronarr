@@ -1094,7 +1094,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
                                     if episode_id:
                                         # Get import history for this specific episode
                                         print(f"🔍 DEBUG: Getting import history for episode {episode_id}")
-                                        import_date = tv_processor.sonarr.get_episode_import_history(episode_id)
+                                        import_date = tv_processor.get_episode_import_history(episode_id)
                                         print(f"🔍 DEBUG: Import date found: {import_date}")
                                         
                                         if import_date:

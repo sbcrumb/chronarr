@@ -13,6 +13,7 @@ from datetime import datetime
 from core.database import ChronarrDatabase
 from core.path_mapper import PathMapper
 from clients.sonarr_client import SonarrClient
+from clients.sonarr_db_client import SonarrDbClient
 from clients.external_clients import ExternalClientManager
 from config.settings import config
 from utils.logging import _log
@@ -30,17 +31,51 @@ from utils.async_file_utils import (
 
 class TVProcessor:
     """Handles TV series processing"""
-    
+
     def __init__(self, db: ChronarrDatabase, nfo_manager, path_mapper: PathMapper):
         # nfo_manager parameter kept for backward compatibility but no longer used (Phase 3)
         self.db = db
         self.path_mapper = path_mapper
-        self.sonarr = SonarrClient(
-            os.environ.get("SONARR_URL", ""),
-            os.environ.get("SONARR_API_KEY", "")
-        )
+
+        # Try database client first, fall back to API client
+        self.sonarr_db = None
+        self.sonarr_api = None
+        self.using_db = False
+
+        try:
+            self.sonarr_db = SonarrDbClient.from_env()
+            if self.sonarr_db:
+                _log("INFO", "Using Sonarr direct database access")
+                self.sonarr = self.sonarr_db  # Primary client
+                self.using_db = True
+            else:
+                raise Exception("Database not configured")
+        except Exception:
+            # Fall back to API client
+            self.sonarr_api = SonarrClient(
+                os.environ.get("SONARR_URL", ""),
+                os.environ.get("SONARR_API_KEY", "")
+            )
+            self.sonarr = self.sonarr_api  # Primary client
+            _log("INFO", "Using Sonarr API client (database not configured)")
+
         self.external_clients = ExternalClientManager()
-    
+
+    def get_episode_import_history(self, episode_id: int) -> Optional[str]:
+        """
+        Get episode import history from either database or API
+        Wraps both SonarrDbClient.get_episode_import_date and SonarrClient.get_episode_import_history
+        """
+        if self.using_db and self.sonarr_db:
+            # Database client returns (date_iso, source)
+            date_iso, source = self.sonarr_db.get_episode_import_date(episode_id)
+            return date_iso
+        elif self.sonarr_api:
+            # API client returns Optional[str]
+            return self.sonarr_api.get_episode_import_history(episode_id)
+        else:
+            return None
+
     def find_series_path(self, series_title: str, imdb_id: str, sonarr_path: str = None) -> Optional[Path]:
         """Find series directory path using unified file utilities"""
         return find_media_path_by_imdb_and_title(
@@ -477,7 +512,7 @@ class TVProcessor:
                     # First try to get import date from history (more accurate)
                     episode_id = episode.get('id')
                     if episode_id and episode.get('hasFile'):
-                        import_date = self.sonarr.get_episode_import_history(episode_id)
+                        import_date = self.get_episode_import_history(episode_id)
                         api_calls_made += 1
                         if import_date:
                             episode_data['dateAdded'] = import_date
@@ -971,7 +1006,7 @@ class TVProcessor:
         if episode_id and hasattr(self, 'sonarr'):
             try:
                 _log("DEBUG", f"Calling get_episode_import_history for episode_id: {episode_id}")
-                import_history = self.sonarr.get_episode_import_history(episode_id)
+                import_history = self.get_episode_import_history(episode_id)
                 _log("DEBUG", f"Import history result: {import_history}")
                 
                 if import_history:

@@ -78,11 +78,13 @@ Chronarr tracks and manages "dateadded" timestamps for all your movies and TV ep
 
 ```bash
 wget -O docker-compose.yml https://raw.githubusercontent.com/sbcrumb/chronarr/main/docker-compose.yml.example && \
+echo "DB_PASSWORD=change_me_please" > .env && \
 docker-compose up -d
 ```
 
 **What just happened?**
 - Downloaded docker-compose.yml.example as docker-compose.yml
+- Created root `.env` with temporary database password
 - Auto-created `./config/.env` from embedded example
 - Auto-created `./config/.env.secrets` from embedded example
 - Started all containers (core, web, database)
@@ -96,16 +98,30 @@ nano ./config/.env
 nano ./config/.env.secrets
 ```
 
-**Required Settings (in `./config/.env.secrets`):**
+**Required Settings:**
 ```bash
-# Database password (REQUIRED)
-DB_PASSWORD=your_secure_password
+# 1. FIRST: Update root .env file (next to docker-compose.yml)
+#    This is used by Docker Compose for PostgreSQL initialization
+nano .env
 
-# API Keys (optional but recommended)
+# Set a secure password:
+DB_PASSWORD=your_secure_database_password
+
+# 2. THEN: Update ./config/.env.secrets with the SAME password
+nano ./config/.env.secrets
+
+# In ./config/.env.secrets:
+DB_PASSWORD=your_secure_database_password  # Must match root .env!
+
+# API Keys (optional but recommended):
 RADARR_API_KEY=your_radarr_api_key
 SONARR_API_KEY=your_sonarr_api_key
 TMDB_API_KEY=your_tmdb_api_key
 ```
+
+**Note:** `DB_PASSWORD` must be in BOTH locations:
+- Root `.env` → Docker Compose uses this to create PostgreSQL database
+- `./config/.env.secrets` → Chronarr uses this to connect to the database
 
 **Optional Settings (in `./config/.env`):**
 ```bash

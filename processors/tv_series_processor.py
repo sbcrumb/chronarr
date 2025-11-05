@@ -325,7 +325,7 @@ class TVSeriesProcessor:
                     # Try to get import history
                     episode_id = target_episode.get("id")
                     if episode_id:
-                        import_date = self.sonarr.get_episode_import_history(episode_id)
+                        import_date = self.get_episode_import_history(episode_id)
                         if import_date:
                             # Sonarr import dates are already in local timezone despite 'Z' suffix
                             # Remove 'Z' and use as-is to avoid double timezone conversion
