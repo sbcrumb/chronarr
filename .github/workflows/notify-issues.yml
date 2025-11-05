@@ -1,0 +1,66 @@
+name: Notify on new issues
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate required secrets
+        run: |
+          if [[ -z "${{ secrets.GOTIFY_URL }}" ]]; then
+            echo "Error: GOTIFY_URL secret is not set"
+            exit 1
+          fi
+          if [[ -z "${{ secrets.GOTIFY_TOKEN }}" ]]; then
+            echo "Error: GOTIFY_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "Secrets validation passed"
+
+      - name: Build and send Gotify notification
+        env:
+          GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
+          GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
+        run: |
+          set -euo pipefail
+          
+          # Remove trailing slash from URL if present
+          GOTIFY_URL="${GOTIFY_URL%/}"
+          
+          # Validate URL format
+          if [[ ! "$GOTIFY_URL" =~ ^https?:// ]]; then
+            echo "Error: GOTIFY_URL must start with http:// or https://"
+            exit 1
+          fi
+          
+          # Build the notification payload
+          TITLE="New issue in ${{ github.repository }}"
+          MESSAGE="Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+          By: ${{ github.actor }}
+          ${{ github.event.issue.html_url }}"
+          
+          # Create JSON payload
+          PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg message "$MESSAGE" \
+            --argjson priority 5 \
+            '{title: $title, message: $message, priority: $priority}')
+          
+          echo "Sending notification to Gotify..."
+          echo "URL: ${GOTIFY_URL}/message"
+          echo "Payload: $PAYLOAD"
+          
+          # Send the notification using header authentication
+          curl -X POST "${GOTIFY_URL}/message" \
+            -H "Content-Type: application/json" \
+            -H "X-Gotify-Key: ${GOTIFY_TOKEN}" \
+            -d "$PAYLOAD" \
+            --fail \
+            --show-error \
+            --silent
+          
+          echo "Notification sent successfully!"

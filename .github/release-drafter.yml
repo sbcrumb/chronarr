@@ -1,0 +1,17 @@
+name-template: 'v$NEXT_PATCH_VERSION'
+tag-template: 'v$NEXT_PATCH_VERSION'
+categories:
+  - title: '🚀 Features'
+    labels: ['feature', 'enhancement']
+  - title: '🐛 Fixes'
+    labels: ['fix', 'bug']
+  - title: '🧰 Maintenance'
+    labels: ['chore', 'maintenance', 'deps']
+change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
+no-changes-template: 'Minor internal improvements.'
+template: |
+
+  ## Container Images
+  - `sbcrumb/chronarr:latest`
+  - `sbcrumb/chronarr:$NEXT_PATCH_VERSION`
+
