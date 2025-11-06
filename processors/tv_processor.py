@@ -440,16 +440,25 @@ class TVProcessor:
     def _get_sonarr_episodes(self, imdb_id: str, episodes_filter: List[Tuple[int, int]] = None) -> Dict[Tuple[int, int], Dict[str, Any]]:
         """Get episode information from Sonarr including import history - optimized to only fetch needed episodes"""
         try:
-            series_data = self.sonarr.series_by_imdb(imdb_id)
+            # Handle different method names for DB vs API client
+            if self.using_db:
+                series_data = self.sonarr.get_series_by_imdb(imdb_id)
+            else:
+                series_data = self.sonarr.series_by_imdb(imdb_id)
+
             if not series_data:
                 # Try fuzzy matching if exact IMDb lookup fails
                 _log("DEBUG", f"Exact IMDb lookup failed for {imdb_id}, trying fuzzy matching")
-                
+
                 # Get all series and try fuzzy matching
-                all_series = self.sonarr.get_all_series()
+                if self.using_db:
+                    all_series = self.sonarr.get_all_series()
+                else:
+                    all_series = self.sonarr.get_all_series()
+
                 if all_series:
                     _log("DEBUG", f"Found {len(all_series)} total series in Sonarr")
-                    
+
                     for series in all_series:
                         series_imdb = series.get('imdbId', '')
                         if series_imdb and series_imdb.startswith('tt'):
@@ -457,11 +466,11 @@ class TVProcessor:
                             try:
                                 target_imdb_num = imdb_id.replace('tt', '').lower()
                                 series_imdb_num = series_imdb.replace('tt', '').lower()
-                                
+
                                 target_num = int(target_imdb_num)
                                 series_num = int(series_imdb_num)
                                 diff = abs(target_num - series_num)
-                                
+
                                 if diff <= 10:  # Allow small IMDb ID differences
                                     _log("INFO", f"✅ Found fuzzy IMDb match: {series_imdb} vs {imdb_id} (diff: {diff})")
                                     _log("DEBUG", f"Series data found: True")
@@ -470,15 +479,19 @@ class TVProcessor:
                                     break
                             except (ValueError, TypeError):
                                 continue
-                
+
                 if not series_data:
                     return {}
-            
+
             series_id = series_data.get('id')
             if not series_id:
                 return {}
-            
-            episodes = self.sonarr.episodes_for_series(series_id)
+
+            # Handle different method names for DB vs API client
+            if self.using_db:
+                episodes = self.sonarr.get_all_episodes_for_series(series_id)
+            else:
+                episodes = self.sonarr.episodes_for_series(series_id)
             
             # Convert episodes_filter to set for faster lookup
             filter_set = set(episodes_filter) if episodes_filter else None
@@ -865,36 +878,44 @@ class TVProcessor:
         return None
     
     def _get_sonarr_series_metadata(self, imdb_id: str) -> Optional[Dict[str, Any]]:
-        """Get enhanced series metadata from Sonarr API"""
+        """Get enhanced series metadata from Sonarr (database or API)"""
         try:
             if not self.sonarr:
                 return None
 
-            series_data = self.sonarr.series_by_imdb(imdb_id)
+            # Handle different method names for DB vs API client
+            if self.using_db:
+                series_data = self.sonarr.get_series_by_imdb(imdb_id)
+            else:
+                series_data = self.sonarr.series_by_imdb(imdb_id)
+
             if not series_data:
                 return None
-            
+
             series_id = series_data.get('id')
             if not series_id:
                 return None
-            
+
             # Get all episodes for this series
-            episodes = self.sonarr.episodes_for_series(series_id)
-            
+            if self.using_db:
+                episodes = self.sonarr.get_all_episodes_for_series(series_id)
+            else:
+                episodes = self.sonarr.episodes_for_series(series_id)
+
             # Organize episodes by season/episode
             episode_map = {}
             for episode in episodes:
                 season = episode.get('seasonNumber', 0)
                 episode_num = episode.get('episodeNumber', 0)
-                
+
                 if season >= 0 and episode_num > 0:
                     episode_map[(season, episode_num)] = episode
-            
+
             return {
                 'series': series_data,
                 'episodes': episode_map
             }
-            
+
         except Exception as e:
             _log("ERROR", f"Failed to get Sonarr series metadata for {imdb_id}: {e}")
             return None
