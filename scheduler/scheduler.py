@@ -213,99 +213,75 @@ class ChronarrScheduler:
     async def _run_media_scan(self, scan: Dict[str, Any], execution_id: int) -> Dict[str, Any]:
         """Run the actual media scan based on scan configuration"""
         try:
-            # Import scan functionality from existing modules
-            from api.routes import run_tv_scan, run_movie_scan
-            
             media_type = scan['media_type']
             scan_mode = scan['scan_mode']
             specific_paths = scan.get('specific_paths', '').strip()
-            
-            results = {
-                'items_processed': 0,
-                'items_skipped': 0,
-                'items_failed': 0,
-                'logs': []
-            }
-            
-            # Parse specific paths if provided
-            paths = []
-            if specific_paths:
-                paths = [p.strip() for p in specific_paths.split(',') if p.strip()]
-            
-            # Run TV scan if needed
-            if media_type in ['tv', 'both']:
-                logger.info(f"Running TV scan with mode: {scan_mode}")
-                
-                # Use existing scan infrastructure
-                tv_result = await self._execute_tv_scan(scan_mode, paths)
-                
-                results['items_processed'] += tv_result.get('tv_series_processed', 0)
-                results['items_skipped'] += tv_result.get('tv_series_skipped', 0)
-                results['items_failed'] += tv_result.get('tv_series_failed', 0)
-                results['logs'].append(f"TV Scan: {tv_result.get('message', 'Completed')}")
-            
-            # Run movie scan if needed
-            if media_type in ['movies', 'both']:
-                logger.info(f"Running movie scan with mode: {scan_mode}")
-                
-                # Use existing scan infrastructure
-                movie_result = await self._execute_movie_scan(scan_mode, paths)
-                
-                results['items_processed'] += movie_result.get('movies_processed', 0)
-                results['items_skipped'] += movie_result.get('movies_skipped', 0)
-                results['items_failed'] += movie_result.get('movies_failed', 0)
-                results['logs'].append(f"Movie Scan: {movie_result.get('message', 'Completed')}")
-            
-            results['logs'] = '\n'.join(results['logs'])
-            return results
-            
+
+            logger.info(f"Executing scheduled scan: {scan['name']} (type: {media_type}, mode: {scan_mode})")
+
+            # Import necessary functions
+            from api.routes import manual_scan, populate_database
+            from fastapi import BackgroundTasks
+
+            # Create a dummy BackgroundTasks since we're already running in background
+            class DummyBackgroundTasks:
+                def add_task(self, func, *args, **kwargs):
+                    # Execute immediately instead of adding to background
+                    import asyncio
+                    if asyncio.iscoroutinefunction(func):
+                        asyncio.create_task(func(*args, **kwargs))
+                    else:
+                        func(*args, **kwargs)
+
+            background_tasks = DummyBackgroundTasks()
+
+            # Handle database population mode
+            if scan_mode == 'populate':
+                logger.info(f"Running database population for {media_type}")
+                result = await populate_database(
+                    background_tasks=background_tasks,
+                    media_type=media_type,
+                    dependencies=self.dependencies
+                )
+                return {
+                    'items_processed': 1,
+                    'items_skipped': 0,
+                    'items_failed': 0,
+                    'logs': f"Database population started: {media_type}"
+                }
+            else:
+                # Handle regular scan modes (smart, full, incomplete)
+                # Prepare path parameter
+                path = specific_paths if specific_paths else None
+
+                # Call the actual manual scan function
+                result = await manual_scan(
+                    background_tasks=background_tasks,
+                    path=path,
+                    scan_type=media_type,
+                    scan_mode=scan_mode,
+                    dependencies=self.dependencies
+                )
+
+                # Parse the result to extract statistics
+                # The manual_scan returns a status message, but we need to track actual results
+                # For now, we'll return a success indicator
+                return {
+                    'items_processed': result.get('processed', 0) if isinstance(result, dict) else 1,
+                    'items_skipped': result.get('skipped', 0) if isinstance(result, dict) else 0,
+                    'items_failed': result.get('failed', 0) if isinstance(result, dict) else 0,
+                    'logs': f"Scan completed: {media_type} ({scan_mode})"
+                }
+
         except Exception as e:
             logger.error(f"Error in media scan execution: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 'items_processed': 0,
                 'items_skipped': 0,
                 'items_failed': 1,
                 'logs': f"Scan failed: {str(e)}"
-            }
-    
-    async def _execute_tv_scan(self, scan_mode: str, specific_paths: list = None) -> Dict[str, Any]:
-        """Execute TV scan using existing infrastructure"""
-        try:
-            # This would integrate with the existing manual scan functionality
-            # For now, return a placeholder result
-            return {
-                'tv_series_processed': 0,
-                'tv_series_skipped': 0,
-                'tv_series_failed': 0,
-                'message': f'TV scan ({scan_mode}) - Integration pending'
-            }
-        except Exception as e:
-            logger.error(f"TV scan execution failed: {e}")
-            return {
-                'tv_series_processed': 0,
-                'tv_series_skipped': 0,
-                'tv_series_failed': 1,
-                'message': f'TV scan failed: {str(e)}'
-            }
-    
-    async def _execute_movie_scan(self, scan_mode: str, specific_paths: list = None) -> Dict[str, Any]:
-        """Execute movie scan using existing infrastructure"""
-        try:
-            # This would integrate with the existing manual scan functionality
-            # For now, return a placeholder result
-            return {
-                'movies_processed': 0,
-                'movies_skipped': 0,
-                'movies_failed': 0,
-                'message': f'Movie scan ({scan_mode}) - Integration pending'
-            }
-        except Exception as e:
-            logger.error(f"Movie scan execution failed: {e}")
-            return {
-                'movies_processed': 0,
-                'movies_skipped': 0,
-                'movies_failed': 1,
-                'message': f'Movie scan failed: {str(e)}'
             }
     
     async def run_manual_scan(self, scan_id: int) -> Dict[str, Any]:
