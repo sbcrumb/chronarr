@@ -1850,7 +1850,48 @@ def register_web_routes(app, dependencies):
             raise HTTPException(status_code=504, detail="Core container request timed out")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Manual scan request failed: {str(e)}")
-    
+
+    @app.post("/manual/cleanup-orphaned")
+    async def api_manual_cleanup(request: Request):
+        """Proxy manual cleanup requests to core container"""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        # Get core container URL
+        core_host = os.environ.get("CORE_API_HOST", "chronarr")
+        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/manual/cleanup-orphaned"
+
+        try:
+            # Get JSON body from request
+            body_data = await request.json()
+            body_bytes = json.dumps(body_data).encode('utf-8')
+
+            # Create request with JSON body
+            req = urllib.request.Request(
+                core_url,
+                data=body_bytes,
+                method='POST',
+                headers={'Content-Type': 'application/json'}
+            )
+
+            # Make request with timeout (cleanup can take a while)
+            with urllib.request.urlopen(req, timeout=300) as response:
+                response_data = response.read().decode('utf-8')
+                return json.loads(response_data)
+
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core container HTTP error: {e.reason}")
+        except urllib.error.URLError as e:
+            raise HTTPException(status_code=503, detail=f"Could not connect to core container: {str(e)}")
+        except socket.timeout:
+            raise HTTPException(status_code=504, detail="Core container request timed out")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Manual cleanup request failed: {str(e)}")
+
     # Simple scan tracking (since we can't reliably access docker logs from container)
     scan_tracking = {"last_scan_time": None, "scanning": False}
     

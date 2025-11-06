@@ -1,5 +1,5 @@
 FROM python:3.12.12-slim
-
+# Updates for local builds
 
 # Build argument for git branch and build source
 ARG GIT_BRANCH=main
@@ -13,13 +13,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUILD_SOURCE=${BUILD_SOURCE}
 
 # Install system dependencies including PostgreSQL client libraries and tini
-# Also upgrade tar to fix CVE-2025-45582
+# Try to upgrade tar to fix CVE-2025-45582 (may not be available in stable)
 RUN apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     gcc \
     tini \
-    && apt-get upgrade -y tar \
+    && apt-get upgrade -y tar || true \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user and directory

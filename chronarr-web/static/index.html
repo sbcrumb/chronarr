@@ -12,7 +12,7 @@
         <!-- Header -->
         <header class="app-header">
             <div class="header-content">
-                <h1><i class="fas fa-shield-alt"></i> Chronarr <span style="font-size: 0.5em; color: #888;">v1.0.0</span></h1>
+                <h1><img src="/static/chronarr.jpg" alt="Chronarr" style="height: 40px; vertical-align: middle; margin-right: 10px; border-radius: 8px;"> Chronarr <span style="font-size: 0.5em; color: #888;">v1.0.0</span></h1>
                 <p>Database Management & Reporting</p>
             </div>
             <div class="auth-status" id="auth-status" style="display: none;">
@@ -38,6 +38,9 @@
                 </button>
                 <button class="nav-tab" data-tab="scheduled-scans">
                     <i class="fas fa-clock"></i> Scheduled Scans
+                </button>
+                <button class="nav-tab" data-tab="scheduled-cleanups">
+                    <i class="fas fa-broom"></i> Scheduled Cleanups
                 </button>
                 <button class="nav-tab" data-tab="tools">
                     <i class="fas fa-tools"></i> Tools
@@ -388,6 +391,64 @@
                 </div>
             </div>
 
+            <!-- Scheduled Cleanups Tab -->
+            <div class="tab-content" id="scheduled-cleanups">
+                <div class="content-header">
+                    <h2><i class="fas fa-broom"></i> Scheduled Cleanups</h2>
+                    <button class="btn btn-primary" id="add-cleanup-btn">
+                        <i class="fas fa-plus"></i> Add Cleanup Schedule
+                    </button>
+                </div>
+
+                <!-- Active Cleanup Schedules Section -->
+                <div class="section-card">
+                    <h3><i class="fas fa-list"></i> Active Cleanup Schedules</h3>
+                    <div class="table-container">
+                        <table class="data-table" id="cleanups-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Validation</th>
+                                    <th>Schedule</th>
+                                    <th>Last Run</th>
+                                    <th>Next Run</th>
+                                    <th>Items Removed</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cleanups-table-body">
+                                <!-- Cleanup schedules will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Cleanup Execution History Section -->
+                <div class="section-card">
+                    <h3><i class="fas fa-history"></i> Recent Cleanup Executions</h3>
+                    <div class="table-container">
+                        <table class="data-table" id="cleanup-executions-table">
+                            <thead>
+                                <tr>
+                                    <th>Schedule</th>
+                                    <th>Started</th>
+                                    <th>Duration</th>
+                                    <th>Status</th>
+                                    <th>Movies Removed</th>
+                                    <th>Series Removed</th>
+                                    <th>Episodes Removed</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cleanup-executions-table-body">
+                                <!-- Cleanup executions will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Tools Tab -->
             <div class="tab-content" id="tools">
                 <div class="content-header">
@@ -469,6 +530,59 @@
                             </div>
                             <button class="btn btn-secondary btn-sm" onclick="stopScanPolling()">
                                 <i class="fas fa-times"></i> Hide Status
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="tool-card">
+                        <h3><i class="fas fa-broom"></i> Orphaned Record Cleanup</h3>
+                        <p>Remove database entries for media deleted from Radarr/Sonarr</p>
+                        <form id="manual-cleanup-form">
+                            <div class="form-group">
+                                <label style="font-weight: bold; display: block; margin-bottom: 8px;">Media Types:</label>
+                                <div style="margin-left: 15px;">
+                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
+                                        <input type="checkbox" id="cleanup-movies" checked style="margin: 0; width: 16px; height: 16px;">
+                                        <span style="margin-left: 8px;">Check Movies</span>
+                                    </label>
+                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
+                                        <input type="checkbox" id="cleanup-series" checked style="margin: 0; width: 16px; height: 16px;">
+                                        <span style="margin-left: 8px;">Check TV Series</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label style="font-weight: bold; display: block; margin-bottom: 8px;">Validation Methods:</label>
+                                <div style="margin-left: 15px;">
+                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
+                                        <input type="checkbox" id="cleanup-filesystem" checked style="margin: 0; width: 16px; height: 16px;">
+                                        <span style="margin-left: 8px;">Verify Filesystem</span>
+                                    </label>
+                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
+                                        <input type="checkbox" id="cleanup-database" checked style="margin: 0; width: 16px; height: 16px;">
+                                        <span style="margin-left: 8px;">Verify Radarr/Sonarr DB</span>
+                                    </label>
+                                </div>
+                                <small style="color: #888; display: block; margin-top: 4px; margin-left: 15px;">
+                                    <i class="fas fa-info-circle"></i> Records removed only if missing from BOTH
+                                </small>
+                            </div>
+                            <div class="form-group">
+                                <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
+                                    <input type="checkbox" id="cleanup-dry-run" checked style="margin: 0; width: 16px; height: 16px;">
+                                    <span style="margin-left: 8px;"><strong>Dry Run</strong> (Preview only, no changes)</span>
+                                </label>
+                            </div>
+                            <button type="submit" class="btn btn-warning">
+                                <i class="fas fa-broom"></i> Run Cleanup
+                            </button>
+                        </form>
+                        <div id="cleanup-status" class="scan-status" style="display: none;">
+                            <div class="cleanup-results" id="cleanup-results">
+                                <p>Running cleanup...</p>
+                            </div>
+                            <button class="btn btn-secondary btn-sm" onclick="hideCleanupStatus()">
+                                <i class="fas fa-times"></i> Hide Results
                             </button>
                         </div>
                     </div>
@@ -617,6 +731,7 @@
                                 <option value="smart">Smart (Recommended)</option>
                                 <option value="incomplete">Incomplete Only</option>
                                 <option value="full">Full Scan</option>
+                                <option value="populate">Populate Database (from Radarr/Sonarr)</option>
                             </select>
                         </div>
                     </div>
@@ -654,6 +769,83 @@
                         <button type="button" class="btn btn-secondary" onclick="closeScheduleModal()">Cancel</button>
                         <button type="submit" class="btn btn-primary">
                             <span id="schedule-submit-text">Create Schedule</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cleanup Schedule Modal -->
+    <div class="modal" id="cleanup-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="cleanup-modal-title">Add New Cleanup Schedule</h3>
+                <button class="modal-close" onclick="closeCleanupModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="cleanup-form">
+                    <input type="hidden" id="cleanup-id">
+
+                    <div class="form-group">
+                        <label for="cleanup-name">Schedule Name:</label>
+                        <input type="text" id="cleanup-name" required placeholder="e.g., Daily Orphaned Record Cleanup">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="cleanup-description">Description:</label>
+                        <textarea id="cleanup-description" placeholder="Optional description of what this cleanup does"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Validation Methods:</label>
+                        <div style="margin-top: 10px;">
+                            <label style="display: block; margin-bottom: 8px;">
+                                <input type="checkbox" id="cleanup-check-movies" checked>
+                                <span style="margin-left: 8px;">Check Movies</span>
+                            </label>
+                            <label style="display: block; margin-bottom: 8px;">
+                                <input type="checkbox" id="cleanup-check-series" checked>
+                                <span style="margin-left: 8px;">Check TV Series</span>
+                            </label>
+                            <label style="display: block; margin-bottom: 8px;">
+                                <input type="checkbox" id="cleanup-check-filesystem" checked>
+                                <span style="margin-left: 8px;">Verify Filesystem (files/folders exist)</span>
+                            </label>
+                            <label style="display: block; margin-bottom: 8px;">
+                                <input type="checkbox" id="cleanup-check-database" checked>
+                                <span style="margin-left: 8px;">Verify Database (exists in Radarr/Sonarr)</span>
+                            </label>
+                        </div>
+                        <small style="color: #888; display: block; margin-top: 8px;">
+                            <i class="fas fa-info-circle"></i> Records are only removed if they fail BOTH filesystem and database checks (hybrid approach)
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="cleanup-cron">Cron Expression:</label>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="cleanup-cron" required placeholder="0 3 * * *" style="flex: 1;">
+                            <button type="button" class="btn btn-secondary" onclick="openCleanupCronBuilder()">
+                                <i class="fas fa-calendar-alt"></i> Builder
+                            </button>
+                        </div>
+                        <small style="color: #888; display: block; margin-top: 5px;">
+                            Examples: <code>0 3 * * *</code> (Daily 3 AM), <code>0 */6 * * *</code> (Every 6 hours)
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="cleanup-enabled" checked>
+                            <span style="margin-left: 8px;">Enabled</span>
+                        </label>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeCleanupModal()">Cancel</button>
+                        <button type="submit" class="btn btn-primary">
+                            <span id="cleanup-submit-text">Create Cleanup Schedule</span>
                         </button>
                     </div>
                 </form>
@@ -727,6 +919,7 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=2.10.0-skipped-imdb-edit-v2"></script>
+    <script src="/static/js/app.js?v=2.10.4-manual-cleanup"></script>
+    <script src="/static/js/cleanup-schedule.js?v=2.10.3-integrated-scans"></script>
 </body>
 </html>

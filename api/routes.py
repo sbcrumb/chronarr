@@ -13,7 +13,8 @@ from typing import Optional
 # Import models
 from api.models import (
     SonarrWebhook, RadarrWebhook, MaintainarrWebhook, HealthResponse, TVSeasonRequest, TVEpisodeRequest,
-    MovieUpdateRequest, EpisodeUpdateRequest, BulkUpdateRequest
+    MovieUpdateRequest, EpisodeUpdateRequest, BulkUpdateRequest, OrphanedCleanupRequest,
+    CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse
 )
 # Import logging utility
 from utils.logging import _log
@@ -1537,22 +1538,301 @@ async def cleanup_orphaned_movies(dependencies: dict):
 async def cleanup_orphaned_series(dependencies: dict):
     """Find and delete TV series that don't have corresponding directories"""
     db = dependencies["db"]
-    
+
     try:
         deleted_series = db.delete_orphaned_series()
-        
+
         return {
             "success": True,
             "message": f"Cleaned up {len(deleted_series)} orphaned TV series",
             "deleted_count": len(deleted_series),
             "deleted_series": deleted_series
         }
-            
+
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
             "message": "Failed to cleanup orphaned TV series"
+        }
+
+
+async def cleanup_orphaned_records_hybrid(request: OrphanedCleanupRequest, dependencies: dict):
+    """
+    Find and remove orphaned records using hybrid validation (database + filesystem)
+
+    This performs a more comprehensive cleanup than the basic cleanup functions by:
+    - Checking if media exists in Radarr/Sonarr databases
+    - Checking if media files/folders exist on the filesystem
+    - Only removing records that fail BOTH checks (hybrid approach)
+
+    Args:
+        request: OrphanedCleanupRequest with cleanup parameters
+        dependencies: Application dependencies including database clients
+
+    Returns:
+        Comprehensive cleanup report with details of removed items
+    """
+    from utils.orphaned_cleanup import OrphanedRecordCleaner
+
+    db = dependencies["db"]
+    radarr_db_client = dependencies.get("radarr_db_client")
+    sonarr_db_client = dependencies.get("sonarr_db_client")
+
+    try:
+        # Initialize the cleaner with available database clients
+        cleaner = OrphanedRecordCleaner(
+            chronarr_db=db,
+            radarr_db_client=radarr_db_client,
+            sonarr_db_client=sonarr_db_client
+        )
+
+        # Validate that we can perform the requested checks
+        warnings = []
+        if request.check_database:
+            if request.check_movies and not radarr_db_client:
+                warnings.append("Radarr database client not configured - movie database validation disabled")
+            if request.check_series and not sonarr_db_client:
+                warnings.append("Sonarr database client not configured - series database validation disabled")
+
+        _log("INFO", f"Starting hybrid orphaned record cleanup (dry_run={request.dry_run})")
+
+        # Perform the cleanup
+        report = cleaner.cleanup_orphaned_records(
+            check_movies=request.check_movies,
+            check_series=request.check_series,
+            check_filesystem=request.check_filesystem,
+            check_database=request.check_database,
+            dry_run=request.dry_run
+        )
+
+        # Add warnings to the report
+        if warnings:
+            report['warnings'] = warnings
+
+        return {
+            "success": True,
+            "report": report,
+            "message": f"Cleanup completed - {report['total_removed']} items {'would be ' if request.dry_run else ''}removed"
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Hybrid orphaned record cleanup failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to perform hybrid orphaned record cleanup"
+        }
+
+
+# Scheduled Cleanup CRUD Handlers
+
+async def create_scheduled_cleanup(request: CreateScheduledCleanupRequest, dependencies: dict):
+    """Create a new scheduled cleanup"""
+    db = dependencies["db"]
+
+    try:
+        cleanup_id = db.create_scheduled_cleanup(
+            name=request.name,
+            description=request.description,
+            cron_expression=request.cron_expression,
+            check_movies=request.check_movies,
+            check_series=request.check_series,
+            check_filesystem=request.check_filesystem,
+            check_database=request.check_database,
+            enabled=request.enabled,
+            created_by="api"
+        )
+
+        # Get the cleanup scheduler and add this schedule
+        from scheduler.cleanup_scheduler import get_cleanup_scheduler
+        scheduler = await get_cleanup_scheduler(dependencies)
+
+        cleanup = db.get_scheduled_cleanup(cleanup_id)
+        if cleanup and cleanup['enabled']:
+            await scheduler.add_schedule(cleanup)
+
+        return {
+            "success": True,
+            "cleanup_id": cleanup_id,
+            "message": f"Scheduled cleanup '{request.name}' created successfully"
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Failed to create scheduled cleanup: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to create scheduled cleanup"
+        }
+
+
+async def get_scheduled_cleanups(dependencies: dict, enabled_only: bool = False):
+    """Get all scheduled cleanups"""
+    db = dependencies["db"]
+
+    try:
+        cleanups = db.get_scheduled_cleanups(enabled_only=enabled_only)
+
+        return {
+            "success": True,
+            "cleanups": [dict(cleanup) for cleanup in cleanups],
+            "count": len(cleanups)
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Failed to get scheduled cleanups: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to retrieve scheduled cleanups"
+        }
+
+
+async def get_scheduled_cleanup(cleanup_id: int, dependencies: dict):
+    """Get a specific scheduled cleanup by ID"""
+    db = dependencies["db"]
+
+    try:
+        cleanup = db.get_scheduled_cleanup(cleanup_id)
+
+        if not cleanup:
+            return {
+                "success": False,
+                "error": "Cleanup not found",
+                "message": f"Scheduled cleanup {cleanup_id} not found"
+            }
+
+        return {
+            "success": True,
+            "cleanup": dict(cleanup)
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Failed to get scheduled cleanup {cleanup_id}: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to retrieve scheduled cleanup {cleanup_id}"
+        }
+
+
+async def update_scheduled_cleanup(cleanup_id: int, request: UpdateScheduledCleanupRequest, dependencies: dict):
+    """Update a scheduled cleanup"""
+    db = dependencies["db"]
+
+    try:
+        success = db.update_scheduled_cleanup(
+            cleanup_id=cleanup_id,
+            name=request.name,
+            description=request.description,
+            cron_expression=request.cron_expression,
+            check_movies=request.check_movies,
+            check_series=request.check_series,
+            check_filesystem=request.check_filesystem,
+            check_database=request.check_database,
+            enabled=request.enabled,
+            updated_by="api"
+        )
+
+        if not success:
+            return {
+                "success": False,
+                "message": f"Scheduled cleanup {cleanup_id} not found or no changes made"
+            }
+
+        # Update the scheduler
+        from scheduler.cleanup_scheduler import get_cleanup_scheduler
+        scheduler = await get_cleanup_scheduler(dependencies)
+
+        cleanup = db.get_scheduled_cleanup(cleanup_id)
+        if cleanup:
+            await scheduler.update_schedule(cleanup)
+
+        return {
+            "success": True,
+            "message": f"Scheduled cleanup {cleanup_id} updated successfully"
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Failed to update scheduled cleanup {cleanup_id}: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to update scheduled cleanup {cleanup_id}"
+        }
+
+
+async def delete_scheduled_cleanup(cleanup_id: int, dependencies: dict):
+    """Delete a scheduled cleanup"""
+    db = dependencies["db"]
+
+    try:
+        # Remove from scheduler first
+        from scheduler.cleanup_scheduler import get_cleanup_scheduler
+        scheduler = await get_cleanup_scheduler(dependencies)
+        await scheduler.remove_schedule(cleanup_id)
+
+        # Delete from database
+        success = db.delete_scheduled_cleanup(cleanup_id)
+
+        if not success:
+            return {
+                "success": False,
+                "message": f"Scheduled cleanup {cleanup_id} not found"
+            }
+
+        return {
+            "success": True,
+            "message": f"Scheduled cleanup {cleanup_id} deleted successfully"
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Failed to delete scheduled cleanup {cleanup_id}: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to delete scheduled cleanup {cleanup_id}"
+        }
+
+
+async def trigger_scheduled_cleanup(cleanup_id: int, dependencies: dict):
+    """Manually trigger a scheduled cleanup"""
+    try:
+        from scheduler.cleanup_scheduler import get_cleanup_scheduler
+        scheduler = await get_cleanup_scheduler(dependencies)
+
+        result = await scheduler.run_manual_cleanup(cleanup_id)
+        return result
+
+    except Exception as e:
+        _log("ERROR", f"Failed to trigger scheduled cleanup {cleanup_id}: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to trigger scheduled cleanup {cleanup_id}"
+        }
+
+
+async def get_cleanup_executions(dependencies: dict, schedule_id: int = None, limit: int = 50):
+    """Get cleanup execution history"""
+    db = dependencies["db"]
+
+    try:
+        executions = db.get_cleanup_executions(schedule_id=schedule_id, limit=limit)
+
+        return {
+            "success": True,
+            "executions": [dict(execution) for execution in executions],
+            "count": len(executions)
+        }
+
+    except Exception as e:
+        _log("ERROR", f"Failed to get cleanup executions: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to retrieve cleanup executions"
         }
 
 
@@ -2729,6 +3009,39 @@ def register_routes(app, dependencies: dict):
     @app.post("/database/cleanup/orphaned-series")
     async def _cleanup_orphaned_series():
         return await cleanup_orphaned_series(dependencies)
+
+    @app.post("/manual/cleanup-orphaned")
+    async def _cleanup_orphaned_records_hybrid(request: OrphanedCleanupRequest):
+        return await cleanup_orphaned_records_hybrid(request, dependencies)
+
+    # Scheduled Cleanup Endpoints
+    @app.post("/admin/scheduled-cleanups")
+    async def _create_scheduled_cleanup(request: CreateScheduledCleanupRequest):
+        return await create_scheduled_cleanup(request, dependencies)
+
+    @app.get("/admin/scheduled-cleanups")
+    async def _get_scheduled_cleanups(enabled_only: bool = False):
+        return await get_scheduled_cleanups(dependencies, enabled_only)
+
+    @app.get("/admin/scheduled-cleanups/{cleanup_id}")
+    async def _get_scheduled_cleanup(cleanup_id: int):
+        return await get_scheduled_cleanup(cleanup_id, dependencies)
+
+    @app.put("/admin/scheduled-cleanups/{cleanup_id}")
+    async def _update_scheduled_cleanup(cleanup_id: int, request: UpdateScheduledCleanupRequest):
+        return await update_scheduled_cleanup(cleanup_id, request, dependencies)
+
+    @app.delete("/admin/scheduled-cleanups/{cleanup_id}")
+    async def _delete_scheduled_cleanup(cleanup_id: int):
+        return await delete_scheduled_cleanup(cleanup_id, dependencies)
+
+    @app.post("/admin/scheduled-cleanups/{cleanup_id}/trigger")
+    async def _trigger_scheduled_cleanup(cleanup_id: int):
+        return await trigger_scheduled_cleanup(cleanup_id, dependencies)
+
+    @app.get("/admin/cleanup-executions")
+    async def _get_cleanup_executions(schedule_id: int = None, limit: int = 50):
+        return await get_cleanup_executions(dependencies, schedule_id, limit)
 
     @app.post("/database/backfill/movie-release-dates")
     async def _backfill_movie_release_dates():

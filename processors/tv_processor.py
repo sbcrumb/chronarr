@@ -867,9 +867,9 @@ class TVProcessor:
     def _get_sonarr_series_metadata(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """Get enhanced series metadata from Sonarr API"""
         try:
-            if not self.sonarr.enabled:
+            if not self.sonarr:
                 return None
-            
+
             series_data = self.sonarr.series_by_imdb(imdb_id)
             if not series_data:
                 return None
@@ -969,9 +969,9 @@ class TVProcessor:
         existing_entry = None
         existing_date = None
         try:
-            existing_entry = self.db.get_episode(imdb_id, season_num, episode_num)
-            if existing_entry and existing_entry.get('date_added'):
-                existing_date = existing_entry['date_added']
+            existing_entry = self.db.get_episode_date(imdb_id, season_num, episode_num)
+            if existing_entry and existing_entry.get('dateadded'):
+                existing_date = existing_entry['dateadded']
                 _log("INFO", f"Found existing date in database for S{season_num:02d}E{episode_num:02d}: {existing_date}")
                 
                 # For webhook processing, use existing data (fast path)

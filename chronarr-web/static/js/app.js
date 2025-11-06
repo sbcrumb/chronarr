@@ -111,11 +111,13 @@ function initializeEventListeners() {
     const editForm = document.getElementById('edit-form');
     const bulkUpdateForm = document.getElementById('bulk-update-form');
     const manualScanForm = document.getElementById('manual-scan-form');
+    const manualCleanupForm = document.getElementById('manual-cleanup-form');
     const populateForm = document.getElementById('populate-form');
 
     if (editForm) editForm.addEventListener('submit', handleEditSubmit);
     if (bulkUpdateForm) bulkUpdateForm.addEventListener('submit', handleBulkUpdate);
     if (manualScanForm) manualScanForm.addEventListener('submit', handleManualScan);
+    if (manualCleanupForm) manualCleanupForm.addEventListener('submit', handleManualCleanup);
     if (populateForm) populateForm.addEventListener('submit', handlePopulateDatabase);
 }
 
@@ -1879,6 +1881,187 @@ function updateScanProgress(status) {
     } else {
         operationText.textContent = progressDetails || 'Scanning...';
     }
+}
+
+// Manual Cleanup Functions
+async function handleManualCleanup(event) {
+    event.preventDefault();
+
+    const checkMovies = document.getElementById('cleanup-movies').checked;
+    const checkSeries = document.getElementById('cleanup-series').checked;
+    const checkFilesystem = document.getElementById('cleanup-filesystem').checked;
+    const checkDatabase = document.getElementById('cleanup-database').checked;
+    const dryRun = document.getElementById('cleanup-dry-run').checked;
+
+    // Validate at least one media type is selected
+    if (!checkMovies && !checkSeries) {
+        showToast('❌ Please select at least one media type to check', 'error');
+        return;
+    }
+
+    // Validate at least one validation method is selected
+    if (!checkFilesystem && !checkDatabase) {
+        showToast('❌ Please select at least one validation method', 'error');
+        return;
+    }
+
+    try {
+        // Show cleanup status
+        showCleanupStatus();
+
+        // Start the cleanup
+        const mode = dryRun ? 'Preview' : 'Cleanup';
+        showToast(`🧹 Starting ${mode.toLowerCase()}...`, 'info');
+
+        const response = await fetch('/manual/cleanup-orphaned', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                check_movies: checkMovies,
+                check_series: checkSeries,
+                check_filesystem: checkFilesystem,
+                check_database: checkDatabase,
+                dry_run: dryRun
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        if (result.success) {
+            showToast(`✅ ${mode} completed successfully`, 'success');
+            displayCleanupResults(result.report, dryRun);
+        } else {
+            showToast(`❌ ${mode} failed: ${result.message || 'Unknown error'}`, 'error');
+            hideCleanupStatus();
+        }
+
+    } catch (error) {
+        console.error('Manual cleanup failed:', error);
+        showToast(`❌ Cleanup failed: ${error.message}`, 'error');
+        hideCleanupStatus();
+    }
+}
+
+function showCleanupStatus() {
+    const cleanupStatus = document.getElementById('cleanup-status');
+    const cleanupResults = document.getElementById('cleanup-results');
+
+    // Reset and show
+    cleanupResults.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Running cleanup...</p>';
+    cleanupStatus.style.display = 'block';
+}
+
+function hideCleanupStatus() {
+    document.getElementById('cleanup-status').style.display = 'none';
+}
+
+function displayCleanupResults(report, dryRun) {
+    const cleanupResults = document.getElementById('cleanup-results');
+
+    const mode = dryRun ? 'Would be removed' : 'Removed';
+    const modeClass = dryRun ? 'warning' : 'danger';
+
+    let html = `
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 10px;">
+            <h4 style="margin-top: 0; color: #333;">
+                <i class="fas fa-${dryRun ? 'eye' : 'check-circle'}"></i>
+                ${dryRun ? 'Preview Results' : 'Cleanup Results'}
+            </h4>
+    `;
+
+    // Movies section
+    if (report.movies) {
+        html += `
+            <div style="margin-bottom: 15px;">
+                <h5 style="color: #666; margin-bottom: 8px;">
+                    <i class="fas fa-film"></i> Movies
+                </h5>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding-left: 20px;">
+                    <div>Total checked: <strong>${report.movies.total_checked || 0}</strong></div>
+                    <div class="badge badge-${modeClass}">${mode}: <strong>${report.movies.removed || 0}</strong></div>
+                    <div>Missing from filesystem: ${report.movies.missing_filesystem || 0}</div>
+                    <div>Missing from database: ${report.movies.missing_database || 0}</div>
+                </div>
+        `;
+
+        if (report.movies.removed_items && report.movies.removed_items.length > 0) {
+            html += `
+                <details style="margin-top: 10px;">
+                    <summary style="cursor: pointer; color: #007bff;">View ${mode} items (${report.movies.removed_items.length})</summary>
+                    <ul style="margin-top: 10px; padding-left: 20px; max-height: 200px; overflow-y: auto;">
+            `;
+            report.movies.removed_items.forEach(item => {
+                html += `<li style="font-size: 0.9em; margin-bottom: 5px;">${escapeHtml(item)}</li>`;
+            });
+            html += `
+                    </ul>
+                </details>
+            `;
+        }
+
+        html += `</div>`;
+    }
+
+    // TV Series section
+    if (report.series) {
+        html += `
+            <div style="margin-bottom: 15px;">
+                <h5 style="color: #666; margin-bottom: 8px;">
+                    <i class="fas fa-tv"></i> TV Series
+                </h5>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding-left: 20px;">
+                    <div>Total checked: <strong>${report.series.total_checked || 0}</strong></div>
+                    <div class="badge badge-${modeClass}">${mode}: <strong>${report.series.removed || 0}</strong></div>
+                    <div>Episodes removed: <strong>${report.series.removed_episodes || 0}</strong></div>
+                    <div>Missing from database: ${report.series.missing_database || 0}</div>
+                </div>
+        `;
+
+        if (report.series.removed_items && report.series.removed_items.length > 0) {
+            html += `
+                <details style="margin-top: 10px;">
+                    <summary style="cursor: pointer; color: #007bff;">View ${mode} series (${report.series.removed_items.length})</summary>
+                    <ul style="margin-top: 10px; padding-left: 20px; max-height: 200px; overflow-y: auto;">
+            `;
+            report.series.removed_items.forEach(item => {
+                html += `<li style="font-size: 0.9em; margin-bottom: 5px;">${escapeHtml(item)}</li>`;
+            });
+            html += `
+                    </ul>
+                </details>
+            `;
+        }
+
+        html += `</div>`;
+    }
+
+    // Summary
+    const totalRemoved = (report.movies?.removed || 0) + (report.series?.removed || 0) + (report.series?.removed_episodes || 0);
+    html += `
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #dee2e6;">
+            <strong>Total ${mode}:</strong>
+            <span style="color: ${dryRun ? '#ff9800' : '#dc3545'}; font-size: 1.2em;">
+                ${totalRemoved} items
+            </span>
+        </div>
+    `;
+
+    if (dryRun) {
+        html += `
+            <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                <i class="fas fa-info-circle"></i> This was a <strong>dry run</strong>. No changes were made. Uncheck "Dry Run" to perform actual cleanup.
+            </div>
+        `;
+    }
+
+    html += `</div>`;
+
+    cleanupResults.innerHTML = html;
 }
 
 async function logout() {
