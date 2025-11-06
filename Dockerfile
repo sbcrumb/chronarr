@@ -1,5 +1,5 @@
 FROM python:3.12.12-slim
-
+#Udates for local builds
 
 # Build argument for git branch and build source
 ARG GIT_BRANCH=main
