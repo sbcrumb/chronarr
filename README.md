@@ -6,14 +6,6 @@
 
 **Comprehensive date and chronology management for Radarr and Sonarr**
 
----
-
-> **💬 Community Feedback**: Join our Discord to share feedback, test new features, or discuss improvements with other users:
->
-> **[Join Discord: https://discord.gg/ZykJRGt72b](https://discord.gg/ZykJRGt72b)**
-
----
-
 Chronarr tracks and manages "dateadded" timestamps for all your movies and TV episodes, integrating directly with Radarr and Sonarr databases. Keep accurate library chronology for sorting, organizing, and understanding when content was added to your collection.
 
 ## Why Chronarr?

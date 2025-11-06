@@ -130,7 +130,7 @@ class CreateScheduledScanRequest(BaseModel):
     description: Optional[str] = None
     cron_expression: str
     media_type: str  # 'tv', 'movies', 'both'
-    scan_mode: str   # 'smart', 'full', 'incomplete'
+    scan_mode: str   # 'smart', 'full', 'incomplete', 'populate'
     specific_paths: Optional[str] = None
     enabled: bool = True
 
@@ -181,4 +181,74 @@ class ScheduleExecutionResponse(BaseModel):
     execution_time_seconds: Optional[int]
     error_message: Optional[str]
     logs: Optional[str]
+    triggered_by: Optional[str]
+
+
+class OrphanedCleanupRequest(BaseModel):
+    """Request model for orphaned record cleanup"""
+    check_movies: bool = True
+    check_series: bool = True
+    check_filesystem: bool = True
+    check_database: bool = True
+    dry_run: bool = False
+
+
+class CreateScheduledCleanupRequest(BaseModel):
+    """Request model for creating a scheduled cleanup"""
+    name: str
+    description: Optional[str] = None
+    cron_expression: str
+    check_movies: bool = True
+    check_series: bool = True
+    check_filesystem: bool = True
+    check_database: bool = True
+    enabled: bool = True
+
+
+class UpdateScheduledCleanupRequest(BaseModel):
+    """Request model for updating a scheduled cleanup"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    cron_expression: Optional[str] = None
+    check_movies: Optional[bool] = None
+    check_series: Optional[bool] = None
+    check_filesystem: Optional[bool] = None
+    check_database: Optional[bool] = None
+    enabled: Optional[bool] = None
+
+
+class ScheduledCleanupResponse(BaseModel):
+    """Response model for scheduled cleanup data"""
+    id: int
+    name: str
+    description: Optional[str]
+    cron_expression: str
+    check_movies: bool
+    check_series: bool
+    check_filesystem: bool
+    check_database: bool
+    enabled: bool
+    created_at: str
+    updated_at: str
+    last_run_at: Optional[str]
+    next_run_at: Optional[str]
+    run_count: int
+    created_by: Optional[str]
+    updated_by: Optional[str]
+
+
+class CleanupExecutionResponse(BaseModel):
+    """Response model for cleanup execution data"""
+    id: int
+    schedule_id: Optional[int]
+    schedule_name: Optional[str]
+    started_at: str
+    completed_at: Optional[str]
+    status: str
+    movies_removed: int
+    series_removed: int
+    episodes_removed: int
+    execution_time_seconds: Optional[int]
+    error_message: Optional[str]
+    report_json: Optional[str]
     triggered_by: Optional[str]

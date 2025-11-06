@@ -228,6 +228,47 @@ class ChronarrDatabase:
                 FOREIGN KEY (schedule_id) REFERENCES scheduled_scans(id) ON DELETE CASCADE
             )
         """)
+
+        # Scheduled cleanups table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_cleanups (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                cron_expression VARCHAR(100) NOT NULL,
+                check_movies BOOLEAN DEFAULT TRUE,
+                check_series BOOLEAN DEFAULT TRUE,
+                check_filesystem BOOLEAN DEFAULT TRUE,
+                check_database BOOLEAN DEFAULT TRUE,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_run_at TIMESTAMP,
+                next_run_at TIMESTAMP,
+                run_count INTEGER DEFAULT 0,
+                created_by VARCHAR(100),
+                updated_by VARCHAR(100)
+            )
+        """)
+
+        # Cleanup execution history table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cleanup_executions (
+                id SERIAL PRIMARY KEY,
+                schedule_id INTEGER,
+                started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                status VARCHAR(50) NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+                movies_removed INTEGER DEFAULT 0,
+                series_removed INTEGER DEFAULT 0,
+                episodes_removed INTEGER DEFAULT 0,
+                execution_time_seconds INTEGER,
+                error_message TEXT,
+                report_json TEXT,
+                triggered_by VARCHAR(100),
+                FOREIGN KEY (schedule_id) REFERENCES scheduled_cleanups(id) ON DELETE SET NULL
+            )
+        """)
         
         # Create indexes for PostgreSQL
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_imdb ON episodes(imdb_id)")
@@ -242,6 +283,11 @@ class ChronarrDatabase:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule ON schedule_executions(schedule_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_executions_status ON schedule_executions(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_executions_started ON schedule_executions(started_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_cleanups_enabled ON scheduled_cleanups(enabled)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_cleanups_next_run ON scheduled_cleanups(next_run_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_executions_schedule ON cleanup_executions(schedule_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_executions_status ON cleanup_executions(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_executions_started ON cleanup_executions(started_at)")
     def upsert_series(self, imdb_id: str, path: str, metadata: Optional[Dict] = None):
         """Insert or update series record"""
         with self.get_connection() as conn:
@@ -1186,7 +1232,233 @@ class ChronarrDatabase:
             """)
             
             return cursor.fetchall()
-    
+
+    # Scheduled Cleanup Methods
+
+    def create_scheduled_cleanup(self, name: str, description: str, cron_expression: str,
+                                 check_movies: bool = True, check_series: bool = True,
+                                 check_filesystem: bool = True, check_database: bool = True,
+                                 enabled: bool = True, created_by: str = None) -> int:
+        """Create a new scheduled cleanup"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO scheduled_cleanups
+                (name, description, cron_expression, check_movies, check_series,
+                 check_filesystem, check_database, enabled, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (name, description, cron_expression, check_movies, check_series,
+                  check_filesystem, check_database, enabled, created_by))
+
+            return cursor.fetchone()['id']
+
+    def get_scheduled_cleanups(self, enabled_only: bool = False) -> List[Dict]:
+        """Get all scheduled cleanups"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            query = "SELECT * FROM scheduled_cleanups"
+            if enabled_only:
+                query += " WHERE enabled = TRUE"
+            query += " ORDER BY name"
+
+            cursor.execute(query)
+            return cursor.fetchall()
+
+    def get_scheduled_cleanup(self, cleanup_id: int) -> Optional[Dict]:
+        """Get a specific scheduled cleanup by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT * FROM scheduled_cleanups WHERE id = %s", (cleanup_id,))
+            return cursor.fetchone()
+
+    def update_scheduled_cleanup(self, cleanup_id: int, name: str = None, description: str = None,
+                                 cron_expression: str = None, check_movies: bool = None,
+                                 check_series: bool = None, check_filesystem: bool = None,
+                                 check_database: bool = None, enabled: bool = None,
+                                 updated_by: str = None) -> bool:
+        """Update a scheduled cleanup"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            updates = []
+            params = []
+
+            if name is not None:
+                updates.append("name = %s")
+                params.append(name)
+            if description is not None:
+                updates.append("description = %s")
+                params.append(description)
+            if cron_expression is not None:
+                updates.append("cron_expression = %s")
+                params.append(cron_expression)
+            if check_movies is not None:
+                updates.append("check_movies = %s")
+                params.append(check_movies)
+            if check_series is not None:
+                updates.append("check_series = %s")
+                params.append(check_series)
+            if check_filesystem is not None:
+                updates.append("check_filesystem = %s")
+                params.append(check_filesystem)
+            if check_database is not None:
+                updates.append("check_database = %s")
+                params.append(check_database)
+            if enabled is not None:
+                updates.append("enabled = %s")
+                params.append(enabled)
+            if updated_by is not None:
+                updates.append("updated_by = %s")
+                params.append(updated_by)
+
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(cleanup_id)
+
+            if not updates:
+                return False
+
+            query = f"UPDATE scheduled_cleanups SET {', '.join(updates)} WHERE id = %s"
+            cursor.execute(query, params)
+
+            return cursor.rowcount > 0
+
+    def delete_scheduled_cleanup(self, cleanup_id: int) -> bool:
+        """Delete a scheduled cleanup and its execution history"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("DELETE FROM scheduled_cleanups WHERE id = %s", (cleanup_id,))
+            return cursor.rowcount > 0
+
+    def update_cleanup_next_run(self, cleanup_id: int, next_run_at: datetime) -> bool:
+        """Update the next run time for a scheduled cleanup"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE scheduled_cleanups
+                SET next_run_at = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (next_run_at, cleanup_id))
+
+            return cursor.rowcount > 0
+
+    def update_cleanup_last_run(self, cleanup_id: int, last_run_at: datetime = None) -> bool:
+        """Update the last run time and increment run count for a scheduled cleanup"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            if last_run_at is None:
+                last_run_at = datetime.utcnow()
+
+            cursor.execute("""
+                UPDATE scheduled_cleanups
+                SET last_run_at = %s, run_count = run_count + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (last_run_at, cleanup_id))
+
+            return cursor.rowcount > 0
+
+    # Cleanup Execution Methods
+
+    def create_cleanup_execution(self, schedule_id: int = None, triggered_by: str = None) -> int:
+        """Create a new cleanup execution record"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO cleanup_executions
+                (schedule_id, status, triggered_by)
+                VALUES (%s, 'running', %s)
+                RETURNING id
+            """, (schedule_id, triggered_by))
+
+            return cursor.fetchone()['id']
+
+    def update_cleanup_execution(self, execution_id: int, status: str = None,
+                                 movies_removed: int = None, series_removed: int = None,
+                                 episodes_removed: int = None, error_message: str = None,
+                                 report_json: str = None) -> bool:
+        """Update a cleanup execution record"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            updates = []
+            params = []
+
+            if status is not None:
+                updates.append("status = %s")
+                params.append(status)
+                if status in ['completed', 'failed', 'cancelled']:
+                    updates.append("completed_at = CURRENT_TIMESTAMP")
+                    updates.append("execution_time_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))")
+
+            if movies_removed is not None:
+                updates.append("movies_removed = %s")
+                params.append(movies_removed)
+            if series_removed is not None:
+                updates.append("series_removed = %s")
+                params.append(series_removed)
+            if episodes_removed is not None:
+                updates.append("episodes_removed = %s")
+                params.append(episodes_removed)
+            if error_message is not None:
+                updates.append("error_message = %s")
+                params.append(error_message)
+            if report_json is not None:
+                updates.append("report_json = %s")
+                params.append(report_json)
+
+            if not updates:
+                return False
+
+            params.append(execution_id)
+            query = f"UPDATE cleanup_executions SET {', '.join(updates)} WHERE id = %s"
+            cursor.execute(query, params)
+
+            return cursor.rowcount > 0
+
+    def get_cleanup_executions(self, schedule_id: int = None, limit: int = 50) -> List[Dict]:
+        """Get cleanup execution history"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            query = """
+                SELECT ce.*, sc.name as schedule_name
+                FROM cleanup_executions ce
+                LEFT JOIN scheduled_cleanups sc ON ce.schedule_id = sc.id
+            """
+            params = []
+
+            if schedule_id is not None:
+                query += " WHERE ce.schedule_id = %s"
+                params.append(schedule_id)
+
+            query += " ORDER BY ce.started_at DESC LIMIT %s"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def get_running_cleanup_executions(self) -> List[Dict]:
+        """Get currently running cleanup executions"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT ce.*, sc.name as schedule_name
+                FROM cleanup_executions ce
+                LEFT JOIN scheduled_cleanups sc ON ce.schedule_id = sc.id
+                WHERE ce.status = 'running'
+                ORDER BY ce.started_at DESC
+            """)
+
+            return cursor.fetchall()
+
     def close(self):
         """Close all database connections"""
         if hasattr(self._local, 'connection'):
