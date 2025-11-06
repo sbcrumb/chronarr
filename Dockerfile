@@ -13,11 +13,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUILD_SOURCE=${BUILD_SOURCE}
 
 # Install system dependencies including PostgreSQL client libraries and tini
+# Also upgrade tar to fix CVE-2025-45582
 RUN apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     gcc \
     tini \
+    && apt-get upgrade -y tar \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user and directory
