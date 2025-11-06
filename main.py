@@ -27,6 +27,8 @@ from core.path_mapper import PathMapper
 
 # Import clients
 from clients.external_clients import ExternalClientManager
+from clients.radarr_db_client import RadarrDbClient
+from clients.sonarr_db_client import SonarrDbClient
 
 # Import processors
 from processors.tv_processor import TVProcessor
@@ -76,21 +78,48 @@ def get_version() -> str:
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application"""
+    from contextlib import asynccontextmanager
+
     version = get_version()
-    
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Manage application lifespan - startup and shutdown events"""
+        # Startup
+        try:
+            from scheduler.cleanup_scheduler import get_cleanup_scheduler
+
+            # Get dependencies from the global variable (set in main())
+            if hasattr(signal_handler, 'dependencies'):
+                cleanup_scheduler = await get_cleanup_scheduler(signal_handler.dependencies)
+                _log("INFO", "Cleanup scheduler started successfully")
+        except Exception as e:
+            _log("ERROR", f"Failed to start cleanup scheduler: {e}")
+
+        yield
+
+        # Shutdown
+        try:
+            from scheduler.cleanup_scheduler import shutdown_cleanup_scheduler
+            await shutdown_cleanup_scheduler()
+            _log("INFO", "Cleanup scheduler stopped successfully")
+        except Exception as e:
+            _log("ERROR", f"Error stopping cleanup scheduler: {e}")
+
     app = FastAPI(
         title="Chronarr",
         description="Webhook server for preserving media import dates",
-        version=version
+        version=version,
+        lifespan=lifespan
     )
-    
+
     return app
 
 
 def initialize_components():
     """Initialize all application components"""
     start_time = datetime.now(timezone.utc)
-    
+
     # Initialize core components
     db = ChronarrDatabase(config=config)
     # nfo_manager = NFOManager(config.manager_brand, config.debug)  # Phase 3: Removed
@@ -104,6 +133,24 @@ def initialize_components():
     batcher = WebhookBatcher(nfo_manager=None)
     batcher.set_processors(tv_processor, movie_processor)
 
+    # Initialize optional Radarr/Sonarr database clients for orphaned record cleanup
+    radarr_db_client = None
+    sonarr_db_client = None
+
+    try:
+        radarr_db_client = RadarrDbClient.from_env()
+        if radarr_db_client:
+            _log("INFO", "Radarr database client initialized for orphaned record cleanup")
+    except Exception as e:
+        _log("WARNING", f"Could not initialize Radarr database client: {e}")
+
+    try:
+        sonarr_db_client = SonarrDbClient.from_env()
+        if sonarr_db_client:
+            _log("INFO", "Sonarr database client initialized for orphaned record cleanup")
+    except Exception as e:
+        _log("WARNING", f"Could not initialize Sonarr database client: {e}")
+
     return {
         "db": db,
         # "nfo_manager": nfo_manager,  # Phase 3: Removed
@@ -114,7 +161,9 @@ def initialize_components():
         "start_time": start_time,
         "config": config,
         "version": get_version(),
-        "shutdown_event": shutdown_event
+        "shutdown_event": shutdown_event,
+        "radarr_db_client": radarr_db_client,
+        "sonarr_db_client": sonarr_db_client
     }
 
 
