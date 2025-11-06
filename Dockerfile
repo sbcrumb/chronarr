@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.14-slim
 #Udates for local builds
 
 # Build argument for git branch and build source
@@ -39,9 +39,14 @@ COPY start_web.py .
 RUN mkdir -p .git && \
     echo "ref: refs/heads/${GIT_BRANCH}" > .git/HEAD
 
-# Copy DLL to a dedicated directory
+# Copy DLL to a dedicated directory (if it exists)
 RUN mkdir -p /app/emby-plugin && \
-    cp /app/Emby-DLL/Chronarr.Emby.Plugin.dll /app/emby-plugin/
+    if [ -f /app/Emby-DLL/Chronarr.Emby.Plugin.dll ]; then \
+        cp /app/Emby-DLL/Chronarr.Emby.Plugin.dll /app/emby-plugin/; \
+        echo "✅ Emby plugin DLL copied successfully"; \
+    else \
+        echo "⚠️  Emby plugin DLL not found, skipping..."; \
+    fi
 
 # Copy and setup entrypoint script
 COPY entrypoint.sh /app/entrypoint.sh

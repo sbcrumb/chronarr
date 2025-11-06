@@ -5,12 +5,13 @@ Provides health and readiness endpoints for monitoring and orchestration
 import time
 import asyncio
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 from config.runtime_validator import RuntimeValidator, HealthCheckResult
 from monitoring.metrics import metrics
+from version_utils import get_version
 
 
 class HealthStatus(Enum):
@@ -46,7 +47,7 @@ class OverallHealth:
     checks: List[HealthCheck]
     timestamp: float
     uptime_seconds: float
-    version: str = "2.0.0"
+    version: str = field(default_factory=get_version)
     
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 # Import existing configuration (keep using core config for simplicity)
 from config.settings import config
 
-# Import existing database and components  
+# Import existing database and components
 from core.database import ChronarrDatabase
 
 # Import web routes from existing system (now includes DELETE route)
@@ -23,17 +23,20 @@ from api.web_routes import register_web_routes
 # Import authentication system
 from api.auth import SimpleAuthMiddleware, AuthSession
 
+# Import version utility
+from version_utils import get_version
+
 
 def create_web_app() -> FastAPI:
     """Create FastAPI web application"""
     app = FastAPI(
         title="Chronarr Web Interface",
         description="Web interface for Chronarr media database management",
-        version="2.9.0-fixes-only-files",
+        version=get_version(),
         docs_url=None,  # Disable docs in production
         redoc_url=None
     )
-    
+
     return app
 
 
@@ -94,7 +97,7 @@ def setup_static_files(app: FastAPI) -> None:
                 "status": "healthy",
                 "service": "chronarr-web",
                 "timestamp": time.time(),
-                "version": "2.9.0-fixes-only-files"
+                "version": get_version()
             }
         except Exception as e:
             from fastapi import HTTPException

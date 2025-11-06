@@ -32,9 +32,14 @@ fi
 # Copy .env.example to .env if it doesn't exist
 if [ ! -f "${ENV_FILE}" ]; then
     echo "📝 .env not found, creating from .env.example..."
-    cp /app/.env.example "${ENV_FILE}"
-    echo "✅ Created ${ENV_FILE}"
-    echo "⚠️  Please edit ${ENV_FILE} to configure your setup"
+    if [ -f /app/.env.example ]; then
+        cp /app/.env.example "${ENV_FILE}"
+        echo "✅ Created ${ENV_FILE}"
+        echo "⚠️  Please edit ${ENV_FILE} to configure your setup"
+    else
+        echo "❌ ERROR: /app/.env.example not found, cannot create ${ENV_FILE}"
+        echo "   You must manually create ${ENV_FILE}"
+    fi
 else
     echo "✅ Found existing ${ENV_FILE}"
 fi
@@ -42,9 +47,14 @@ fi
 # Copy .env.secrets.example to .env.secrets if it doesn't exist
 if [ ! -f "${SECRETS_FILE}" ]; then
     echo "📝 .env.secrets not found, creating from .env.secrets.example..."
-    cp /app/.env.secrets.example "${SECRETS_FILE}"
-    echo "✅ Created ${SECRETS_FILE}"
-    echo "⚠️  Please edit ${SECRETS_FILE} to add your API keys and passwords"
+    if [ -f /app/.env.secrets.example ]; then
+        cp /app/.env.secrets.example "${SECRETS_FILE}"
+        echo "✅ Created ${SECRETS_FILE}"
+        echo "⚠️  Please edit ${SECRETS_FILE} to add your API keys and passwords"
+    else
+        echo "❌ ERROR: /app/.env.secrets.example not found, cannot create ${SECRETS_FILE}"
+        echo "   You must manually create ${SECRETS_FILE}"
+    fi
 else
     echo "✅ Found existing ${SECRETS_FILE}"
 fi
@@ -60,12 +70,22 @@ fi
 # ========================================
 if [ -d "/emby-plugins" ]; then
     echo "🎬 Deploying Chronarr Emby Plugin to mounted directory: /emby-plugins"
-    cp /app/emby-plugin/Chronarr.Emby.Plugin.dll /emby-plugins/
-    echo "✅ Plugin deployed successfully!"
+    if [ -f /app/emby-plugin/Chronarr.Emby.Plugin.dll ]; then
+        cp /app/emby-plugin/Chronarr.Emby.Plugin.dll /emby-plugins/
+        echo "✅ Plugin deployed successfully!"
+    else
+        echo "⚠️  Emby plugin DLL not found at /app/emby-plugin/Chronarr.Emby.Plugin.dll"
+        echo "   Skipping plugin deployment"
+    fi
 elif [ -n "$EMBY_PLUGINS_PATH" ] && [ -d "$EMBY_PLUGINS_PATH" ]; then
     echo "🎬 Deploying Chronarr Emby Plugin to: $EMBY_PLUGINS_PATH"
-    cp /app/emby-plugin/Chronarr.Emby.Plugin.dll "$EMBY_PLUGINS_PATH/"
-    echo "✅ Plugin deployed successfully!"
+    if [ -f /app/emby-plugin/Chronarr.Emby.Plugin.dll ]; then
+        cp /app/emby-plugin/Chronarr.Emby.Plugin.dll "$EMBY_PLUGINS_PATH/"
+        echo "✅ Plugin deployed successfully!"
+    else
+        echo "⚠️  Emby plugin DLL not found at /app/emby-plugin/Chronarr.Emby.Plugin.dll"
+        echo "   Skipping plugin deployment"
+    fi
 else
     echo "ℹ️  No Emby plugins directory found - skipping plugin deployment"
     echo "   To enable plugin deployment, bind mount your Emby plugins directory to /emby-plugins"

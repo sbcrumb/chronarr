@@ -3642,16 +3642,18 @@ def register_routes(app, dependencies: dict):
         """Core container API information - Web interface on separate container"""
         import os
         # Get configured web port from environment or config
-        web_port = os.environ.get("WEB_EXTERNAL_PORT", 
+        web_port = os.environ.get("WEB_EXTERNAL_PORT",
                   getattr(dependencies.get("config", None), "web_api_port", "8081"))
-        
+        # Get version from dependencies
+        version = dependencies.get("version", "unknown")
+
         return {
             "service": "Chronarr Core Processing Engine",
-            "version": "2.7.0",
+            "version": version,
             "message": f"Web interface available on separate container (port {web_port})",
             "api_endpoints": {
                 "health": "/health",
-                "webhooks": "/webhook/*", 
+                "webhooks": "/webhook/*",
                 "manual_scans": "/manual/*",
                 "database": "/database/*",
                 "api_docs": "/docs"
