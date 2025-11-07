@@ -143,10 +143,11 @@ SONARR_DB_PASSWORD=sonarr_password  # Add to .env.secrets
 # SONARR_DB_PATH=/path/to/sonarr.db
 ```
 
-### 3. Update Media Paths
+### 3. Update Media Paths and Database Access
 
-Edit your `docker-compose.yml` to point to your media:
+Edit your `docker-compose.yml` to configure paths:
 
+**Media Paths:**
 ```yaml
 chronarr:
   volumes:
@@ -154,6 +155,36 @@ chronarr:
     - /your/movies:/media/Movies:ro  # ← Change this
     - /your/tv:/media/TV:ro          # ← Change this
 ```
+
+**SQLite Database Access (Required for SQLite-based Radarr/Sonarr):**
+
+If your Radarr or Sonarr uses SQLite (not PostgreSQL), you MUST mount the database directory:
+
+```yaml
+chronarr:
+  volumes:
+    # ... other volumes ...
+    # Radarr SQLite database (read-only)
+    - /path/to/radarr/config:/radarr-config:ro
+    # Sonarr SQLite database (read-only)
+    - /path/to/sonarr/config:/sonarr-config:ro
+```
+
+Then update `./config/.env`:
+```bash
+# For Radarr SQLite
+RADARR_DB_TYPE=sqlite
+RADARR_DB_PATH=/radarr-config/radarr.db
+
+# For Sonarr SQLite
+SONARR_DB_TYPE=sqlite
+SONARR_DB_PATH=/sonarr-config/sonarr.db
+```
+
+**Common SQLite Database Locations:**
+- **Docker containers**: Mount the config volume (e.g., `/path/to/radarr/config`)
+- **Windows**: `C:\ProgramData\Radarr` or `C:\ProgramData\Sonarr`
+- **Linux**: `/home/user/.config/Radarr` or `/var/lib/radarr`
 
 ### 4. Restart and Populate
 
@@ -247,6 +278,8 @@ RADARR_DB_PASSWORD=radarr_pass       # Radarr database password (.env.secrets)
 # SQLite alternative
 # RADARR_DB_TYPE=sqlite
 # RADARR_DB_PATH=/path/to/radarr.db
+# IMPORTANT: Docker users must mount the SQLite database directory!
+# See docker-compose.yml.example for volume mount configuration
 ```
 
 **Sonarr Integration:**
@@ -264,7 +297,13 @@ SONARR_DB_PASSWORD=sonarr_pass       # Sonarr database password (.env.secrets)
 # SQLite alternative
 # SONARR_DB_TYPE=sqlite
 # SONARR_DB_PATH=/path/to/sonarr.db
+# IMPORTANT: Docker users must mount the SQLite database directory!
+# See docker-compose.yml.example for volume mount configuration
 ```
+
+**SQLite Docker Configuration:**
+
+When using SQLite databases with Docker, you must mount the database directories as read-only volumes. See the Quick Start guide (step 3) or check `docker-compose.yml.example` for detailed examples.
 
 ## Web Interface
 
@@ -414,7 +453,7 @@ A: The movie will remain in Chronarr's database. You can manually delete it from
 A: **Radarr requires direct database access** (PostgreSQL or SQLite) - the Radarr API doesn't expose all the import history data needed for accurate date tracking. **Sonarr can work with API-only access**, though direct database access provides better performance.
 
 **Q: Does this work with SQLite Radarr/Sonarr databases?**
-A: Yes, Chronarr can read from both SQLite and PostgreSQL databases for both Radarr and Sonarr.
+A: Yes, Chronarr can read from both SQLite and PostgreSQL databases for both Radarr and Sonarr. **Important for Docker users**: You must mount the directory containing the SQLite database file(s) as a read-only volume in your `docker-compose.yml`. See the Quick Start guide for configuration details.
 
 ## Contributing
 
@@ -429,16 +468,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Support
 
-- **Discord**: [https://discord.gg/ZykJRGt72b](https://discord.gg/ZykJRGt72b)
 - **GitHub Issues**: [https://github.com/sbcrumb/chronarr/issues](https://github.com/sbcrumb/chronarr/issues)
 
 ## Changelog
 
-### v1.0.0 (2025-11-05)
+### v2.0.0 (2025-11-05)
 - 🎉 **Initial release** - Comprehensive date and chronology management for Radarr and Sonarr
 - 🎯 **Smart date tracking** - Multiple sources with intelligent fallback hierarchy
 - 🗄️ **Database-first** - PostgreSQL backend with full ACID compliance
-- 🌐 **Modern web interface** - Complete movie and TV show management
+- 🌐 **Web interface** - Complete movie and TV show management
 - 🔗 **Radarr/Sonarr integration** - API and direct database access support (PostgreSQL and SQLite)
 - 📊 **Dashboard** - Real-time statistics and monitoring
 - 🔧 **IMDb ID migration** - Update placeholder IDs for manual entries
@@ -446,7 +484,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - ⚡ **Performance** - Async operations and connection pooling
 - 🐳 **Docker** - 3-container architecture with health checks
 - ✨ **Auto-configuration** - Config files auto-generated from embedded examples on first run
-
----
-
-Made with ❤️ for the *arr community
