@@ -45,6 +45,12 @@ Chronarr tracks and manages "dateadded" timestamps for all your movies and TV ep
 - **Bulk Import** - One-click population of entire Radarr/Sonarr libraries
 - **Path Mapping** - Intelligent path translation for Docker/remote setups
 
+### **Jellyfin Plugin**
+- **Third-Party Plugin** - Install via custom repository URL
+- **Automatic Date Sync** - Syncs accurate import dates from Chronarr to Jellyfin
+- **Real-time Updates** - Monitors library scans and updates dates on the fly
+- **Easy Installation** - Add repository URL and install from Jellyfin dashboard
+
 ### **Production Ready**
 - **Docker Compose** - 3-container architecture (core, web, database)
 - **Auto-Configuration** - Config files auto-generated from embedded examples on first run
@@ -57,6 +63,7 @@ Chronarr tracks and manages "dateadded" timestamps for all your movies and TV ep
 
 - **Library Organization** - Sort and filter media by actual acquisition date, not modified time
 - **Collection Management** - Track when items were added vs when they were released
+- **Jellyfin Integration** - Sync accurate import dates to Jellyfin via the official plugin
 - **Migration Safety** - Preserve dateadded timestamps across Radarr/Sonarr database migrations
 - **Manual Additions** - Assign proper dates to manually-added content
 - **Upgrade Tracking** - Maintain original import dates even after quality upgrades
@@ -219,12 +226,13 @@ Chronarr uses a 3-container Docker Compose architecture:
 │  - API routes   │     │  - Processing    │     │  - Episode dates │
 │  - Dashboard    │     │  - Database ops  │     │  - History       │
 └─────────────────┘     └──────────────────┘     └──────────────────┘
-         │                       │
-         │                       │
-         ▼                       ▼
-    ┌─────────────────────────────────────┐
-    │   Radarr/Sonarr Databases & APIs    │
-    └─────────────────────────────────────┘
+         │                       │                         │
+         │                       │                         │
+         ▼                       ▼                         ▼
+    ┌─────────────────────────────────────┐     ┌──────────────────┐
+    │   Radarr/Sonarr Databases & APIs    │     │  Jellyfin Server │
+    └─────────────────────────────────────┘     │  + Plugin        │
+                                                 └──────────────────┘
 ```
 
 **Benefits:**
@@ -373,6 +381,42 @@ When using SQLite databases with Docker, you must mount the database directories
    - **URL**: `http://chronarr-core:8080/webhook/sonarr`
    - **Triggers**: On Import, On Upgrade, On Rename, On Episode File Delete
    - **Tags**: (optional, leave blank for all series)
+
+## Jellyfin Integration
+
+Chronarr includes a Jellyfin plugin that automatically syncs episode and movie dates to Jellyfin, ensuring your media library displays the correct import dates from Chronarr instead of scan dates.
+
+### Features
+- **Automatic Date Sync** - Syncs PremiereDate to DateCreated for TV episodes and movies
+- **Real-time Updates** - Monitors Jellyfin library scans and updates dates on the fly
+- **Scheduled Tasks** - Optional scheduled task for periodic synchronization
+- **Chronarr Integration** - Pulls accurate import dates from Chronarr's database
+
+### Installation
+
+1. **Add the Chronarr Plugin Repository** to Jellyfin:
+   - Navigate to **Dashboard → Plugins → Repositories**
+   - Click the **+** button to add a new repository
+   - Enter the repository URL:
+     ```
+     https://raw.githubusercontent.com/sbcrumb/chronarr-jellyfin-plugin/main/manifest.json
+     ```
+
+2. **Install the Plugin**:
+   - Go to **Plugins → Catalog**
+   - Find and install **Chronarr**
+   - Restart Jellyfin
+
+3. **Configure the Plugin**:
+   - Go to **Dashboard → Plugins → Chronarr**
+   - Enter your Chronarr API URL (e.g., `http://chronarr-core:8080`)
+   - Save settings
+
+### Requirements
+- Jellyfin 10.8.0 or higher
+- Chronarr webhook service running
+
+For more information, visit the [Chronarr Jellyfin Plugin Repository](https://github.com/sbcrumb/chronarr-jellyfin-plugin).
 
 ## Troubleshooting
 
