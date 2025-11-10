@@ -403,9 +403,9 @@ class MovieProcessor:
             _log("DEBUG", f"Using existing data without querying: dateadded={existing.get('dateadded')}, source={existing.get('source')}")
             return existing["dateadded"], existing["source"], existing.get("released")
         
-        # Query Radarr for movie info
+        # Query Radarr for movie info (database or API client)
         radarr_movie = None
-        if should_query and self.radarr.api_key:
+        if should_query and self.radarr:
             radarr_movie = self.radarr.movie_by_imdb(imdb_id)
         
         released = None

@@ -124,21 +124,22 @@ class RadarrDbClient:
     def get_movie_by_imdb(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """
         Find movie by IMDb ID using database query
-        
+
         Returns:
             Dictionary with movie info including id, imdbId, title, year, path
         """
         imdb_id = imdb_id if imdb_id.startswith("tt") else f"tt{imdb_id}"
         
         query = """
-        SELECT 
+        SELECT
             m."Id" as id,
             m."Path" as path,
             m."Added" as added,
             mm."ImdbId" as imdb_id,
             mm."Title" as title,
             mm."Year" as year,
-            mm."DigitalRelease" as digital_release
+            mm."DigitalRelease" as digital_release,
+            mm."InCinemas" as "inCinemas"
         FROM "Movies" m
         JOIN "MovieMetadata" mm ON m."MovieMetadataId" = mm."Id"
         WHERE mm."ImdbId" = %s
@@ -164,6 +165,15 @@ class RadarrDbClient:
             _log("ERROR", f"Database query error for IMDb {imdb_id}: {e}")
             
         return None
+
+    def movie_by_imdb(self, imdb_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Alias for get_movie_by_imdb() to match RadarrClient interface
+
+        Returns:
+            Dictionary with movie info including id, imdbId, title, year, path
+        """
+        return self.get_movie_by_imdb(imdb_id)
 
     def get_all_movies(self) -> List[Dict[str, Any]]:
         """

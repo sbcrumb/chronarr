@@ -401,9 +401,9 @@ class DatabasePopulator:
                     # Process each episode
                     for episode in episodes:
                         try:
-                            # Database client returns snake_case (season, episode), API returns camelCase (seasonNumber, episodeNumber)
-                            season_num = episode.get('season') or episode.get('seasonNumber', 0)
-                            episode_num = episode.get('episode') or episode.get('episodeNumber', 0)
+                            # Both database and API return camelCase (seasonNumber, episodeNumber)
+                            season_num = episode.get('seasonNumber', 0)
+                            episode_num = episode.get('episodeNumber', 0)
                             episode_title = episode.get('title', 'Unknown')
 
                             if season_num < 0 or episode_num <= 0:
@@ -436,15 +436,16 @@ class DatabasePopulator:
                                 continue
 
                             # Only process episodes that have video files
-                            # Database returns episode_file_id, API returns hasFile
-                            has_file = episode.get('hasFile', False) or (episode.get('episode_file_id') is not None and episode.get('episode_file_id') > 0)
+                            # Database returns episodeFileId and hasFile (computed field)
+                            has_file = episode.get('hasFile', False)
+
                             if not has_file:
                                 # No video file - skip silently (intentionally filtered)
                                 continue
 
                             # Get air date
-                            # Database returns air_date (snake_case), API returns airDate (camelCase)
-                            aired = episode.get('air_date') or episode.get('airDate')
+                            # Both database and API return airDate (camelCase)
+                            aired = episode.get('airDate')
 
                             # Get import date
                             dateadded = None
@@ -466,7 +467,18 @@ class DatabasePopulator:
                             if not dateadded and aired:
                                 dateadded = aired
                                 source = 'sonarr:aired_fallback'
-                            elif not dateadded:
+
+                            # Last resort: try episode file dateAdded
+                            if not dateadded:
+                                episode_id = episode.get('id')
+                                if episode_id and self.using_sonarr_db and self.sonarr_db:
+                                    file_date = self.sonarr_db.get_episode_file_date(series_id, season_num, episode_num)
+                                    if file_date:
+                                        dateadded = file_date
+                                        source = 'sonarr:db.file.dateAdded'
+                                        _log("INFO", f"Using file date for {series_title} S{season_num:02d}E{episode_num:02d}: {file_date}")
+
+                            if not dateadded:
                                 # No date available
                                 skip_reason = 'No import date from Sonarr history and no air date available'
                                 skip_info = {
