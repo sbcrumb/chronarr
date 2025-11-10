@@ -1,0 +1,41 @@
+name: Cleanup Feature Branch Images
+
+on:
+  delete:
+    branches:
+      - 'feature/**'
+      - 'feat/**'
+      - 'fix/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Extract branch name
+        id: extract_branch
+        run: |
+          # Get deleted branch name from event
+          BRANCH_NAME="${{ github.event.ref }}"
+          # Sanitize for Docker tag
+          SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "Cleaning up image for deleted branch: $BRANCH_NAME (tag: $SAFE_BRANCH)"
+
+      - name: Delete image from GitHub Container Registry
+        run: |
+          # Note: This requires manual cleanup or GitHub CLI
+          echo "⚠️  Manual cleanup required for feature branch images"
+          echo "Image tag to delete: ${{ steps.extract_branch.outputs.branch }}"
+          echo ""
+          echo "To manually delete, go to:"
+          echo "https://github.com/orgs/${{ github.repository_owner }}/packages"
+          echo ""
+          echo "Or use GitHub CLI:"
+          echo "gh api -X DELETE /user/packages/container/${{ github.repository }}/versions/TAG_VERSION_ID"

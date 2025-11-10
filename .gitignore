@@ -65,10 +65,9 @@ CODE_STRUCTURE.local
 sync-to-github.sh
 
 # Ignore GitHub workflows when pushing to Gitea
-.github/
 
 # Ignore Gitea workflows when pushing to GitHub
-#.gitea/
+.gitea/
 
 # Local development documentation (Gitea only, not for GitHub)
 .local/
