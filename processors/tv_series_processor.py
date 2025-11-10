@@ -251,13 +251,13 @@ class TVSeriesProcessor:
                     # Find target episode
                     target_episode = None
                     for ep in episodes:
-                        if ep['season'] == season_num and ep['episode'] == episode_num:
+                        if ep['seasonNumber'] == season_num and ep['episodeNumber'] == episode_num:
                             target_episode = ep
                             break
 
                     if target_episode:
                         # Get air date
-                        aired = target_episode.get('air_date')
+                        aired = target_episode.get('airDate')
 
                         # Try to get import date from history
                         episode_id = target_episode['id']

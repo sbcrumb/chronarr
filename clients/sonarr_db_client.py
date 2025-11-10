@@ -214,11 +214,12 @@ class SonarrDbClient:
         query = """
         SELECT
             "Id" as id,
-            "SeasonNumber" as season,
-            "EpisodeNumber" as episode,
+            "SeasonNumber" as "seasonNumber",
+            "EpisodeNumber" as "episodeNumber",
             "Title" as title,
-            "AirDate" as air_date,
-            "EpisodeFileId" as episode_file_id
+            "AirDate" as "airDate",
+            "EpisodeFileId" as "episodeFileId",
+            CASE WHEN "EpisodeFileId" IS NOT NULL AND "EpisodeFileId" > 0 THEN true ELSE false END as "hasFile"
         FROM "Episodes"
         WHERE "SeriesId" = %s
         ORDER BY "SeasonNumber", "EpisodeNumber"

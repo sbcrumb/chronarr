@@ -796,14 +796,14 @@ class ChronarrDatabase:
     def update_episode_file_info(self, imdb_id: str, season: int, episode: int,
                                   path: str, has_video_file: bool = True) -> bool:
         """
-        Update path and video file status for an existing episode
+        Update video file status for an existing episode
         Used when population finds a video file for a manually-added episode
 
         Args:
             imdb_id: Series IMDb ID
             season: Season number
             episode: Episode number
-            path: File path to the video file
+            path: File path (ignored - kept for backward compatibility)
             has_video_file: Whether a video file exists (default True)
 
         Returns:
@@ -814,11 +814,10 @@ class ChronarrDatabase:
 
             cursor.execute("""
                 UPDATE episodes
-                SET path = %s,
-                    has_video_file = %s,
+                SET has_video_file = %s,
                     last_updated = %s
                 WHERE imdb_id = %s AND season = %s AND episode = %s
-            """, (path, has_video_file, datetime.utcnow(), imdb_id, season, episode))
+            """, (has_video_file, datetime.utcnow(), imdb_id, season, episode))
 
             updated_count = cursor.rowcount
             conn.commit()
