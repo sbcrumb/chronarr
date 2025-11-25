@@ -4,6 +4,8 @@
 [![Docker Image Version](https://img.shields.io/docker/v/sbcrumb/chronarr?sort=semver)](https://hub.docker.com/r/sbcrumb/chronarr)
 [![Docker Image Size](https://img.shields.io/docker/image-size/sbcrumb/chronarr/latest)](https://hub.docker.com/r/sbcrumb/chronarr)
 
+**[Join our Discord community](https://discord.gg/XcMQY9k2jK)** for support, updates, and discussion.
+
 **Comprehensive date and chronology management for Radarr and Sonarr**
 
 Chronarr tracks and manages "dateadded" timestamps for all your movies and TV episodes, integrating directly with Radarr and Sonarr databases. Keep accurate library chronology for sorting, organizing, and understanding when content was added to your collection.
