@@ -320,14 +320,12 @@ body {
 }
 
 .chart-container {
-    height: 200px;
+    min-height: 180px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--surface-2);
-    border-radius: 0.375rem;
+    padding: 0.5rem 0;
     color: var(--text-muted);
-    border: 1px solid var(--border);
 }
 
 /* ── Content header ──────────────────────────────────────── */
