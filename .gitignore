@@ -1,3 +1,6 @@
+# Local project tracking (not for repo)
+project.md
+
 # Environment files with sensitive data
 .env
 .env.secrets
