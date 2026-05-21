@@ -186,6 +186,8 @@ class ChronarrConfig:
         self.web_auth_password = os.environ.get("WEB_AUTH_PASSWORD", "")
         self.web_auth_session_timeout = self._get_int_env("WEB_AUTH_SESSION_TIMEOUT", 3600, 300, 86400)  # 1 hour default, 5min-24h range
         self.web_auth_secure_cookie = _bool_env("WEB_AUTH_SECURE_COOKIE", False)  # Set True when serving over HTTPS
+        self.radarr_webhook_secret = os.environ.get("RADARR_WEBHOOK_SECRET", "")
+        self.sonarr_webhook_secret = os.environ.get("SONARR_WEBHOOK_SECRET", "")
     
     def _get_int_env(self, name: str, default: int, min_val: int, max_val: int) -> int:
         """Get integer environment variable with validation"""

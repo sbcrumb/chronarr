@@ -2,6 +2,8 @@
 FastAPI routes for Chronarr - extracted from main chronarr.py for modular architecture
 """
 import os
+import hmac
+import hashlib
 import json
 import requests
 import asyncio
@@ -58,6 +60,22 @@ async def _read_payload(request: Request) -> dict:
 
 
 # ---------------------------
+# Webhook signature verification
+# ---------------------------
+
+async def _verify_webhook_signature(request: Request, body: bytes, secret: str, header_name: str) -> None:
+    """Verify HMAC-SHA256 webhook signature. Raises 403 if invalid, skips if no secret configured."""
+    if not secret:
+        return
+    sig_header = request.headers.get(header_name, "")
+    if not sig_header:
+        raise HTTPException(status_code=403, detail="Missing webhook signature")
+    expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig_header):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+
+# ---------------------------
 # Route Handlers
 # ---------------------------
 
@@ -66,8 +84,10 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
     tv_processor = dependencies["tv_processor"]
     batcher = dependencies["batcher"]
     config = dependencies["config"]
-    
+
     try:
+        body = await request.body()
+        await _verify_webhook_signature(request, body, config.sonarr_webhook_secret, "X-Sonarr-Signature")
         payload = await _read_payload(request)
         if not payload:
             raise HTTPException(status_code=422, detail="Empty Sonarr payload")
@@ -104,9 +124,9 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         
         # For all webhook events, if no episodes in webhook.episodes, try to extract from episodeFile
         # This ensures targeted processing for single episode operations (Download, Rename, Upgrade)
-        print(f"DEBUG: webhook.episodeFile present: {webhook.episodeFile is not None}")
+        _log("DEBUG", f"webhook.episodeFile present: {webhook.episodeFile is not None}")
         if webhook.episodeFile:
-            print(f"DEBUG: episodeFile content: {webhook.episodeFile}")
+            _log("DEBUG", f"episodeFile content: {webhook.episodeFile}")
         
         if not episodes_data and webhook.episodeFile:
             episode_file = webhook.episodeFile
@@ -120,17 +140,17 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                 
                 # Try relativePath first, then path
                 file_path = episode_file.get("relativePath") or episode_file.get("path", "")
-                print(f"DEBUG: Parsing episode info from path: {file_path}")
+                _log("DEBUG", f"Parsing episode info from path: {file_path}")
                 
                 episode_info = extract_episode_info_from_filename(file_path)
                 if episode_info:
                     season_num = episode_info["season"]
                     episode_num = episode_info["episode"]
-                    print(f"DEBUG: Extracted from filename - Season: {season_num}, Episode: {episode_num}")
+                    _log("DEBUG", f"Extracted from filename - Season: {season_num}, Episode: {episode_num}")
                 else:
-                    print(f"DEBUG: Could not extract season/episode from filename: {file_path}")
+                    _log("DEBUG", f"Could not extract season/episode from filename: {file_path}")
             
-            print(f"DEBUG: episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
+            _log("DEBUG", f"episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
             if season_num and episode_num:
                 # Create episode data structure that matches what process_webhook_episodes expects
                 episodes_data = [{
@@ -142,35 +162,35 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                 }]
                 _log("INFO", f"Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
             else:
-                print(f"DEBUG: Missing season/episode numbers in episodeFile for {webhook.eventType}")
+                _log("DEBUG", f"Missing season/episode numbers in episodeFile for {webhook.eventType}")
         
         # Special handling for Rename events - Sonarr doesn't include episodeFile for renames
         # Try to find recently renamed episodes using Sonarr history API
         if not episodes_data and webhook.eventType == "Rename":
-            print(f"DEBUG: Attempting to find recently renamed episode for series {imdb_id}")
+            _log("DEBUG", f"Attempting to find recently renamed episode for series {imdb_id}")
             try:
                 # Get series info from Sonarr to find series ID
                 series_lookup_url = f"{config.sonarr_url}/api/v3/series/lookup?term=imdbid:{imdb_id}"
-                print(f"DEBUG: Sonarr lookup for rename: {series_lookup_url}")
+                _log("DEBUG", f"Sonarr lookup for rename: {series_lookup_url}")
                 
                 response = requests.get(series_lookup_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                 if response.status_code == 200:
                     series_results = response.json()
                     if series_results:
                         series_id = series_results[0].get("id")
-                        print(f"DEBUG: Found series ID {series_id} for rename lookup")
+                        _log("DEBUG", f"Found series ID {series_id} for rename lookup")
                         
                         # Get recent history for the series and filter for rename events
                         from datetime import datetime, timedelta
                         since_date = (datetime.utcnow() - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
                         history_url = f"{config.sonarr_url}/api/v3/history?seriesId={series_id}&sortKey=date&sortDir=desc&page=1&pageSize=50"
-                        print(f"DEBUG: Checking recent rename history: {history_url}")
+                        _log("DEBUG", f"Checking recent rename history: {history_url}")
                         
                         history_response = requests.get(history_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                         if history_response.status_code == 200:
                             history_data = history_response.json()
                             all_records = history_data.get("records", [])
-                            print(f"DEBUG: Got {len(all_records)} total history records")
+                            _log("DEBUG", f"Got {len(all_records)} total history records")
                             
                             # Filter for recent rename events
                             since_timestamp = datetime.utcnow() - timedelta(hours=1)
@@ -190,16 +210,16 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         # If datetime parsing fails, include it anyway
                                         recent_renames.append(record)
                             
-                            print(f"DEBUG: Found {len(recent_renames)} recent rename events")
+                            _log("DEBUG", f"Found {len(recent_renames)} recent rename events")
                             
                             if recent_renames:
                                 # Take the most recent rename event
                                 latest_rename = recent_renames[0]
-                                print(f"DEBUG: Processing latest rename event")
+                                _log("DEBUG", f"Processing latest rename event")
                                 
                                 # Extract episodeId directly from the rename event
                                 episode_id = latest_rename.get("episodeId")
-                                print(f"DEBUG: Found episodeId {episode_id} in rename event")
+                                _log("DEBUG", f"Found episodeId {episode_id} in rename event")
                                 
                                 if episode_id:
                                     # Fetch episode details using the episodeId
@@ -212,7 +232,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         episode_num = episode_detail.get("episodeNumber")
                                         episode_title = episode_detail.get("title")
                                         
-                                        print(f"DEBUG: Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
+                                        _log("DEBUG", f"Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
                                         
                                         if season_num is not None and episode_num is not None:
                                             episodes_data = [{
@@ -223,21 +243,21 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                             }]
                                             print(f"INFO: Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
                                         else:
-                                            print(f"DEBUG: Episode details missing season/episode numbers")
+                                            _log("DEBUG", f"Episode details missing season/episode numbers")
                                     else:
-                                        print(f"DEBUG: Failed to fetch episode details: {episode_response.status_code}")
+                                        _log("DEBUG", f"Failed to fetch episode details: {episode_response.status_code}")
                                 else:
-                                    print(f"DEBUG: No episodeId found in rename event")
+                                    _log("DEBUG", f"No episodeId found in rename event")
                             else:
-                                print(f"DEBUG: No recent rename events found in last hour")
+                                _log("DEBUG", f"No recent rename events found in last hour")
                         else:
-                            print(f"DEBUG: Failed to get rename history: {history_response.status_code}")
+                            _log("DEBUG", f"Failed to get rename history: {history_response.status_code}")
                     else:
-                        print(f"DEBUG: No series found for IMDb {imdb_id}")
+                        _log("DEBUG", f"No series found for IMDb {imdb_id}")
                 else:
-                    print(f"DEBUG: Series lookup failed: {response.status_code}")
+                    _log("DEBUG", f"Series lookup failed: {response.status_code}")
             except Exception as e:
-                print(f"DEBUG: Error finding renamed episode: {e}")
+                _log("DEBUG", f"Error finding renamed episode: {e}")
                 # Continue with series processing as fallback
         
         # Force targeted mode for single-episode webhooks to prevent full series processing
@@ -268,8 +288,11 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
     """Handle Radarr webhooks"""
     path_mapper = dependencies["path_mapper"]
     batcher = dependencies["batcher"]
-    
+    config = dependencies["config"]
+
     try:
+        body = await request.body()
+        await _verify_webhook_signature(request, body, config.radarr_webhook_secret, "X-Radarr-Signature")
         payload = await _read_payload(request)
         _log("INFO", f"Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
         _log("DEBUG", f"Full Radarr webhook payload: {payload}")
@@ -545,7 +568,7 @@ async def health(dependencies: dict) -> HealthResponse:
                     overall_status = "degraded"
     except Exception as e:
         # If movie processor isn't available, skip database health check
-        print(f"DEBUG: Skipping Radarr database health check: {e}")
+        _log("DEBUG", f"Skipping Radarr database health check: {e}")
     
     return HealthResponse(
         status=overall_status,
@@ -579,7 +602,7 @@ async def debug_movie_import_date(imdb_id: str, dependencies: dict):
         if not imdb_id.startswith("tt"):
             imdb_id = f"tt{imdb_id}"
             
-        print(f"INFO: === DEBUG MOVIE IMPORT DATE: {imdb_id} ===")
+        _log("DEBUG", f"=== MOVIE IMPORT DATE: {imdb_id} ===")
         
         if not (os.environ.get("RADARR_URL") and os.environ.get("RADARR_API_KEY")):
             return {
@@ -795,12 +818,12 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
             # Handle the common Docker volume mount: /mnt/unionfs/Media/ -> /media/
             if path_str.startswith('/mnt/unionfs/Media/'):
                 container_path = path_str.replace('/mnt/unionfs/Media/', '/media/')
-                print(f"DEBUG: Translated host path '{path_str}' to container path '{container_path}'")
+                _log("DEBUG", f"Translated host path '{path_str}' to container path '{container_path}'")
                 return container_path
             # Handle case where user enters /Media/ instead of /media/ (case sensitivity)
             elif path_str.startswith('/Media/'):
                 container_path = path_str.replace('/Media/', '/media/')
-                print(f"DEBUG: Fixed case sensitivity '{path_str}' to container path '{container_path}'")
+                _log("DEBUG", f"Fixed case sensitivity '{path_str}' to container path '{container_path}'")
                 return container_path
             return path_str
         
@@ -809,7 +832,7 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
             # Translate the provided path from host format to container format
             translated_path = translate_host_path_to_container(path)
             paths_to_scan = [Path(translated_path)]
-            print(f"DEBUG: Manual scan with specific path: {path} -> {translated_path}")
+            _log("DEBUG", f"Manual scan with specific path: {path} -> {translated_path}")
         else:
             if scan_type in ["both", "tv"]:
                 paths_to_scan.extend(config.tv_paths)
@@ -817,17 +840,17 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                 paths_to_scan.extend(config.movie_paths)
         
         for scan_path in paths_to_scan:
-            print(f"DEBUG: Checking scan_path: {scan_path}, exists: {scan_path.exists()}")
+            _log("DEBUG", f"Checking scan_path: {scan_path}, exists: {scan_path.exists()}")
             if not scan_path.exists():
-                print(f"DEBUG: Path does not exist, skipping: {scan_path}")
+                _log("DEBUG", f"Path does not exist, skipping: {scan_path}")
                 continue
                 
-            print(f"DEBUG: scan_type={scan_type}, path={path}, scan_path in tv_paths: {scan_path in config.tv_paths}")
+            _log("DEBUG", f"scan_type={scan_type}, path={path}, scan_path in tv_paths: {scan_path in config.tv_paths}")
             if scan_type in ["both", "tv"] and (scan_path in config.tv_paths or path):
                 # Handle specific season/episode path
-                print(f"DEBUG: Entered TV processing branch")
+                _log("DEBUG", f"Entered TV processing branch")
                 if path and scan_path.name.lower().startswith('season'):
-                    print(f"DEBUG: Taking season processing path")
+                    _log("DEBUG", f"Taking season processing path")
                     # Single season processing
                     series_path = scan_path.parent
                     tv_processor_obj = dependencies.get("tv_processor")
@@ -840,7 +863,7 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                         except Exception as e:
                             print(f"ERROR: Failed processing season {scan_path}: {e}")
                 elif path and scan_path.is_file() and scan_path.suffix.lower() in ('.mkv', '.mp4', '.avi'):
-                    print(f"DEBUG: Taking single episode processing path")
+                    _log("DEBUG", f"Taking single episode processing path")
                     # Single episode processing
                     season_path = scan_path.parent
                     series_path = season_path.parent
@@ -854,18 +877,18 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                         except Exception as e:
                             print(f"ERROR: Failed processing episode {scan_path}: {e}")
                 else:
-                    print(f"DEBUG: Taking series processing path")
+                    _log("DEBUG", f"Taking series processing path")
                     # Check if this path itself is a series (has IMDb ID in directory name or NFO files)
                     tv_processor_obj = dependencies.get("tv_processor")
                     sonarr_client = tv_processor_obj.sonarr if tv_processor_obj and hasattr(tv_processor_obj, 'sonarr') else None
                     shutdown_event = dependencies.get("shutdown_event")
                     imdb_id = nfo_manager.parse_imdb_from_path_with_nfo_fallback(scan_path, sonarr_client, shutdown_event)
-                    print(f"DEBUG: Manual scan IMDb detection for {scan_path}: {imdb_id}")
+                    _log("DEBUG", f"Manual scan IMDb detection for {scan_path}: {imdb_id}")
                     if imdb_id:
                         try:
                             # Determine force_scan based on scan mode
                             force_scan = (scan_mode == "full")
-                            print(f"DEBUG: Processing series {scan_path} with force_scan={force_scan}, scan_mode={scan_mode}")
+                            _log("DEBUG", f"Processing series {scan_path} with force_scan={force_scan}, scan_mode={scan_mode}")
                             result = tv_processor.process_series(scan_path, force_scan=force_scan, scan_mode=scan_mode)
                             tv_series_total += 1
                             if result == "skipped":
@@ -1848,7 +1871,7 @@ async def verify_nfo_sync(dependencies: dict, media_type: str = "both"):
             "episodes": {"total": 0, "verified": 0, "missing_nfo": 0, "date_mismatch": 0, "empty_nfo": 0, "issues": []}
         }
         
-        print(f"🔍 NFO VERIFICATION STARTED: Checking {media_type}")
+        _log("DEBUG", f"NFO VERIFICATION STARTED: Checking {media_type}")
         
         # Verify Movies
         if media_type in ["both", "movies"]:
@@ -2283,7 +2306,7 @@ async def backfill_movie_release_dates(dependencies: dict):
             source = movie['source']
             
             try:
-                print(f"🔍 Processing {imdb_id} (source: {source})")
+                _log("DEBUG", f"Processing {imdb_id} (source: {source})")
                 
                 # Try to get release date based on the source
                 release_date = None
@@ -2515,7 +2538,7 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
     Used by Emby plugin to populate missing dateadded elements in NFO files.
     """
     try:
-        print(f"DEBUG: Episode lookup called for {imdb_id} S{season:02d}E{episode:02d}")
+        _log("DEBUG", f"Episode lookup called for {imdb_id} S{season:02d}E{episode:02d}")
         
         db = dependencies.get("db")
         if not db:
@@ -2526,12 +2549,12 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
         if not imdb_id.startswith('tt'):
             imdb_id = f"tt{imdb_id}"
         
-        print(f"DEBUG: Querying database for episode {imdb_id} S{season:02d}E{episode:02d}")
+        _log("DEBUG", f"Querying database for episode {imdb_id} S{season:02d}E{episode:02d}")
         
         # Query database for episode
         result = db.get_episode_date(imdb_id, season, episode)
         
-        print(f"DEBUG: Database query result: {result}")
+        _log("DEBUG", f"Database query result: {result}")
         
         if result and result.get('dateadded'):
             # Format response for Emby plugin
@@ -3194,7 +3217,7 @@ def register_routes(app, dependencies: dict):
             
             # Find all NFO files in TV directory
             if os.path.exists(tv_path):
-                print("🔍 Finding all TV NFO files...")
+                _log("DEBUG", "Finding all TV NFO files...")
                 try:
                     # Use find to get all NFO files
                     find_result = subprocess.run(
@@ -3233,9 +3256,9 @@ def register_routes(app, dependencies: dict):
                                     
                                     # Log specific files we're looking for
                                     if 'Hudson' in nfo_file and 'S08E05' in nfo_file:
-                                        print(f"🔍 FOUND MISSING: Hudson & Rex S08E05 at {nfo_file}")
+                                        _log("DEBUG", f"FOUND MISSING: Hudson & Rex S08E05 at {nfo_file}")
                                     if 'Star Trek' in nfo_file and 'S03E07' in nfo_file:
-                                        print(f"🔍 FOUND MISSING: Star Trek SNW S03E07 at {nfo_file}")
+                                        _log("DEBUG", f"FOUND MISSING: Star Trek SNW S03E07 at {nfo_file}")
                                         
                             except subprocess.TimeoutExpired:
                                 print(f"⏰ Timeout checking {nfo_file}")
@@ -3384,7 +3407,7 @@ def register_routes(app, dependencies: dict):
             
             # Find all NFO files in Movie directory
             if os.path.exists(movie_path):
-                print(f"🔍 Finding all Movie NFO files in {movie_path}...")
+                _log("DEBUG", f"Finding all Movie NFO files in {movie_path}...")
                 try:
                     # Use find to get all NFO files
                     find_result = subprocess.run(
@@ -3477,7 +3500,7 @@ def register_routes(app, dependencies: dict):
                     continue
             
             # Database lookup to get actual dateadded values for missing items
-            print("🔍 Looking up dateadded values from database for missing items...")
+            _log("DEBUG", "Looking up dateadded values from database for missing items...")
             
             # Enhance episodes with database data
             episodes_with_dates = 0
@@ -3591,7 +3614,7 @@ def register_routes(app, dependencies: dict):
             print(f"✅ NFO repair scan complete:")
             print(f"   📄 {total_nfo_files_missing} NFO files missing dateadded elements")
             print(f"   🎬 {len(missing_tv_nfo_files)} TV episodes, {len(missing_movie_nfo_files)} movies")
-            print(f"   🔍 {total_with_imdb_and_db} items with IMDb IDs found in database (can be fixed)")
+            _log("DEBUG", f"{total_with_imdb_and_db} items with IMDb IDs found in database (can be fixed)")
             
             return {
                 "status": "success",
@@ -3655,7 +3678,7 @@ def register_routes(app, dependencies: dict):
         total_episodes = len(missing_items["episodes"])
         total_movies = len(missing_items["movies"])
         
-        print(f"🔍 Found {total_episodes} episodes and {total_movies} movies to fix")
+        _log("DEBUG", f"Found {total_episodes} episodes and {total_movies} movies to fix")
         
         fixed_count = 0
         failed_count = 0
