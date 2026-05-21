@@ -41,20 +41,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Tab management
 function initializeTabs() {
-    const tabButtons = document.querySelectorAll('.nav-tab');
+    const tabButtons = document.querySelectorAll('.nav-item');
     const tabContents = document.querySelectorAll('.tab-content');
-    
+
     tabButtons.forEach(button => {
         button.addEventListener('click', function() {
             const tabName = this.dataset.tab;
-            switchTab(tabName);
+            if (tabName) switchTab(tabName);
+            // Close sidebar on mobile after nav
+            if (window.innerWidth <= 768 && typeof closeSidebar === 'function') closeSidebar();
         });
     });
 }
 
 function switchTab(tabName) {
     // Update button states
-    document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(btn => btn.classList.remove('active'));
     document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
     
     // Update content
