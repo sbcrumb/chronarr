@@ -17,7 +17,7 @@ from utils.logging import _log
 
 # Status file for cross-process communication
 # Use /tmp which is writable in both core and web containers
-POPULATE_STATUS_FILE = "/tmp/chronarr_populate_status.json"
+POPULATE_STATUS_FILE = "/app/data/chronarr_populate_status.json"
 
 # Process tracking
 _populate_process = None
@@ -1947,49 +1947,6 @@ def register_web_routes(app, dependencies):
 # DATABASE ADMIN INTERFACE
 # =============================================================================
 
-async def execute_database_query(dependencies: dict, query: str, limit: int = 100):
-    """Execute a database query and return results"""
-    db = dependencies["db"]
-    
-    try:
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Add LIMIT if not already present in query
-            if "LIMIT" not in query.upper() and not query.strip().endswith(";"):
-                query += f" LIMIT {limit}"
-            elif query.strip().endswith(";"):
-                query = query.strip()[:-1] + f" LIMIT {limit};"
-            
-            cursor.execute(query)
-            
-            if query.strip().upper().startswith("SELECT"):
-                results = cursor.fetchall()
-                columns = [desc[0] for desc in cursor.description] if cursor.description else []
-                return {
-                    "success": True,
-                    "query": query,
-                    "columns": columns,
-                    "rows": [dict(zip(columns, row)) for row in results],
-                    "row_count": len(results)
-                }
-            else:
-                conn.commit()
-                return {
-                    "success": True,
-                    "query": query,
-                    "message": f"Query executed successfully. Rows affected: {cursor.rowcount}",
-                    "rows_affected": cursor.rowcount
-                }
-                
-    except Exception as e:
-        return {
-            "success": False,
-            "query": query,
-            "error": str(e),
-            "message": f"Database query failed: {str(e)}"
-        }
-
 
 async def get_episodes_missing_nfo_dateadded(dependencies: dict):
     """Find episodes and movies missing dateadded elements in NFO files via core container"""
@@ -2295,11 +2252,6 @@ def register_database_admin_routes(app, dependencies):
     """Register database admin routes"""
     from fastapi import Request, Response
 
-    @app.post("/api/admin/database/query")
-    async def api_database_query(query: str, limit: int = 100):
-        """Execute a database query"""
-        return await execute_database_query(dependencies, query, limit)
-    
     @app.get("/api/admin/nfo/missing-dateadded")
     async def api_episodes_missing_nfo_dateadded():
         """Get episodes missing dateadded in NFO files"""
