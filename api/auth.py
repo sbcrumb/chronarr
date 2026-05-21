@@ -11,6 +11,55 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
+class LoginRateLimiter:
+    """Per-IP brute force protection — lockout after N failures within a window."""
+
+    MAX_ATTEMPTS = 5
+    WINDOW_SECONDS = 900   # 15 minutes
+    LOCKOUT_SECONDS = 900  # 15-minute lockout
+
+    def __init__(self):
+        # {ip: {"count": int, "first_attempt": datetime, "locked_until": datetime|None}}
+        self._attempts: Dict[str, Dict] = {}
+
+    def _client_ip(self, request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    def is_locked(self, request: Request) -> bool:
+        ip = self._client_ip(request)
+        record = self._attempts.get(ip)
+        if not record:
+            return False
+        if record.get("locked_until") and datetime.utcnow() < record["locked_until"]:
+            return True
+        # Expired lockout — clear it
+        if record.get("locked_until") and datetime.utcnow() >= record["locked_until"]:
+            del self._attempts[ip]
+        return False
+
+    def record_failure(self, request: Request) -> None:
+        ip = self._client_ip(request)
+        now = datetime.utcnow()
+        record = self._attempts.setdefault(ip, {"count": 0, "first_attempt": now, "locked_until": None})
+
+        # Reset window if it has expired
+        if (now - record["first_attempt"]).total_seconds() > self.WINDOW_SECONDS:
+            record["count"] = 0
+            record["first_attempt"] = now
+            record["locked_until"] = None
+
+        record["count"] += 1
+        if record["count"] >= self.MAX_ATTEMPTS:
+            record["locked_until"] = now + timedelta(seconds=self.LOCKOUT_SECONDS)
+
+    def record_success(self, request: Request) -> None:
+        ip = self._client_ip(request)
+        self._attempts.pop(ip, None)
+
+
 class AuthSession:
     """Simple session management for web interface"""
     
@@ -77,6 +126,7 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
         self.config = config
         self.session_manager = session_manager or AuthSession(config.web_auth_session_timeout)
         self.security = HTTPBasic()
+        self.rate_limiter = LoginRateLimiter()
         
         # Routes that are always public — everything else requires auth when enabled.
         # Webhooks must be public so Radarr/Sonarr can call them without credentials.
@@ -116,9 +166,15 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
         # Check for HTTP Basic Auth
         auth_header = request.headers.get("authorization")
         if auth_header and auth_header.startswith("Basic "):
+            if self.rate_limiter.is_locked(request):
+                return Response(
+                    content="Too many failed login attempts — try again later",
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    headers={"Retry-After": str(LoginRateLimiter.LOCKOUT_SECONDS)},
+                )
             credentials = self._parse_basic_auth(auth_header)
             if credentials and self._validate_credentials(credentials.username, credentials.password):
-                # Create session for successful login
+                self.rate_limiter.record_success(request)
                 session_token = self.session_manager.create_session(credentials.username)
                 response = await call_next(request)
                 response.set_cookie(
@@ -130,7 +186,9 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
                     samesite="lax",
                 )
                 return response
-        
+            else:
+                self.rate_limiter.record_failure(request)
+
         # Authentication required
         return self._auth_required_response()
     

@@ -40,40 +40,11 @@ from webhooks.webhook_batcher import WebhookBatcher
 # Import API routes
 from api.routes import register_routes
 
+# Version — single source of truth
+from version_utils import get_version
+
 # Global shutdown event for graceful shutdown coordination
 shutdown_event = asyncio.Event()
-
-def get_version() -> str:
-    """Get application version"""
-    try:
-        version = (Path(__file__).parent / "VERSION").read_text().strip()
-    except:
-        version = "0.1.0"
-
-    # Check if running from dev branch (detect at runtime)
-    try:
-        # Try to read git branch from .git/HEAD
-        git_head_path = Path(__file__).parent / ".git" / "HEAD"
-        if git_head_path.exists():
-            head_content = git_head_path.read_text().strip()
-            if "ref: refs/heads/dev" in head_content:
-                version = f"{version}-dev"
-            elif head_content.startswith("ref: refs/heads/"):
-                # Extract branch name for other branches
-                branch = head_content.split("refs/heads/")[-1]
-                if branch != "main":
-                    version = f"{version}-{branch}"
-    except Exception:
-        # If git detection fails, that's fine - use base version
-        pass
-
-    # Check for build source (only add -gitea for local Gitea builds)
-    build_source = os.environ.get("BUILD_SOURCE", "")
-    if build_source == "gitea":
-        if "gitea" not in version:  # Don't double-add gitea suffix
-            version = f"{version}-gitea"
-
-    return version
 
 
 def create_app() -> FastAPI:
