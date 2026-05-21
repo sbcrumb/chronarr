@@ -4,52 +4,92 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chronarr - Database Management</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=2.10.0-skipped-imdb-edit-v2">
+    <link rel="stylesheet" href="/static/css/styles.css?v=2.0.10-ui-redesign">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="header-content">
-                <h1><img src="/static/chronarr.jpg" alt="Chronarr" style="height: 40px; vertical-align: middle; margin-right: 10px; border-radius: 8px;"> Chronarr <span style="font-size: 0.5em; color: #888;">v2.0.7</span></h1>
-                <p>Database Management & Reporting</p>
-            </div>
-            <div class="auth-status" id="auth-status" style="display: none;">
-                <span class="auth-user">
-                    <i class="fas fa-user"></i> <span id="auth-username">Loading...</span>
-                </span>
-                <button class="auth-logout" id="logout-btn" onclick="logout()">
-                    <i class="fas fa-sign-out-alt"></i> Logout
-                </button>
-            </div>
-            <nav class="nav-tabs">
-                <button class="nav-tab active" data-tab="dashboard">
-                    <i class="fas fa-tachometer-alt"></i> Dashboard
-                </button>
-                <button class="nav-tab" data-tab="movies">
-                    <i class="fas fa-film"></i> Movies
-                </button>
-                <button class="nav-tab" data-tab="tv">
-                    <i class="fas fa-tv"></i> TV Series
-                </button>
-                <button class="nav-tab" data-tab="reports">
-                    <i class="fas fa-chart-bar"></i> Reports
-                </button>
-                <button class="nav-tab" data-tab="scheduled-scans">
-                    <i class="fas fa-clock"></i> Scheduled Scans
-                </button>
-                <button class="nav-tab" data-tab="scheduled-cleanups">
-                    <i class="fas fa-broom"></i> Scheduled Cleanups
-                </button>
-                <button class="nav-tab" data-tab="tools">
-                    <i class="fas fa-tools"></i> Tools
-                </button>
-            </nav>
-        </header>
+    <div class="app-layout">
 
-        <!-- Main Content -->
-        <main class="main-content">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <img src="/static/chronarr.jpg" alt="Chronarr">
+                <div class="sidebar-brand-text">
+                    <h1>Chronarr</h1>
+                    <small id="app-version">v2.0.10</small>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <button class="nav-item active" data-tab="dashboard">
+                        <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
+                    </button>
+                </div>
+
+                <div class="nav-divider"></div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Library</div>
+                    <button class="nav-item" data-tab="movies">
+                        <i class="fas fa-film"></i> <span>Movies</span>
+                    </button>
+                    <button class="nav-item" data-tab="tv">
+                        <i class="fas fa-tv"></i> <span>TV Series</span>
+                    </button>
+                    <button class="nav-item" data-tab="reports">
+                        <i class="fas fa-chart-bar"></i> <span>Reports</span>
+                    </button>
+                </div>
+
+                <div class="nav-divider"></div>
+
+                <div class="nav-section">
+                    <div class="nav-section-label">Automation</div>
+                    <button class="nav-item" data-tab="scheduled-scans">
+                        <i class="fas fa-clock"></i> <span>Scheduled Scans</span>
+                    </button>
+                    <button class="nav-item" data-tab="scheduled-cleanups">
+                        <i class="fas fa-broom"></i> <span>Scheduled Cleanups</span>
+                    </button>
+                </div>
+
+                <div class="nav-divider"></div>
+
+                <div class="nav-section">
+                    <button class="nav-item" data-tab="tools">
+                        <i class="fas fa-tools"></i> <span>Tools</span>
+                    </button>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="auth-status" id="auth-status" style="display: none;">
+                    <div class="auth-user">
+                        <i class="fas fa-user"></i>
+                        <span id="auth-username">Loading...</span>
+                    </div>
+                    <button class="auth-logout" id="logout-btn" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Mobile overlay -->
+        <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+        <div class="main-wrapper">
+            <!-- Mobile header -->
+            <div class="mobile-header" id="mobile-header" style="display:none;">
+                <button class="mobile-menu-btn" onclick="openSidebar()">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <span class="mobile-title">Chronarr</span>
+            </div>
+
+            <!-- Main Content -->
+            <main class="main-content">
             <!-- Dashboard Tab -->
             <div class="tab-content active" id="dashboard">
                 <div class="dashboard-grid">
@@ -539,38 +579,36 @@
                         <p>Remove database entries for media deleted from Radarr/Sonarr</p>
                         <form id="manual-cleanup-form">
                             <div class="form-group">
-                                <label style="font-weight: bold; display: block; margin-bottom: 8px;">Media Types:</label>
-                                <div style="margin-left: 15px;">
-                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
-                                        <input type="checkbox" id="cleanup-movies" checked style="margin: 0; width: 16px; height: 16px;">
-                                        <span style="margin-left: 8px;">Check Movies</span>
+                                <label>Media Types:</label>
+                                <div class="checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="cleanup-movies" checked>
+                                        <span>Check Movies</span>
                                     </label>
-                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
-                                        <input type="checkbox" id="cleanup-series" checked style="margin: 0; width: 16px; height: 16px;">
-                                        <span style="margin-left: 8px;">Check TV Series</span>
+                                    <label>
+                                        <input type="checkbox" id="cleanup-series" checked>
+                                        <span>Check TV Series</span>
                                     </label>
                                 </div>
                             </div>
                             <div class="form-group">
-                                <label style="font-weight: bold; display: block; margin-bottom: 8px;">Validation Methods:</label>
-                                <div style="margin-left: 15px;">
-                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
-                                        <input type="checkbox" id="cleanup-filesystem" checked style="margin: 0; width: 16px; height: 16px;">
-                                        <span style="margin-left: 8px;">Verify Filesystem</span>
+                                <label>Validation Methods:</label>
+                                <div class="checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="cleanup-filesystem" checked>
+                                        <span>Verify Filesystem</span>
                                     </label>
-                                    <label style="display: flex; align-items: center; margin-bottom: 6px; cursor: pointer;">
-                                        <input type="checkbox" id="cleanup-database" checked style="margin: 0; width: 16px; height: 16px;">
-                                        <span style="margin-left: 8px;">Verify Radarr/Sonarr DB</span>
+                                    <label>
+                                        <input type="checkbox" id="cleanup-database" checked>
+                                        <span>Verify Radarr/Sonarr DB</span>
                                     </label>
                                 </div>
-                                <small style="color: #888; display: block; margin-top: 4px; margin-left: 15px;">
-                                    <i class="fas fa-info-circle"></i> Records removed only if missing from BOTH
-                                </small>
+                                <small><i class="fas fa-info-circle"></i> Records removed only if missing from BOTH</small>
                             </div>
                             <div class="form-group">
-                                <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
-                                    <input type="checkbox" id="cleanup-dry-run" checked style="margin: 0; width: 16px; height: 16px;">
-                                    <span style="margin-left: 8px;"><strong>Dry Run</strong> (Preview only, no changes)</span>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="cleanup-dry-run" checked>
+                                    <span><strong>Dry Run</strong> (Preview only, no changes)</span>
                                 </label>
                             </div>
                             <button type="submit" class="btn btn-warning">
@@ -632,8 +670,9 @@
                     </div>
                 </div>
             </div>
-        </main>
-    </div>
+            </main>
+        </div><!-- /.main-wrapper -->
+    </div><!-- /.app-layout -->
 
     <!-- Smart Fix Modal -->
     <div class="modal" id="smart-fix-modal">
@@ -919,7 +958,27 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=2.10.4-manual-cleanup"></script>
-    <script src="/static/js/cleanup-schedule.js?v=2.10.3-integrated-scans"></script>
+    <script src="/static/js/app.js?v=2.0.10-ui-redesign"></script>
+    <script src="/static/js/cleanup-schedule.js?v=2.0.10-ui-redesign"></script>
+    <script>
+        // Mobile sidebar toggle
+        function openSidebar() {
+            document.getElementById('sidebar').classList.add('open');
+            document.getElementById('sidebar-overlay').classList.add('active');
+        }
+        function closeSidebar() {
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('sidebar-overlay').classList.remove('active');
+        }
+        // Show mobile header on small screens
+        if (window.innerWidth <= 768) {
+            document.getElementById('mobile-header').style.display = 'flex';
+        }
+        window.addEventListener('resize', () => {
+            const mh = document.getElementById('mobile-header');
+            mh.style.display = window.innerWidth <= 768 ? 'flex' : 'none';
+            if (window.innerWidth > 768) closeSidebar();
+        });
+    </script>
 </body>
 </html>
