@@ -37,7 +37,7 @@ class AuthSession:
         now = datetime.utcnow()
         
         # Check if session expired
-        if (now - session["last_activity"]).seconds > self.timeout_seconds:
+        if (now - session["last_activity"]).total_seconds() > self.timeout_seconds:
             del self.sessions[session_token]
             return False
         
@@ -62,7 +62,7 @@ class AuthSession:
         expired_tokens = []
         
         for token, session in self.sessions.items():
-            if (now - session["last_activity"]).seconds > self.timeout_seconds:
+            if (now - session["last_activity"]).total_seconds() > self.timeout_seconds:
                 expired_tokens.append(token)
         
         for token in expired_tokens:
@@ -78,30 +78,19 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
         self.session_manager = session_manager or AuthSession(config.web_auth_session_timeout)
         self.security = HTTPBasic()
         
-        # Routes that require authentication (web interface)
-        self.protected_routes = [
-            "/",  # Main web interface
-            "/static/",  # Static files (CSS, JS)
-            "/api/movies",  # Web API endpoints
-            "/api/series",
-            "/api/episodes",
-            "/api/dashboard"
-        ]
-        
-        # Routes that are always public (webhooks, health checks, API endpoints)
+        # Routes that are always public — everything else requires auth when enabled.
+        # Webhooks must be public so Radarr/Sonarr can call them without credentials.
+        # Health/ping are needed for Docker healthchecks.
+        # Auth endpoints handle login/logout themselves.
         self.public_routes = [
             "/webhook/",
             "/health",
-            "/logo/",  # Logo files should always be accessible
-            "/favicon.ico",  # Favicon should always be accessible
             "/ping",
+            "/logo/",
+            "/favicon.ico",
             "/api/v1/health",
             "/api/v1/metrics",
-            "/database/",  # Database management endpoints (API access)
-            "/manual/",    # Manual scan endpoints (API access)
-            "/debug/",     # Debug endpoints (API access)
-            "/test/",      # Test endpoints (API access)
-            "/bulk/"       # Bulk operation endpoints (API access)
+            "/api/auth/",
         ]
     
     async def dispatch(self, request: Request, call_next):
@@ -111,12 +100,11 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
         if not self.config.web_auth_enabled:
             return await call_next(request)
         
-        # Check if route requires authentication
+        # Deny by default — only explicitly listed public routes bypass auth.
         path = request.url.path
-        needs_auth = any(path.startswith(route) for route in self.protected_routes)
         is_public = any(path.startswith(route) for route in self.public_routes)
-        
-        if is_public or not needs_auth:
+
+        if is_public:
             return await call_next(request)
         
         # Check for existing session
@@ -134,11 +122,12 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
                 session_token = self.session_manager.create_session(credentials.username)
                 response = await call_next(request)
                 response.set_cookie(
-                    key="chronarr_session", 
+                    key="chronarr_session",
                     value=session_token,
                     max_age=self.config.web_auth_session_timeout,
                     httponly=True,
-                    secure=False  # Set to True if using HTTPS
+                    secure=self.config.web_auth_secure_cookie,
+                    samesite="lax",
                 )
                 return response
         
@@ -157,9 +146,16 @@ class SimpleAuthMiddleware(BaseHTTPMiddleware):
             return None
     
     def _validate_credentials(self, username: str, password: str) -> bool:
-        """Validate username and password"""
-        return (username == self.config.web_auth_username and 
-                password == self.config.web_auth_password)
+        """Validate username and password using timing-safe comparison."""
+        username_match = secrets.compare_digest(
+            username.encode("utf-8"),
+            self.config.web_auth_username.encode("utf-8"),
+        )
+        password_match = secrets.compare_digest(
+            password.encode("utf-8"),
+            self.config.web_auth_password.encode("utf-8"),
+        )
+        return username_match and password_match
     
     def _auth_required_response(self) -> Response:
         """Return 401 response with WWW-Authenticate header"""
