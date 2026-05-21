@@ -204,48 +204,92 @@ function showSkippedItems() {
     }
 }
 
+// Chart instances — kept so we can destroy before re-rendering on refresh
+const _chartInstances = {};
+
+const CHART_COLORS = [
+    '#00b4d8', '#6c63ff', '#10b981', '#f59e0b',
+    '#f43f5e', '#8b5cf6', '#06b6d4', '#84cc16'
+];
+
+function _isDark() {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function _chartTextColor() {
+    return _isDark() ? '#8892b0' : '#718096';
+}
+
 function updateDashboardCharts() {
     if (!dashboardData) return;
-    
-    // Movie sources chart
-    const movieChart = document.getElementById('movie-sources-chart');
-    if (dashboardData.movie_sources && dashboardData.movie_sources.length > 0) {
-        movieChart.innerHTML = createSimpleChart(dashboardData.movie_sources);
-    } else {
-        movieChart.innerHTML = '<p>No movie source data available</p>';
-    }
-    
-    // Episode sources chart
-    const episodeChart = document.getElementById('episode-sources-chart');
-    if (dashboardData.episode_sources && dashboardData.episode_sources.length > 0) {
-        episodeChart.innerHTML = createSimpleChart(dashboardData.episode_sources);
-    } else {
-        episodeChart.innerHTML = '<p>No episode source data available</p>';
-    }
+    renderDonutChart('movie-sources-chart', dashboardData.movie_sources);
+    renderDonutChart('episode-sources-chart', dashboardData.episode_sources);
 }
 
-function createSimpleChart(data) {
-    const total = data.reduce((sum, item) => sum + item.count, 0);
-    let html = '<div class="simple-chart">';
-    
-    data.forEach((item, index) => {
-        const percentage = ((item.count / total) * 100).toFixed(1);
-        const color = getChartColor(index);
-        html += `
-            <div class="chart-item" style="background-color: ${color}20; border-left: 4px solid ${color};">
-                <span class="chart-label">${item.source}</span>
-                <span class="chart-value">${item.count} (${percentage}%)</span>
+function renderDonutChart(containerId, data) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    // Destroy previous instance if it exists
+    if (_chartInstances[containerId]) {
+        _chartInstances[containerId].destroy();
+        delete _chartInstances[containerId];
+    }
+
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted);font-size:0.875rem;">No data available</p>';
+        return;
+    }
+
+    // Build canvas + legend wrapper
+    container.innerHTML = `
+        <div style="display:flex;align-items:center;gap:1.25rem;width:100%;height:100%;">
+            <div style="flex-shrink:0;width:160px;height:160px;position:relative;">
+                <canvas id="${containerId}-canvas"></canvas>
             </div>
-        `;
-    });
-    
-    html += '</div>';
-    return html;
-}
+            <div id="${containerId}-legend" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:0.375rem;overflow:hidden;"></div>
+        </div>`;
 
-function getChartColor(index) {
-    const colors = ['#007bff', '#28a745', '#ffc107', '#dc3545', '#6c757d', '#17a2b8', '#6f42c1'];
-    return colors[index % colors.length];
+    const total = data.reduce((sum, i) => sum + i.count, 0);
+    const labels  = data.map(i => i.source);
+    const counts  = data.map(i => i.count);
+    const colors  = data.map((_, idx) => CHART_COLORS[idx % CHART_COLORS.length]);
+
+    const ctx = document.getElementById(`${containerId}-canvas`).getContext('2d');
+    _chartInstances[containerId] = new Chart(ctx, {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }] },
+        options: {
+            cutout: '68%',
+            animation: { duration: 400 },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => ` ${ctx.parsed.toLocaleString()} (${((ctx.parsed / total) * 100).toFixed(1)}%)`
+                    },
+                    backgroundColor: _isDark() ? '#1e2235' : '#fff',
+                    titleColor: _isDark() ? '#e2e8f0' : '#1a202c',
+                    bodyColor: _isDark() ? '#8892b0' : '#718096',
+                    borderColor: _isDark() ? '#2a2f4a' : '#e2e8f0',
+                    borderWidth: 1,
+                }
+            }
+        }
+    });
+
+    // Custom legend
+    const legend = document.getElementById(`${containerId}-legend`);
+    data.forEach((item, idx) => {
+        const pct = ((item.count / total) * 100).toFixed(1);
+        const el = document.createElement('div');
+        el.style.cssText = 'display:flex;align-items:center;gap:0.5rem;min-width:0;';
+        el.innerHTML = `
+            <span style="width:10px;height:10px;border-radius:2px;background:${colors[idx]};flex-shrink:0;"></span>
+            <span style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;" title="${item.source}">${item.source}</span>
+            <span style="font-size:0.75rem;font-weight:600;color:var(--text);flex-shrink:0;">${pct}%</span>`;
+        legend.appendChild(el);
+    });
 }
 
 // Movies
