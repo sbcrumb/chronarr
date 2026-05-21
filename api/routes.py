@@ -829,10 +829,14 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
         
         paths_to_scan = []
         if path:
-            # Translate the provided path from host format to container format
             translated_path = translate_host_path_to_container(path)
-            paths_to_scan = [Path(translated_path)]
-            _log("DEBUG", f"Manual scan with specific path: {path} -> {translated_path}")
+            resolved = Path(translated_path).resolve()
+            allowed = [p.resolve() for p in config.tv_paths + config.movie_paths]
+            if not any(str(resolved).startswith(str(a)) for a in allowed):
+                _log("WARNING", f"Manual scan rejected — path not in allowed directories: {resolved}")
+                return
+            paths_to_scan = [resolved]
+            _log("DEBUG", f"Manual scan with specific path: {path} -> {resolved}")
         else:
             if scan_type in ["both", "tv"]:
                 paths_to_scan.extend(config.tv_paths)
