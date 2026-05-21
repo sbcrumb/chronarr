@@ -12,6 +12,7 @@ from fastapi import HTTPException, Query, BackgroundTasks
 from pathlib import Path
 
 from api.models import *
+from utils.logging import _log
 
 
 # Status file for cross-process communication
@@ -569,7 +570,7 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
     db = dependencies["db"]
     
     # Debug logging to track the issue
-    print(f"🔍 UPDATE_MOVIE_DATE: imdb_id={imdb_id}, dateadded={dateadded}, source={source}")
+    _log("DEBUG", f"UPDATE_MOVIE_DATE: imdb_id={imdb_id}, dateadded={dateadded}, source={source}")
     print(f"   - dateadded type: {type(dateadded)}")
     print(f"   - dateadded repr: {repr(dateadded)}")
     
@@ -626,7 +627,7 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
     """Update dateadded for a specific episode"""
     db = dependencies["db"]
     
-    print(f"🔍 DEBUG: update_episode_date called with dateadded={repr(dateadded)}, source={repr(source)}")
+    _log("DEBUG", f"update_episode_date called with dateadded={repr(dateadded)}, source={repr(source)}")
     
     # Get existing episode
     episode_data = db.get_episode_date(imdb_id, season, episode)
@@ -641,9 +642,9 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
             dateadded = aired_date.isoformat() + "T20:00:00"  # Set to 8 PM on air date
         else:
             dateadded = str(aired_date) + "T20:00:00"
-        print(f"🔍 DEBUG: Using air date as dateadded: {dateadded}")
+        _log("DEBUG", f"Using air date as dateadded: {dateadded}")
     
-    print(f"🔍 DEBUG: Final dateadded value: {repr(dateadded)}")
+    _log("DEBUG", f"Final dateadded value: {repr(dateadded)}")
     
     # Update the date
     db.upsert_episode_date(
@@ -774,7 +775,7 @@ async def get_movie_date_options(dependencies: dict, imdb_id: str):
         raise HTTPException(status_code=404, detail="Movie not found")
     
     # Debug logging (can be removed once Smart Fix is working)
-    print(f"🔍 DEBUG: Movie data for {imdb_id}:")
+    _log("DEBUG", f"Movie data for {imdb_id}:")
     print(f"   - released: {repr(movie.get('released'))}")
     print(f"   - dateadded: {repr(movie.get('dateadded'))}")
     print(f"   - source: {repr(movie.get('source'))}")
@@ -929,7 +930,7 @@ async def get_movie_date_options(dependencies: dict, imdb_id: str):
     except Exception as e:
         print(f"⚠️ External source lookup failed for {imdb_id}: {e}")
     
-    print(f"🔍 DEBUG: Generated {len(options)} options for {imdb_id}:")
+    _log("DEBUG", f"Generated {len(options)} options for {imdb_id}:")
     for i, option in enumerate(options):
         print(f"   Option {i}: {option}")
     
@@ -942,7 +943,7 @@ async def get_movie_date_options(dependencies: dict, imdb_id: str):
 
 async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int):
     """Get available date options for an episode"""
-    print(f"🔍 DEBUG: get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}")
+    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}")
     db = dependencies["db"]
     
     # Validate parameters with enhanced checking
@@ -968,7 +969,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
     
     # Get current episode data
     episode_data = db.get_episode_date(imdb_id, season, episode)
-    print(f"🔍 DEBUG: Episode data from DB: {episode_data}")
+    _log("DEBUG", f"Episode data from DB: {episode_data}")
     if not episode_data:
         print(f"❌ Episode not found in database: {imdb_id} S{season:02d}E{episode:02d}")
         raise HTTPException(status_code=404, detail="Episode not found")
@@ -999,35 +1000,35 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
     try:
         # Get TV processor and clients from dependencies
         tv_processor = dependencies.get("tv_processor")
-        print(f"🔍 DEBUG: tv_processor available: {tv_processor is not None}")
+        _log("DEBUG", f"tv_processor available: {tv_processor is not None}")
         if tv_processor:
-            print(f"🔍 DEBUG: tv_processor has external_clients: {hasattr(tv_processor, 'external_clients')}")
-            print(f"🔍 DEBUG: tv_processor has sonarr: {hasattr(tv_processor, 'sonarr')}")
+            _log("DEBUG", f"tv_processor has external_clients: {hasattr(tv_processor, 'external_clients')}")
+            _log("DEBUG", f"tv_processor has sonarr: {hasattr(tv_processor, 'sonarr')}")
         
         if tv_processor and hasattr(tv_processor, 'external_clients'):
             external_clients = tv_processor.external_clients
-            print(f"🔍 DEBUG: external_clients available: {external_clients is not None}")
+            _log("DEBUG", f"external_clients available: {external_clients is not None}")
             if external_clients:
-                print(f"🔍 DEBUG: TMDB enabled: {external_clients.tmdb.enabled if hasattr(external_clients, 'tmdb') else 'No TMDB client'}")
+                _log("DEBUG", f"TMDB enabled: {external_clients.tmdb.enabled if hasattr(external_clients, 'tmdb') else 'No TMDB client'}")
             
             # Check Sonarr for import dates
             if tv_processor.sonarr and tv_processor.sonarr.enabled:
                 try:
-                    print(f"🔍 DEBUG: Attempting Sonarr lookup for {imdb_id}")
+                    _log("DEBUG", f"Attempting Sonarr lookup for {imdb_id}")
                     # Look up the series and episode in Sonarr
                     series_data = tv_processor.sonarr.series_by_imdb(imdb_id)
                     
                     # If IMDb lookup fails, try direct series lookup as fallback
                     if not series_data:
-                        print(f"🔍 DEBUG: IMDb lookup failed, trying direct series lookup")
+                        _log("DEBUG", f"IMDb lookup failed, trying direct series lookup")
                         try:
                             # Let's also debug what series are available
                             all_series = tv_processor.sonarr.get_all_series()
-                            print(f"🔍 DEBUG: Found {len(all_series)} total series in Sonarr")
+                            _log("DEBUG", f"Found {len(all_series)} total series in Sonarr")
                             
                             # Look for Lincoln Lawyer specifically
                             lincoln_series = [s for s in all_series if 'lincoln' in s.get('title', '').lower()]
-                            print(f"🔍 DEBUG: Lincoln Lawyer series found: {len(lincoln_series)}")
+                            _log("DEBUG", f"Lincoln Lawyer series found: {len(lincoln_series)}")
                             for ls in lincoln_series:
                                 print(f"   - Title: '{ls.get('title')}', IMDb: '{ls.get('imdbId')}', ID: {ls.get('id')}")
                             
@@ -1037,7 +1038,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
                             # If still no match but we found Lincoln Lawyer series, try fuzzy matching
                             if not series_data and lincoln_series:
                                 target_imdb_num = imdb_id.replace('tt', '').lower()
-                                print(f"🔍 DEBUG: Trying fuzzy match for IMDb number: {target_imdb_num}")
+                                _log("DEBUG", f"Trying fuzzy match for IMDb number: {target_imdb_num}")
                                 
                                 for ls in lincoln_series:
                                     ls_imdb = ls.get('imdbId', '')
@@ -1063,17 +1064,17 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
                             import traceback
                             print(f"   Traceback: {traceback.format_exc()}")
                     
-                    print(f"🔍 DEBUG: Series data found: {series_data is not None}")
+                    _log("DEBUG", f"Series data found: {series_data is not None}")
                     if series_data:
                         series_id = series_data.get('id')
                         series_title = series_data.get('title', 'Unknown')
-                        print(f"🔍 DEBUG: Found series '{series_title}' with ID {series_id}")
+                        _log("DEBUG", f"Found series '{series_title}' with ID {series_id}")
                         
                         if series_id:
                             # Get episodes for the series
-                            print(f"🔍 DEBUG: Getting episodes for series {series_id}")
+                            _log("DEBUG", f"Getting episodes for series {series_id}")
                             episodes = tv_processor.sonarr.episodes_for_series(series_id)
-                            print(f"🔍 DEBUG: Found {len(episodes)} episodes")
+                            _log("DEBUG", f"Found {len(episodes)} episodes")
                             
                             for ep in episodes:
                                 ep_season = ep.get('seasonNumber')
@@ -1089,13 +1090,13 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
                                     episode_id = ep.get('id')
                                     ep_title = ep.get('title', 'Unknown')
                                     ep_air_date = ep.get('airDate')  # Get air date from Sonarr
-                                    print(f"🔍 DEBUG: Found target episode '{ep_title}' with ID {episode_id}, airDate: {ep_air_date}")
+                                    _log("DEBUG", f"Found target episode '{ep_title}' with ID {episode_id}, airDate: {ep_air_date}")
                                     
                                     if episode_id:
                                         # Get import history for this specific episode
-                                        print(f"🔍 DEBUG: Getting import history for episode {episode_id}")
+                                        _log("DEBUG", f"Getting import history for episode {episode_id}")
                                         import_date = tv_processor.get_episode_import_history(episode_id)
-                                        print(f"🔍 DEBUG: Import date found: {import_date}")
+                                        _log("DEBUG", f"Import date found: {import_date}")
                                         
                                         if import_date:
                                             # Check if this is different from current date
@@ -1149,11 +1150,11 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
             # Check TMDB for episode air dates
             if external_clients.tmdb.enabled:
                 try:
-                    print(f"🔍 DEBUG: Attempting TMDB lookup for {imdb_id}")
+                    _log("DEBUG", f"Attempting TMDB lookup for {imdb_id}")
                     # Get TMDB TV series ID from IMDb ID using find endpoint
                     tv_find_result = external_clients.tmdb._get(f"/find/{imdb_id}", {"external_source": "imdb_id"})
-                    print(f"🔍 DEBUG: TMDB find result: {tv_find_result is not None}")
-                    print(f"🔍 DEBUG: TMDB raw response: {tv_find_result}")
+                    _log("DEBUG", f"TMDB find result: {tv_find_result is not None}")
+                    _log("DEBUG", f"TMDB raw response: {tv_find_result}")
                     
                     # Check both tv_results and tv_episode_results
                     tmdb_id = None
@@ -1161,36 +1162,36 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
                     
                     if tv_find_result and tv_find_result.get("tv_results"):
                         tv_results = tv_find_result.get("tv_results", [])
-                        print(f"🔍 DEBUG: Found {len(tv_results)} TV results")
+                        _log("DEBUG", f"Found {len(tv_results)} TV results")
                         
                         if tv_results:
                             tv_show = tv_results[0]
                             tmdb_id = tv_show.get("id")
                             tv_title = tv_show.get("name", "Unknown")
-                            print(f"🔍 DEBUG: Found TMDB series '{tv_title}' with ID {tmdb_id}")
+                            _log("DEBUG", f"Found TMDB series '{tv_title}' with ID {tmdb_id}")
                     
                     # Fallback: Check tv_episode_results for show_id
                     elif tv_find_result and tv_find_result.get("tv_episode_results"):
                         episode_results = tv_find_result.get("tv_episode_results", [])
-                        print(f"🔍 DEBUG: Found {len(episode_results)} TV episode results")
+                        _log("DEBUG", f"Found {len(episode_results)} TV episode results")
                         
                         if episode_results:
                             tmdb_episode_data = episode_results[0]
                             tmdb_id = tmdb_episode_data.get("show_id")
                             episode_name = tmdb_episode_data.get("name", "Unknown")
-                            print(f"🔍 DEBUG: Found TMDB series via episode '{episode_name}' with show_id {tmdb_id}")
+                            _log("DEBUG", f"Found TMDB series via episode '{episode_name}' with show_id {tmdb_id}")
                     
                     if tmdb_id:
-                        print(f"🔍 DEBUG: Using TMDB ID {tmdb_id} for series lookup")
+                        _log("DEBUG", f"Using TMDB ID {tmdb_id} for series lookup")
                         
                         # Get episode air date from TMDB
-                        print(f"🔍 DEBUG: Getting TMDB season {season} episodes for series {tmdb_id}")
+                        _log("DEBUG", f"Getting TMDB season {season} episodes for series {tmdb_id}")
                         episodes = external_clients.tmdb.get_tv_season_episodes(tmdb_id, season)
-                        print(f"🔍 DEBUG: TMDB episodes found: {episodes}")
+                        _log("DEBUG", f"TMDB episodes found: {episodes}")
                         
                         if episode in episodes:
                             air_date = episodes[episode]
-                            print(f"🔍 DEBUG: TMDB air date for S{season:02d}E{episode:02d}: {air_date}")
+                            _log("DEBUG", f"TMDB air date for S{season:02d}E{episode:02d}: {air_date}")
                             
                             if air_date:
                                 # Check if this is different from current aired date
@@ -1264,11 +1265,11 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
         "description": "Enter custom date and time"
     })
     
-    print(f"🔍 DEBUG: Generated {len(options)} options for {imdb_id} S{season:02d}E{episode:02d}:")
+    _log("DEBUG", f"Generated {len(options)} options for {imdb_id} S{season:02d}E{episode:02d}:")
     for i, option in enumerate(options):
         print(f"   Option {i}: {option}")
     
-    print(f"🔍 DEBUG: Returning result with {len(options)} options")
+    _log("DEBUG", f"Returning result with {len(options)} options")
     return {
         "imdb_id": imdb_id,
         "season": season,
@@ -1425,11 +1426,11 @@ async def populate_database(background_tasks: BackgroundTasks, media_type: str =
     )
     _populate_process.start()
 
-    print(f"INFO: Database population process started (PID: {_populate_process.pid}) for: {media_type}")
+    _log("INFO", f"Database population process started for: {media_type}")
     return {
         "status": "started",
         "media_type": media_type,
-        "message": f"Database population started for {media_type} in separate process (PID: {_populate_process.pid})"
+        "message": f"Database population started for {media_type}"
     }
 
 
@@ -1499,7 +1500,7 @@ def register_web_routes(app, dependencies):
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
 
-            print(f"🔍 API PUT /api/movies/{imdb_id} - Received JSON:")
+            _log("DEBUG", f"API PUT /api/movies/{imdb_id} - Received JSON:")
             print(f"   - Raw data: {data}")
             print(f"   - dateadded: {dateadded}")
             print(f"   - source: {source}")
@@ -2002,7 +2003,7 @@ async def get_episodes_missing_nfo_dateadded(dependencies: dict):
         import asyncio
         
         core_url = f"http://chronarr:{config.core_api_port}/admin/nfo-repair-scan"
-        print(f"🔍 DEBUG: Calling core container at: {core_url}")
+        _log("DEBUG", f"Calling core container at: {core_url}")
         
         timeout = aiohttp.ClientTimeout(total=300.0)  # 5 minute timeout for filesystem scan
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -2096,7 +2097,7 @@ async def fix_nfo_missing_dateadded(dependencies: dict):
         import asyncio
         
         core_url = f"http://chronarr:{config.core_api_port}/admin/nfo-repair-fix"
-        print(f"🔍 DEBUG: Calling core container at: {core_url}")
+        _log("DEBUG", f"Calling core container at: {core_url}")
         
         timeout = aiohttp.ClientTimeout(total=600.0)  # 10 minute timeout for fix operation
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -2145,7 +2146,7 @@ async def get_missing_imdb_items(dependencies: dict):
         import asyncio
         
         core_url = f"http://chronarr:{config.core_api_port}/admin/missing-imdb"
-        print(f"🔍 DEBUG: Calling core container at: {core_url}")
+        _log("DEBUG", f"Calling core container at: {core_url}")
         
         timeout = aiohttp.ClientTimeout(total=60.0)  # 1 minute timeout
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -2391,12 +2392,12 @@ def register_database_admin_routes(app, dependencies):
         return await get_schedule_executions(dependencies, schedule_id)
 
     # Database population endpoints
-    print("🔧 DEBUG: Registering /admin/populate-database endpoint...")
+    _log("DEBUG", "Registering /admin/populate-database endpoint...")
 
     @app.post("/admin/populate-database")
     async def api_populate_database(request: Request, background_tasks: BackgroundTasks):
         """Populate database from Radarr/Sonarr"""
-        print(f"🔥 DEBUG: populate-database endpoint called!")
+        _log("DEBUG", "populate-database endpoint called!")
         try:
             data = await request.json()
             media_type = data.get("media_type", "both")
@@ -2405,7 +2406,7 @@ def register_database_admin_routes(app, dependencies):
             media_type = request.query_params.get("media_type", "both")
         return await populate_database(background_tasks, media_type, dependencies)
 
-    print("✅ DEBUG: /admin/populate-database registered")
+    _log("DEBUG", "/admin/populate-database registered")
 
     @app.get("/api/populate/status")
     async def api_populate_status():
