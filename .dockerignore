@@ -1,0 +1,56 @@
+# Secrets and local config — must never bake into image layers
+.env
+.env.secrets
+.env.local
+config/.env
+config/.env.secrets
+
+# Local-only project tracking files
+project.md
+security.md
+.local/
+
+# Git
+.git/
+.gitignore
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Local dev docs
+Dockerfile.optimized
+fix-gitea-packages.md
+configure-docker-insecure.md
+CLEANUP.md
+README-OPTIMIZED.md
