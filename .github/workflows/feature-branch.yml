@@ -47,7 +47,7 @@ jobs:
           echo "Building branch: $BRANCH_NAME as tag: $SAFE_BRANCH"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
