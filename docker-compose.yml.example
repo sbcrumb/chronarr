@@ -36,8 +36,6 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${DB_EXTERNAL_PORT:-5432}:5432"  # Optional external access
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-chronarr} -d ${DB_NAME:-chronarr}"]
       interval: 10s
@@ -169,7 +167,7 @@ networks:
 # Port Configuration:
 # - Core API: ${CORE_API_PORT:-8080} (webhooks, processing)
 # - Web Interface: ${WEB_API_PORT:-8081} (dashboard)
-# - Database: ${DB_EXTERNAL_PORT:-5432} (optional external access)
+# - Database: internal only (not exposed to host — use docker exec or a tunnel if direct access needed)
 #
 # Media Path Configuration:
 # - Update the volume mounts under chronarr: section
