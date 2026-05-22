@@ -166,7 +166,7 @@ Update `version_utils.py` to read `BUILD_BRANCH` file instead of `.git/HEAD`.
 |-----------|---------|--------|
 | `python:3.12.12-slim` | 3.12.12 | ✅ Pinned |
 | `fastapi` | ==0.120.0 | ✅ Pinned |
-| `starlette` | ==0.49.1 | ✅ Pinned |
+| `starlette` | (transitive via fastapi) | ✅ Managed by fastapi dependency resolver |
 | `psycopg2-binary` | 2.9.11 | ⚠️ Switch to `psycopg2` |
 | `uvicorn` | 0.38.0 | ✅ |
 | `pydantic` | 2.12.4 | ✅ |
