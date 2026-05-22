@@ -8,6 +8,15 @@ let dashboardData = null;
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
+    // Populate sidebar version from the backend — stays in sync with VERSION file
+    fetch('/health')
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            var el = document.getElementById('app-version');
+            if (el && d.version) el.textContent = 'v' + d.version;
+        })
+        .catch(function() { /* leave as-is on failure */ });
+
     try {
         initializeTabs();
     } catch (error) {
