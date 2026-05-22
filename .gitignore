@@ -59,9 +59,6 @@ tmp/
 temp/
 *.tmp
 
-# Docker
-.dockerignore
-
 # Local development files (not for public repo)
 *.local
 CODE_STRUCTURE.local
