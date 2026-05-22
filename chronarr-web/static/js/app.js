@@ -9,7 +9,7 @@ let dashboardData = null;
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
     // Populate sidebar version from the backend — stays in sync with VERSION file
-    fetch('/api/v1/health')
+    fetch('/health')
         .then(function(r) { return r.json(); })
         .then(function(d) {
             var el = document.getElementById('app-version');
