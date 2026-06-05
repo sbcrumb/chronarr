@@ -4,10 +4,34 @@ Library sync — compare Chronarr DB against current Radarr/Sonarr libraries.
 Identifies movies/series that Radarr/Sonarr no longer manages and optionally
 removes them from the Chronarr DB after a configurable grace period.
 """
+import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from utils.logging import _log
+
+SETTINGS_FILE = "/app/data/chronarr_sync_settings.json"
+
+
+def load_sync_settings() -> dict:
+    """Load auto-purge settings from the settings file, falling back to env vars."""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {
+        "purge_missing_movies_days": int(os.environ.get("PURGE_MISSING_MOVIES_DAYS", "0") or 0),
+        "purge_missing_tv_days": int(os.environ.get("PURGE_MISSING_TV_DAYS", "0") or 0),
+    }
+
+
+def save_sync_settings(settings: dict) -> None:
+    """Persist auto-purge settings to the settings file."""
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
 
 
 def _radarr_imdb_ids() -> Optional[set]:
@@ -181,14 +205,15 @@ def run_sync(db, media_type: str = "both", dry_run: bool = True,
 
 def run_auto_purge(db) -> dict:
     """
-    Run the auto-purge pass. Reads PURGE_MISSING_MOVIES_DAYS and
-    PURGE_MISSING_TV_DAYS from environment (0 or unset = disabled).
+    Run the auto-purge pass. Reads days thresholds from the settings file
+    (saved via the web UI) with env var fallback. 0 = disabled.
 
     First updates missing_from_source_since by comparing against Radarr/Sonarr,
     then deletes items that have been missing longer than the configured threshold.
     """
-    movie_days = int(os.environ.get("PURGE_MISSING_MOVIES_DAYS", "0") or 0)
-    tv_days = int(os.environ.get("PURGE_MISSING_TV_DAYS", "0") or 0)
+    settings = load_sync_settings()
+    movie_days = int(settings.get("purge_missing_movies_days", 0) or 0)
+    tv_days = int(settings.get("purge_missing_tv_days", 0) or 0)
 
     if movie_days == 0 and tv_days == 0:
         return {"skipped": True, "reason": "auto-purge disabled (PURGE_MISSING_*_DAYS=0)"}

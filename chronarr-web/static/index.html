@@ -660,6 +660,26 @@
                                 <i class="fas fa-times"></i> Hide Results
                             </button>
                         </div>
+
+                        <hr style="margin:1.25rem 0;border:none;border-top:1px solid var(--border-color,#e2e8f0)">
+                        <h4 style="margin-bottom:0.5rem"><i class="fas fa-clock"></i> Auto-Purge Settings</h4>
+                        <p style="font-size:0.85em;color:var(--text-muted,#718096);margin-bottom:0.75rem">
+                            Items missing from Radarr/Sonarr for longer than the configured days will be automatically removed. Set to <strong>0</strong> to disable.
+                        </p>
+                        <div class="form-group" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+                            <label style="flex:1;min-width:160px">
+                                <span style="font-size:0.85em;display:block;margin-bottom:0.25rem">Movies — purge after (days)</span>
+                                <input type="number" id="sync-purge-movies-days" min="0" max="3650" value="0" style="width:100%">
+                            </label>
+                            <label style="flex:1;min-width:160px">
+                                <span style="font-size:0.85em;display:block;margin-bottom:0.25rem">TV Series — purge after (days)</span>
+                                <input type="number" id="sync-purge-tv-days" min="0" max="3650" value="0" style="width:100%">
+                            </label>
+                            <button type="button" class="btn btn-secondary" onclick="saveSyncSettings()" style="flex-shrink:0">
+                                <i class="fas fa-save"></i> Save
+                            </button>
+                        </div>
+                        <p id="sync-settings-status" style="font-size:0.8em;margin-top:0.4rem;min-height:1.2em"></p>
                     </div>
 
                     <div class="tool-card">
