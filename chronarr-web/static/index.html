@@ -627,6 +627,42 @@
                     </div>
 
                     <div class="tool-card">
+                        <h3><i class="fas fa-sync-alt"></i> Radarr/Sonarr Library Sync</h3>
+                        <p>Find movies and series in Chronarr that were removed from Radarr/Sonarr.</p>
+                        <form id="library-sync-form">
+                            <div class="form-group">
+                                <label>Media Type:</label>
+                                <select id="sync-media-type">
+                                    <option value="both">Movies &amp; TV</option>
+                                    <option value="movies">Movies only</option>
+                                    <option value="tv">TV only</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="sync-dry-run" checked>
+                                    <span><strong>Dry Run</strong> (preview only, no changes)</span>
+                                </label>
+                            </div>
+                            <div class="form-group" id="sync-immediate-group" style="display:none">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="sync-remove-immediately">
+                                    <span>Remove immediately (skip grace period)</span>
+                                </label>
+                            </div>
+                            <button type="submit" class="btn btn-warning">
+                                <i class="fas fa-sync-alt"></i> Run Sync Check
+                            </button>
+                        </form>
+                        <div id="sync-status" class="scan-status" style="display:none">
+                            <div id="sync-results"></div>
+                            <button class="btn btn-secondary btn-sm" onclick="hideSyncStatus()">
+                                <i class="fas fa-times"></i> Hide Results
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="tool-card">
                         <h3><i class="fas fa-database"></i> Database Statistics</h3>
                         <p>View detailed database information</p>
                         <div class="stats-display" id="detailed-stats">

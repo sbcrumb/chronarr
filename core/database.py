@@ -154,9 +154,18 @@ class ChronarrDatabase:
                               WHERE table_name='episodes' AND column_name='skip_reason') THEN
                     ALTER TABLE episodes ADD COLUMN skip_reason TEXT;
                 END IF;
+                -- Library sync: track when items were first noticed missing from Radarr/Sonarr
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                              WHERE table_name='movies' AND column_name='missing_from_source_since') THEN
+                    ALTER TABLE movies ADD COLUMN missing_from_source_since TIMESTAMP DEFAULT NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                              WHERE table_name='series' AND column_name='missing_from_source_since') THEN
+                    ALTER TABLE series ADD COLUMN missing_from_source_since TIMESTAMP DEFAULT NULL;
+                END IF;
             END $$;
         """)
-        
+
         # Processing history table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS processing_history (
@@ -823,6 +832,104 @@ class ChronarrDatabase:
             conn.commit()
 
             return updated_count > 0
+
+    # ── Library sync helpers ──────────────────────────────────────────────────
+
+    def get_all_movie_records(self) -> List[Dict]:
+        """Return all movies with id, title, path, and missing_from_source_since."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT imdb_id, title, path, missing_from_source_since FROM movies"
+            )
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    def get_all_series_records(self) -> List[Dict]:
+        """Return all series with imdb_id, path, metadata, and missing_from_source_since."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT imdb_id, path, metadata, missing_from_source_since FROM series"
+            )
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    def mark_movies_missing_from_source(self, imdb_ids: List[str], timestamp) -> None:
+        """Set missing_from_source_since for movies not yet marked."""
+        if not imdb_ids:
+            return
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE movies SET missing_from_source_since = %s
+                   WHERE imdb_id = ANY(%s) AND missing_from_source_since IS NULL""",
+                (timestamp, imdb_ids)
+            )
+            conn.commit()
+
+    def mark_series_missing_from_source(self, imdb_ids: List[str], timestamp) -> None:
+        """Set missing_from_source_since for series not yet marked."""
+        if not imdb_ids:
+            return
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE series SET missing_from_source_since = %s
+                   WHERE imdb_id = ANY(%s) AND missing_from_source_since IS NULL""",
+                (timestamp, imdb_ids)
+            )
+            conn.commit()
+
+    def clear_movies_missing_from_source(self, imdb_ids: List[str]) -> None:
+        """Clear missing_from_source_since for movies that returned to Radarr."""
+        if not imdb_ids:
+            return
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE movies SET missing_from_source_since = NULL WHERE imdb_id = ANY(%s)",
+                (imdb_ids,)
+            )
+            conn.commit()
+
+    def clear_series_missing_from_source(self, imdb_ids: List[str]) -> None:
+        """Clear missing_from_source_since for series that returned to Sonarr."""
+        if not imdb_ids:
+            return
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE series SET missing_from_source_since = NULL WHERE imdb_id = ANY(%s)",
+                (imdb_ids,)
+            )
+            conn.commit()
+
+    def get_movies_missing_before(self, cutoff) -> List[Dict]:
+        """Return movies that have been missing from Radarr since before cutoff."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT imdb_id, title, path, missing_from_source_since
+                   FROM movies
+                   WHERE missing_from_source_since IS NOT NULL
+                     AND missing_from_source_since <= %s""",
+                (cutoff,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_series_missing_before(self, cutoff) -> List[Dict]:
+        """Return series that have been missing from Sonarr since before cutoff."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT imdb_id, path, metadata, missing_from_source_since
+                   FROM series
+                   WHERE missing_from_source_since IS NOT NULL
+                     AND missing_from_source_since <= %s""",
+                (cutoff,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
 
     def delete_orphaned_movies(self) -> List[Dict]:
         """
