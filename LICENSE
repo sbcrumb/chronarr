@@ -24,11 +24,15 @@ SOFTWARE.
 
 ## Commercial Licensing
 
-For commercial use, enterprise features, or if the MIT license doesn't meet your needs, 
+For commercial use, enterprise features, or if the MIT license doesn't meet your needs,
 commercial licenses are available. Contact us for more information.
 
-Future premium features (such as web UI, advanced analytics, enterprise support) 
+Future premium features (such as web UI, advanced analytics, enterprise support)
 may be offered under separate commercial licensing terms.
+
+The MIT license above covers the Chronarr application source code. Bundled
+binary plugins (e.g. `Emby-DLL/`) are distributed under separate proprietary
+terms — see their respective LICENSE files.
 
 ## Third-Party Licenses
 
