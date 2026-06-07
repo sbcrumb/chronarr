@@ -214,9 +214,12 @@ def main():
     # Register web routes (now includes DELETE /api/episodes/ route)
     register_web_routes(app, dependencies)
     print("✅ Registered web routes with DELETE /api/episodes/ support")
-    
+
+    # Start daily library-sync auto-purge background task (runs every 24h)
+    _start_library_sync_task(db)
+
     print(f"🚀 Starting web server on {web_host}:{web_port}")
-    
+
     try:
         uvicorn.run(
             app,
@@ -231,6 +234,39 @@ def main():
     except Exception as e:
         print(f"❌ Web interface failed: {e}")
         sys.exit(1)
+
+
+def _start_library_sync_task(db):
+    """Start a daemon thread that runs the library-sync auto-purge every 24 hours."""
+    import threading
+    import time as _time
+    import os
+
+    movie_days = int(os.environ.get("PURGE_MISSING_MOVIES_DAYS", "0") or 0)
+    tv_days = int(os.environ.get("PURGE_MISSING_TV_DAYS", "0") or 0)
+
+    if movie_days == 0 and tv_days == 0:
+        print("ℹ️  Library sync auto-purge disabled (PURGE_MISSING_MOVIES_DAYS and PURGE_MISSING_TV_DAYS both 0)")
+        return
+
+    print(f"🔄 Library sync auto-purge enabled — movies: {movie_days}d, tv: {tv_days}d")
+
+    def _loop():
+        # Wait 60s after startup before first run so DB is fully ready
+        _time.sleep(60)
+        while True:
+            try:
+                from utils import source_sync
+                result = source_sync.run_auto_purge(db)
+                if not result.get("skipped"):
+                    print(f"🗑️  Library sync purge: deleted {result.get('deleted_movies', 0)} movies, "
+                          f"{result.get('deleted_series', 0)} series")
+            except Exception as e:
+                print(f"⚠️  Library sync auto-purge error: {e}")
+            _time.sleep(86400)  # 24 hours
+
+    t = threading.Thread(target=_loop, daemon=True, name="library-sync-purge")
+    t.start()
 
 
 if __name__ == "__main__":

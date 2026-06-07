@@ -124,12 +124,24 @@ function initializeEventListeners() {
     const manualScanForm = document.getElementById('manual-scan-form');
     const manualCleanupForm = document.getElementById('manual-cleanup-form');
     const populateForm = document.getElementById('populate-form');
+    const librarySyncForm = document.getElementById('library-sync-form');
 
     if (editForm) editForm.addEventListener('submit', handleEditSubmit);
     if (bulkUpdateForm) bulkUpdateForm.addEventListener('submit', handleBulkUpdate);
     if (manualScanForm) manualScanForm.addEventListener('submit', handleManualScan);
     if (manualCleanupForm) manualCleanupForm.addEventListener('submit', handleManualCleanup);
     if (populateForm) populateForm.addEventListener('submit', handlePopulateDatabase);
+    if (librarySyncForm) {
+        librarySyncForm.addEventListener('submit', handleLibrarySync);
+        const dryRunCb = document.getElementById('sync-dry-run');
+        const immediateGroup = document.getElementById('sync-immediate-group');
+        if (dryRunCb && immediateGroup) {
+            dryRunCb.addEventListener('change', () => {
+                immediateGroup.style.display = dryRunCb.checked ? 'none' : 'block';
+            });
+        }
+        loadSyncSettings();
+    }
 }
 
 // API calls
@@ -2017,107 +2029,243 @@ function hideCleanupStatus() {
 
 function displayCleanupResults(report, dryRun) {
     const cleanupResults = document.getElementById('cleanup-results');
+    const accentColor = dryRun ? 'var(--warning-color,#d69e2e)' : 'var(--danger,#e53e3e)';
 
-    const mode = dryRun ? 'Would be removed' : 'Removed';
-    const modeClass = dryRun ? 'warning' : 'danger';
+    function statRow(label, value, highlight) {
+        const style = highlight ? `font-weight:700;color:${accentColor}` : 'color:var(--text-muted,#718096)';
+        return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-color,#e2e8f0);font-size:0.875em">
+            <span>${label}</span><span style="${style}">${value}</span>
+        </div>`;
+    }
 
-    let html = `
-        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 10px;">
-            <h4 style="margin-top: 0; color: #333;">
-                <i class="fas fa-${dryRun ? 'eye' : 'check-circle'}"></i>
-                ${dryRun ? 'Preview Results' : 'Cleanup Results'}
-            </h4>
-    `;
+    // titles = removed_titles array from backend
+    function itemList(titles, label) {
+        if (!titles || titles.length === 0) return '';
+        return `<details style="margin-top:8px">
+            <summary style="cursor:pointer;font-size:0.82em;color:var(--accent,#0096c7)">
+                <i class="fas fa-list" style="margin-right:4px"></i>${label} (${titles.length})
+            </summary>
+            <ul style="margin:6px 0 0 16px;max-height:220px;overflow-y:auto;font-size:0.8em;padding-right:4px">
+                ${titles.map(t => `<li style="padding:2px 0">${escapeHtml(t)}</li>`).join('')}
+            </ul>
+        </details>`;
+    }
 
-    // Movies section
+    const moviesRemoved  = report.movies?.removed || 0;
+    const seriesRemoved  = report.series?.removed || 0;
+    const episodesRemoved = report.series?.removed_episodes || 0;
+
+    let html = `<div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+            <i class="fas fa-${dryRun ? 'eye' : 'check-circle'}" style="color:${accentColor}"></i>
+            <strong>${dryRun ? 'Preview Results' : 'Cleanup Results'}</strong>
+        </div>`;
+
     if (report.movies) {
-        html += `
-            <div style="margin-bottom: 15px;">
-                <h5 style="color: #666; margin-bottom: 8px;">
-                    <i class="fas fa-film"></i> Movies
-                </h5>
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding-left: 20px;">
-                    <div>Total checked: <strong>${report.movies.total_checked || 0}</strong></div>
-                    <div class="badge badge-${modeClass}">${mode}: <strong>${report.movies.removed || 0}</strong></div>
-                    <div>Missing from filesystem: ${report.movies.missing_filesystem || 0}</div>
-                    <div>Missing from database: ${report.movies.missing_database || 0}</div>
-                </div>
-        `;
-
-        if (report.movies.removed_items && report.movies.removed_items.length > 0) {
-            html += `
-                <details style="margin-top: 10px;">
-                    <summary style="cursor: pointer; color: #007bff;">View ${mode} items (${report.movies.removed_items.length})</summary>
-                    <ul style="margin-top: 10px; padding-left: 20px; max-height: 200px; overflow-y: auto;">
-            `;
-            report.movies.removed_items.forEach(item => {
-                html += `<li style="font-size: 0.9em; margin-bottom: 5px;">${escapeHtml(item)}</li>`;
-            });
-            html += `
-                    </ul>
-                </details>
-            `;
-        }
-
-        html += `</div>`;
-    }
-
-    // TV Series section
-    if (report.series) {
-        html += `
-            <div style="margin-bottom: 15px;">
-                <h5 style="color: #666; margin-bottom: 8px;">
-                    <i class="fas fa-tv"></i> TV Series
-                </h5>
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding-left: 20px;">
-                    <div>Total checked: <strong>${report.series.total_checked || 0}</strong></div>
-                    <div class="badge badge-${modeClass}">${mode}: <strong>${report.series.removed || 0}</strong></div>
-                    <div>Episodes removed: <strong>${report.series.removed_episodes || 0}</strong></div>
-                    <div>Missing from database: ${report.series.missing_database || 0}</div>
-                </div>
-        `;
-
-        if (report.series.removed_items && report.series.removed_items.length > 0) {
-            html += `
-                <details style="margin-top: 10px;">
-                    <summary style="cursor: pointer; color: #007bff;">View ${mode} series (${report.series.removed_items.length})</summary>
-                    <ul style="margin-top: 10px; padding-left: 20px; max-height: 200px; overflow-y: auto;">
-            `;
-            report.series.removed_items.forEach(item => {
-                html += `<li style="font-size: 0.9em; margin-bottom: 5px;">${escapeHtml(item)}</li>`;
-            });
-            html += `
-                    </ul>
-                </details>
-            `;
-        }
-
-        html += `</div>`;
-    }
-
-    // Summary
-    const totalRemoved = (report.movies?.removed || 0) + (report.series?.removed || 0) + (report.series?.removed_episodes || 0);
-    html += `
-        <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #dee2e6;">
-            <strong>Total ${mode}:</strong>
-            <span style="color: ${dryRun ? '#ff9800' : '#dc3545'}; font-size: 1.2em;">
-                ${totalRemoved} items
-            </span>
-        </div>
-    `;
-
-    if (dryRun) {
-        html += `
-            <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
-                <i class="fas fa-info-circle"></i> This was a <strong>dry run</strong>. No changes were made. Uncheck "Dry Run" to perform actual cleanup.
+        html += `<div style="margin-bottom:14px">
+            <div style="font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted,#718096);margin-bottom:4px">
+                <i class="fas fa-film"></i> Movies
             </div>
-        `;
+            ${statRow('Orphaned found', report.movies.orphaned || 0)}
+            ${statRow(dryRun ? 'Would be removed' : 'Removed', moviesRemoved, moviesRemoved > 0)}
+            ${itemList(report.movies.removed_titles, dryRun ? 'View movies to remove' : 'View removed movies')}
+        </div>`;
+    }
+
+    if (report.series) {
+        html += `<div style="margin-bottom:14px">
+            <div style="font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted,#718096);margin-bottom:4px">
+                <i class="fas fa-tv"></i> TV Series
+            </div>
+            ${statRow('Orphaned found', report.series.orphaned || 0)}
+            ${statRow(dryRun ? 'Series would be removed' : 'Series removed', seriesRemoved, seriesRemoved > 0)}
+            ${episodesRemoved > 0 ? statRow(dryRun ? 'Episodes would be removed' : 'Episodes removed', episodesRemoved, true) : ''}
+            ${itemList(report.series.removed_titles, dryRun ? 'View series to remove' : 'View removed series')}
+        </div>`;
+    }
+
+    const totalItems = moviesRemoved + seriesRemoved;
+    const summaryParts = [];
+    if (moviesRemoved  > 0) summaryParts.push(`${moviesRemoved} movie${moviesRemoved !== 1 ? 's' : ''}`);
+    if (seriesRemoved  > 0) summaryParts.push(`${seriesRemoved} series`);
+    if (episodesRemoved > 0) summaryParts.push(`${episodesRemoved} episode${episodesRemoved !== 1 ? 's' : ''}`);
+    const summaryText = summaryParts.length ? summaryParts.join(', ') : 'nothing';
+
+    html += `<div style="padding:8px 0;border-top:1px solid var(--border-color,#e2e8f0);font-size:0.875em">
+        <strong>${dryRun ? 'Would remove' : 'Removed'}:</strong>
+        <span style="color:${accentColor};font-weight:700;margin-left:4px">${summaryText}</span>
+    </div>`;
+
+    if (dryRun && totalItems > 0) {
+        html += `<div style="margin-top:8px;padding:8px 12px;background:var(--badge-warning-bg,#fefcbf);border-left:3px solid var(--warning-color,#d69e2e);border-radius:4px;font-size:0.82em">
+            <i class="fas fa-info-circle"></i> Dry run — no changes made. Uncheck <strong>Dry Run</strong> to apply.
+        </div>`;
+    } else if (!dryRun && totalItems === 0) {
+        html += `<div style="margin-top:8px;padding:8px 12px;background:var(--badge-success-bg,#c6f6d5);border-left:3px solid var(--success,#38a169);border-radius:4px;font-size:0.82em">
+            <i class="fas fa-check-circle"></i> Nothing to remove — database is clean.
+        </div>`;
     }
 
     html += `</div>`;
-
     cleanupResults.innerHTML = html;
 }
+
+// ── Library Sync ─────────────────────────────────────────────────────────────
+
+async function handleLibrarySync(event) {
+    event.preventDefault();
+    const mediaType = document.getElementById('sync-media-type').value;
+    const dryRun = document.getElementById('sync-dry-run').checked;
+    const removeImmediately = !dryRun && (document.getElementById('sync-remove-immediately')?.checked || false);
+
+    if (!dryRun && !confirm(
+        removeImmediately
+            ? 'This will permanently delete items from Chronarr that are no longer in Radarr/Sonarr. Continue?'
+            : 'This will mark items missing from Radarr/Sonarr (they will be auto-purged after your configured grace period). Continue?'
+    )) return;
+
+    const statusEl = document.getElementById('sync-status');
+    const resultsEl = document.getElementById('sync-results');
+    statusEl.style.display = 'block';
+    resultsEl.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Running sync check…</p>';
+
+    try {
+        const response = await fetch('/api/cleanup/library-sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ media_type: mediaType, dry_run: dryRun, remove_immediately: removeImmediately })
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(err.detail || 'Request failed');
+        }
+        const data = await response.json();
+        renderSyncResults(data, dryRun);
+    } catch (err) {
+        resultsEl.innerHTML = `<p style="color:var(--danger)"><i class="fas fa-exclamation-triangle"></i> Error: ${err.message}</p>`;
+    }
+}
+
+function renderSyncResults(data, dryRun) {
+    const resultsEl = document.getElementById('sync-results');
+    const movies = data.movies_not_in_radarr || [];
+    const series = data.series_not_in_sonarr || [];
+
+    let html = `<div style="margin-bottom:12px">`;
+
+    if (!data.radarr_available && !data.sonarr_available) {
+        html += `<p style="color:var(--warning-color)"><i class="fas fa-exclamation-triangle"></i> Neither Radarr nor Sonarr DB is available. Check your DB connection settings.</p>`;
+        html += `</div>`;
+        resultsEl.innerHTML = html;
+        return;
+    }
+
+    if (dryRun) {
+        html += `<div style="padding:8px 12px;background:var(--badge-warning-bg);border-left:3px solid var(--warning-color);border-radius:4px;margin-bottom:12px;font-size:0.85em">
+            <i class="fas fa-info-circle"></i> <strong>Dry run</strong> — no changes made. Uncheck "Dry Run" to apply.
+        </div>`;
+    }
+
+    // Movies
+    if (data.radarr_available) {
+        html += `<div style="margin-bottom:12px">
+            <strong>Movies not in Radarr:</strong> <span style="color:${movies.length ? 'var(--danger)' : 'var(--success)'}">${movies.length}</span>`;
+        if (movies.length) {
+            html += `<ul style="margin:6px 0 0 16px;font-size:0.85em">`;
+            movies.forEach(m => {
+                const since = m.missing_since ? ` <span style="color:var(--text-muted);font-size:0.9em">(missing since ${new Date(m.missing_since).toLocaleDateString()})</span>` : '';
+                html += `<li>${escapeHtml(m.title || m.imdb_id)}${since}</li>`;
+            });
+            html += `</ul>`;
+        }
+        html += `</div>`;
+    } else {
+        html += `<p style="color:var(--text-muted);font-size:0.85em"><i class="fas fa-minus-circle"></i> Radarr DB not available — skipped movies.</p>`;
+    }
+
+    // Series
+    if (data.sonarr_available) {
+        html += `<div style="margin-bottom:12px">
+            <strong>Series not in Sonarr:</strong> <span style="color:${series.length ? 'var(--danger)' : 'var(--success)'}">${series.length}</span>`;
+        if (series.length) {
+            html += `<ul style="margin:6px 0 0 16px;font-size:0.85em">`;
+            series.forEach(s => {
+                const since = s.missing_since ? ` <span style="color:var(--text-muted);font-size:0.9em">(missing since ${new Date(s.missing_since).toLocaleDateString()})</span>` : '';
+                html += `<li>${escapeHtml(s.title || s.imdb_id)}${since}</li>`;
+            });
+            html += `</ul>`;
+        }
+        html += `</div>`;
+    } else {
+        html += `<p style="color:var(--text-muted);font-size:0.85em"><i class="fas fa-minus-circle"></i> Sonarr DB not available — skipped series.</p>`;
+    }
+
+    // Deletion summary
+    if (!dryRun) {
+        const deleted = (data.movies_deleted || 0) + (data.series_deleted || 0);
+        if (deleted > 0) {
+            html += `<div style="padding:8px 12px;background:var(--badge-danger-bg);border-left:3px solid var(--danger);border-radius:4px;margin-top:8px;font-size:0.85em">
+                <i class="fas fa-trash"></i> Deleted ${data.movies_deleted || 0} movie(s) and ${data.series_deleted || 0} series from Chronarr.
+            </div>`;
+        } else if (movies.length || series.length) {
+            html += `<div style="padding:8px 12px;background:var(--badge-info-bg);border-left:3px solid var(--accent);border-radius:4px;margin-top:8px;font-size:0.85em">
+                <i class="fas fa-clock"></i> Items marked as missing from source. They will be auto-purged after your configured grace period.
+            </div>`;
+        }
+    }
+
+    if (movies.length === 0 && series.length === 0 && (data.radarr_available || data.sonarr_available)) {
+        html += `<p style="color:var(--success)"><i class="fas fa-check-circle"></i> Chronarr is in sync — no items to remove.</p>`;
+    }
+
+    html += `</div>`;
+    resultsEl.innerHTML = html;
+}
+
+function hideSyncStatus() {
+    document.getElementById('sync-status').style.display = 'none';
+}
+
+async function loadSyncSettings() {
+    try {
+        const res = await fetch('/api/settings/library-sync');
+        if (!res.ok) return;
+        const s = await res.json();
+        const movieEl = document.getElementById('sync-purge-movies-days');
+        const tvEl    = document.getElementById('sync-purge-tv-days');
+        if (movieEl) movieEl.value = s.purge_missing_movies_days ?? 0;
+        if (tvEl)    tvEl.value    = s.purge_missing_tv_days ?? 0;
+    } catch (_) {}
+}
+
+async function saveSyncSettings() {
+    const movieDays = parseInt(document.getElementById('sync-purge-movies-days')?.value || '0', 10);
+    const tvDays    = parseInt(document.getElementById('sync-purge-tv-days')?.value || '0', 10);
+    const statusEl  = document.getElementById('sync-settings-status');
+
+    try {
+        const res = await fetch('/api/settings/library-sync', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ purge_missing_movies_days: movieDays, purge_missing_tv_days: tvDays })
+        });
+        if (!res.ok) throw new Error('Save failed');
+        if (statusEl) {
+            statusEl.style.color = 'var(--success)';
+            statusEl.textContent = movieDays === 0 && tvDays === 0
+                ? '✓ Auto-purge disabled'
+                : `✓ Saved — movies: ${movieDays === 0 ? 'never' : movieDays + 'd'}, TV: ${tvDays === 0 ? 'never' : tvDays + 'd'}`;
+            setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        }
+    } catch (err) {
+        if (statusEl) {
+            statusEl.style.color = 'var(--danger)';
+            statusEl.textContent = '✗ Failed to save settings';
+        }
+    }
+}
+
+// ── End Library Sync ──────────────────────────────────────────────────────────
 
 async function logout() {
     if (!confirm('Are you sure you want to logout?')) {

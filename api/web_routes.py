@@ -1893,6 +1893,74 @@ def register_web_routes(app, dependencies):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Manual cleanup request failed: {str(e)}")
 
+    @app.post("/api/cleanup/library-sync")
+    async def api_library_sync(request: Request):
+        """
+        Compare Chronarr DB against current Radarr/Sonarr libraries.
+
+        Body (all optional):
+          media_type        "movies" | "tv" | "both"  (default "both")
+          dry_run           bool  (default true)
+          remove_immediately bool  (default false) — delete without grace period
+        """
+        import json as _json
+        from utils import source_sync
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        media_type = body.get("media_type", "both")
+        dry_run = bool(body.get("dry_run", True))
+        remove_immediately = bool(body.get("remove_immediately", False))
+
+        if media_type not in ("movies", "tv", "both"):
+            raise HTTPException(status_code=400, detail="media_type must be movies, tv, or both")
+
+        db = dependencies["db"]
+        try:
+            result = source_sync.run_sync(
+                db,
+                media_type=media_type,
+                dry_run=dry_run,
+                remove_immediately=remove_immediately,
+            )
+            return result
+        except Exception as e:
+            _log("ERROR", f"Library sync failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/settings/library-sync")
+    async def get_library_sync_settings():
+        """Return current auto-purge settings."""
+        from utils.source_sync import load_sync_settings
+        return load_sync_settings()
+
+    @app.put("/api/settings/library-sync")
+    async def put_library_sync_settings(request: Request):
+        """Save auto-purge settings."""
+        from utils.source_sync import save_sync_settings, load_sync_settings
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        current = load_sync_settings()
+        movie_days = body.get("purge_missing_movies_days", current.get("purge_missing_movies_days", 0))
+        tv_days    = body.get("purge_missing_tv_days",    current.get("purge_missing_tv_days", 0))
+
+        try:
+            movie_days = max(0, int(movie_days))
+            tv_days    = max(0, int(tv_days))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Days values must be non-negative integers")
+
+        settings = {"purge_missing_movies_days": movie_days, "purge_missing_tv_days": tv_days}
+        save_sync_settings(settings)
+        _log("INFO", f"Library sync settings updated: movies={movie_days}d, tv={tv_days}d")
+        return {"success": True, **settings}
+
     # Simple scan tracking (since we can't reliably access docker logs from container)
     scan_tracking = {"last_scan_time": None, "scanning": False}
     

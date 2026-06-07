@@ -1,0 +1,21 @@
+Chronarr Emby Plugin — Binary Distribution License
+==================================================
+
+Chronarr.Emby.Plugin.dll is distributed here in compiled (binary) form only.
+Its source code is closed and is not part of this repository.
+
+Copyright (c) 2025-2026 Chronarr. All rights reserved.
+
+This binary is NOT covered by the MIT license that applies to the rest of
+this repository (see the top-level LICENSE file). It is provided under the
+following terms:
+
+- You may use this plugin with a valid Chronarr Emby Plugin license
+  (including the free trial period offered at first run).
+- You may NOT redistribute, resell, sublicense, decompile, reverse engineer,
+  or modify this binary without prior written permission.
+- This software is provided "AS IS", without warranty of any kind, express
+  or implied, including but not limited to the warranties of merchantability,
+  fitness for a particular purpose, and noninfringement.
+
+For licensing questions or commercial terms, contact Chronarr support.

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chronarr - Database Management</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=2.0.10-charts">
+    <link rel="stylesheet" href="/static/css/styles.css?v=2.0.15-library-sync">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -627,6 +627,62 @@
                     </div>
 
                     <div class="tool-card">
+                        <h3><i class="fas fa-sync-alt"></i> Radarr/Sonarr Library Sync</h3>
+                        <p>Find movies and series in Chronarr that were removed from Radarr/Sonarr.</p>
+                        <form id="library-sync-form">
+                            <div class="form-group">
+                                <label>Media Type:</label>
+                                <select id="sync-media-type">
+                                    <option value="both">Movies &amp; TV</option>
+                                    <option value="movies">Movies only</option>
+                                    <option value="tv">TV only</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="sync-dry-run" checked>
+                                    <span><strong>Dry Run</strong> (preview only, no changes)</span>
+                                </label>
+                            </div>
+                            <div class="form-group" id="sync-immediate-group" style="display:none">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="sync-remove-immediately">
+                                    <span>Remove immediately (skip grace period)</span>
+                                </label>
+                            </div>
+                            <button type="submit" class="btn btn-warning">
+                                <i class="fas fa-sync-alt"></i> Run Sync Check
+                            </button>
+                        </form>
+                        <div id="sync-status" class="scan-status" style="display:none">
+                            <div id="sync-results"></div>
+                            <button class="btn btn-secondary btn-sm" onclick="hideSyncStatus()">
+                                <i class="fas fa-times"></i> Hide Results
+                            </button>
+                        </div>
+
+                        <hr style="margin:1.25rem 0;border:none;border-top:1px solid var(--border-color,#e2e8f0)">
+                        <h4 style="margin-bottom:0.5rem"><i class="fas fa-clock"></i> Auto-Purge Settings</h4>
+                        <p style="font-size:0.85em;color:var(--text-muted,#718096);margin-bottom:0.75rem">
+                            Items missing from Radarr/Sonarr for longer than the configured days will be automatically removed. Set to <strong>0</strong> to disable.
+                        </p>
+                        <div class="form-group" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+                            <label style="flex:1;min-width:160px">
+                                <span style="font-size:0.85em;display:block;margin-bottom:0.25rem">Movies — purge after (days)</span>
+                                <input type="number" id="sync-purge-movies-days" min="0" max="3650" value="0" style="width:100%">
+                            </label>
+                            <label style="flex:1;min-width:160px">
+                                <span style="font-size:0.85em;display:block;margin-bottom:0.25rem">TV Series — purge after (days)</span>
+                                <input type="number" id="sync-purge-tv-days" min="0" max="3650" value="0" style="width:100%">
+                            </label>
+                            <button type="button" class="btn btn-secondary" onclick="saveSyncSettings()" style="flex-shrink:0">
+                                <i class="fas fa-save"></i> Save
+                            </button>
+                        </div>
+                        <p id="sync-settings-status" style="font-size:0.8em;margin-top:0.4rem;min-height:1.2em"></p>
+                    </div>
+
+                    <div class="tool-card">
                         <h3><i class="fas fa-database"></i> Database Statistics</h3>
                         <p>View detailed database information</p>
                         <div class="stats-display" id="detailed-stats">
@@ -959,8 +1015,8 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=2.0.10-ui-redesign"></script>
-    <script src="/static/js/cleanup-schedule.js?v=2.0.10-ui-redesign"></script>
+    <script src="/static/js/app.js?v=2.0.15-library-sync"></script>
+    <script src="/static/js/cleanup-schedule.js?v=2.0.15-library-sync"></script>
     <script>
         // Mobile sidebar toggle
         function openSidebar() {
