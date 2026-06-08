@@ -20,6 +20,7 @@ from api.models import (
 )
 # Import logging utility
 from utils.logging import _log
+from utils.imdb_utils import parse_imdb_from_path, find_imdb_in_directory  # Phase 3: Replaced NFOManager
 # Web routes removed - handled by separate web container
 
 # Global scan status tracking for detailed progress
@@ -765,7 +766,7 @@ async def debug_movie_history(imdb_id: str, dependencies: dict):
 async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = None, scan_type: str = "both", scan_mode: str = "smart", dependencies: dict = None):
     """Manual scan endpoint with smart optimization modes"""
     config = dependencies["config"]
-    nfo_manager = dependencies["nfo_manager"]
+    nfo_manager = dependencies.get("nfo_manager")
     tv_processor = dependencies["tv_processor"]
     movie_processor = dependencies["movie_processor"]
     
@@ -857,10 +858,8 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                     _log("DEBUG", f"Taking season processing path")
                     # Single season processing
                     series_path = scan_path.parent
-                    tv_processor_obj = dependencies.get("tv_processor")
-                    sonarr_client = tv_processor_obj.sonarr if tv_processor_obj and hasattr(tv_processor_obj, 'sonarr') else None
                     shutdown_event = dependencies.get("shutdown_event")
-                    if nfo_manager.parse_imdb_from_path_with_nfo_fallback(series_path, sonarr_client, shutdown_event):
+                    if parse_imdb_from_path(series_path):  # Phase 3: imdb_utils
                         print(f"INFO: Processing single season: {scan_path}")
                         try:
                             tv_processor.process_season(series_path, scan_path)
@@ -871,10 +870,8 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                     # Single episode processing
                     season_path = scan_path.parent
                     series_path = season_path.parent
-                    tv_processor_obj = dependencies.get("tv_processor")
-                    sonarr_client = tv_processor_obj.sonarr if tv_processor_obj and hasattr(tv_processor_obj, 'sonarr') else None
                     shutdown_event = dependencies.get("shutdown_event")
-                    if nfo_manager.parse_imdb_from_path_with_nfo_fallback(series_path, sonarr_client, shutdown_event):
+                    if parse_imdb_from_path(series_path):  # Phase 3: imdb_utils
                         print(f"INFO: Processing single episode: {scan_path}")
                         try:
                             tv_processor.process_episode_file(series_path, season_path, scan_path)
@@ -883,10 +880,8 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                 else:
                     _log("DEBUG", f"Taking series processing path")
                     # Check if this path itself is a series (has IMDb ID in directory name or NFO files)
-                    tv_processor_obj = dependencies.get("tv_processor")
-                    sonarr_client = tv_processor_obj.sonarr if tv_processor_obj and hasattr(tv_processor_obj, 'sonarr') else None
                     shutdown_event = dependencies.get("shutdown_event")
-                    imdb_id = nfo_manager.parse_imdb_from_path_with_nfo_fallback(scan_path, sonarr_client, shutdown_event)
+                    imdb_id = parse_imdb_from_path(scan_path)  # Phase 3: imdb_utils
                     _log("DEBUG", f"Manual scan IMDb detection for {scan_path}: {imdb_id}")
                     if imdb_id:
                         try:
@@ -919,10 +914,8 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                                 not item.name.lower().startswith('season') and
                                 not re.match(r'^season\s+\d+$', item.name, re.IGNORECASE)):
                                 
-                                # Check for IMDb ID (enhanced with NFO fallback)
-                                tv_processor_obj = dependencies.get("tv_processor")
-                                sonarr_client = tv_processor_obj.sonarr if tv_processor_obj and hasattr(tv_processor_obj, 'sonarr') else None
-                                imdb_id = nfo_manager.parse_imdb_from_path_with_nfo_fallback(item, sonarr_client, shutdown_event)
+                                # Check for IMDb ID in directory name (Phase 3: imdb_utils)
+                                imdb_id = parse_imdb_from_path(item)
                                 if imdb_id:
                                     tv_series_list.append(item)
                                 else:
@@ -993,8 +986,8 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                         return
                         
                     if item.is_dir():
-                        # Check for IMDb ID
-                        imdb_id = nfo_manager.find_movie_imdb_id(item)
+                        # Check for IMDb ID in directory name (Phase 3: imdb_utils)
+                        imdb_id = find_imdb_in_directory(item)
                         if imdb_id:
                             movie_list.append(item)
                         else:
@@ -1117,7 +1110,7 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
 
 async def scan_tv_season(background_tasks: BackgroundTasks, request: TVSeasonRequest, dependencies: dict):
     """Scan a specific TV season - URL-safe endpoint"""
-    nfo_manager = dependencies["nfo_manager"]
+    nfo_manager = dependencies.get("nfo_manager")
     tv_processor = dependencies["tv_processor"]
     
     try:
@@ -1129,10 +1122,10 @@ async def scan_tv_season(background_tasks: BackgroundTasks, request: TVSeasonReq
         if not season_dir.exists():
             raise HTTPException(status_code=404, detail=f"Season path not found: {season_dir}")
         
-        imdb_id = nfo_manager.parse_imdb_from_path(series_dir)
+        imdb_id = parse_imdb_from_path(series_dir)  # Phase 3: imdb_utils
         if not imdb_id:
             raise HTTPException(status_code=400, detail="No IMDb ID found in series path")
-        
+
         async def process_season():
             print(f"INFO: Processing TV season: {season_dir}")
             try:
@@ -1149,7 +1142,7 @@ async def scan_tv_season(background_tasks: BackgroundTasks, request: TVSeasonReq
 
 async def scan_tv_episode(background_tasks: BackgroundTasks, request: TVEpisodeRequest, dependencies: dict):
     """Scan a specific TV episode - URL-safe endpoint"""
-    nfo_manager = dependencies["nfo_manager"]
+    nfo_manager = dependencies.get("nfo_manager")
     tv_processor = dependencies["tv_processor"]
     
     try:
@@ -1162,10 +1155,10 @@ async def scan_tv_episode(background_tasks: BackgroundTasks, request: TVEpisodeR
         if not episode_file.exists():
             raise HTTPException(status_code=404, detail=f"Episode file not found: {episode_file}")
         
-        imdb_id = nfo_manager.parse_imdb_from_path(series_dir)
+        imdb_id = parse_imdb_from_path(series_dir)  # Phase 3: imdb_utils
         if not imdb_id:
             raise HTTPException(status_code=400, detail="No IMDb ID found in series path")
-        
+
         async def process_episode():
             print(f"INFO: Processing TV episode: {episode_file}")
             try:
@@ -1210,7 +1203,7 @@ async def test_bulk_update(dependencies: dict):
 async def test_movie_scan(dependencies: dict):
     """Test movie directory scanning logic"""
     config = dependencies["config"]
-    nfo_manager = dependencies["nfo_manager"]
+    nfo_manager = dependencies.get("nfo_manager")
     
     try:
         results = []
@@ -1223,7 +1216,7 @@ async def test_movie_scan(dependencies: dict):
             
             if path.exists():
                 for item in path.iterdir():
-                    if item.is_dir() and nfo_manager.find_movie_imdb_id(item):
+                    if item.is_dir() and find_imdb_in_directory(item):  # Phase 3: imdb_utils
                         path_result["movies_found"] += 1
             
             results.append(path_result)
@@ -1866,7 +1859,7 @@ async def get_cleanup_executions(dependencies: dict, schedule_id: int = None, li
 async def verify_nfo_sync(dependencies: dict, media_type: str = "both"):
     """Verify that database dates match NFO file contents"""
     db = dependencies["db"]
-    nfo_manager = dependencies["nfo_manager"]
+    nfo_manager = dependencies.get("nfo_manager")
     config = dependencies["config"]
     
     try:
@@ -1924,9 +1917,9 @@ async def verify_nfo_sync(dependencies: dict, media_type: str = "both"):
                         })
                         continue
                     
-                    # Extract Chronarr data from NFO
-                    nfo_data = nfo_manager.extract_chronarr_dates_from_nfo(nfo_path)
-                    
+                    # Extract Chronarr data from NFO (Phase 3: nfo_manager removed)
+                    nfo_data = nfo_manager.extract_chronarr_dates_from_nfo(nfo_path) if nfo_manager else None
+
                     if not nfo_data:
                         verification_results["movies"]["date_mismatch"] += 1
                         verification_results["movies"]["issues"].append({
@@ -2045,8 +2038,8 @@ async def verify_nfo_sync(dependencies: dict, media_type: str = "both"):
                         })
                         continue
                     
-                    # Extract Chronarr data from episode NFO
-                    nfo_data = nfo_manager.extract_chronarr_dates_from_episode_nfo(nfo_path)
+                    # Extract Chronarr data from episode NFO (Phase 3: nfo_manager removed)
+                    nfo_data = nfo_manager.extract_chronarr_dates_from_episode_nfo(nfo_path) if nfo_manager else None
                     
                     if not nfo_data:
                         verification_results["episodes"]["date_mismatch"] += 1
@@ -2108,7 +2101,7 @@ async def verify_nfo_sync(dependencies: dict, media_type: str = "both"):
 async def fix_nfo_sync_issues(dependencies: dict, media_type: str = "both"):
     """Fix NFO sync issues by regenerating NFO files from database data"""
     db = dependencies["db"]
-    nfo_manager = dependencies["nfo_manager"]
+    nfo_manager = dependencies.get("nfo_manager")
     config = dependencies["config"]
     
     try:
@@ -2156,14 +2149,14 @@ async def fix_nfo_sync_issues(dependencies: dict, media_type: str = "both"):
                         from pathlib import Path
                         movie_path_obj = Path(movie_path)
                         
-                        if config.manage_nfo:
+                        if config.manage_nfo and nfo_manager:
                             nfo_manager.create_movie_nfo(
                                 movie_path_obj, imdb_id, dateadded, released, source, config.lock_metadata
                             )
                             print(f"✅ Fixed NFO for {imdb_id}: {movie_path}")
                             fix_results["movies"]["fixed"] += 1
                         else:
-                            fix_results["movies"]["errors"].append(f"MANAGE_NFO disabled - cannot fix {imdb_id}")
+                            fix_results["movies"]["errors"].append(f"NFO management unavailable - cannot fix {imdb_id}")
                             fix_results["movies"]["failed"] += 1
                         
                     except Exception as e:
@@ -2232,14 +2225,14 @@ async def fix_nfo_sync_issues(dependencies: dict, media_type: str = "both"):
                             continue
                         
                         # Regenerate NFO file
-                        if config.manage_nfo:
+                        if config.manage_nfo and nfo_manager:
                             nfo_manager.create_episode_nfo(
                                 episode_file, imdb_id, season, episode_num, air_date, dateadded, source, config.lock_metadata
                             )
                             print(f"✅ Fixed NFO for {episode_str}: {episode_file}")
                             fix_results["episodes"]["fixed"] += 1
                         else:
-                            fix_results["episodes"]["errors"].append(f"MANAGE_NFO disabled - cannot fix {episode_str}")
+                            fix_results["episodes"]["errors"].append(f"NFO management unavailable - cannot fix {episode_str}")
                             fix_results["episodes"]["failed"] += 1
                         
                     except Exception as e:
@@ -2488,7 +2481,7 @@ async def update_episode_nfo(imdb_id: str, season: int, episode: int, request: R
         
         # Get dependencies
         config = dependencies["config"]
-        nfo_manager = dependencies["nfo_manager"]
+        nfo_manager = dependencies.get("nfo_manager")
         
         if not config.manage_nfo:
             return {"success": False, "message": "NFO management is disabled"}
@@ -2511,7 +2504,10 @@ async def update_episode_nfo(imdb_id: str, season: int, episode: int, request: R
         if not season_dir.exists():
             return {"success": False, "message": f"Season directory not found: {season_dir}"}
         
-        # Update NFO file
+        # Update NFO file (Phase 3: nfo_manager removed)
+        if not nfo_manager:
+            return {"success": False, "message": "NFO management unavailable (Phase 3: removed)"}
+
         nfo_manager.create_episode_nfo(
             season_dir=season_dir,
             season_num=season,
@@ -2521,7 +2517,7 @@ async def update_episode_nfo(imdb_id: str, season: int, episode: int, request: R
             source=source,
             lock_metadata=config.lock_metadata
         )
-        
+
         print(f"✅ Updated NFO file for {imdb_id} S{season:02d}E{episode:02d}")
         return {"success": True, "message": f"NFO file updated for {imdb_id} S{season:02d}E{episode:02d}"}
         

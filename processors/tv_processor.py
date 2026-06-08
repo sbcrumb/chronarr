@@ -569,10 +569,10 @@ class TVProcessor:
         season_num = int(season_match.group(1))
         
         # Get series IMDb ID
-        imdb_id = self.nfo_manager.parse_imdb_from_path(series_path_obj)
+        imdb_id = parse_imdb_from_path(series_path_obj)  # Phase 3: Using imdb_utils
         if not imdb_id:
             raise ValueError(f"No IMDb ID found in series path: {series_path}")
-        
+
         _log("INFO", f"Processing season {season_num} of series: {series_path_obj.name}")
         
         # Find episodes in this season
@@ -644,10 +644,10 @@ class TVProcessor:
             raise ValueError(f"Could not parse episode number from: {episode_name}")
         
         # Get series IMDb ID
-        imdb_id = self.nfo_manager.parse_imdb_from_path(series_path_obj)
+        imdb_id = parse_imdb_from_path(series_path_obj)  # Phase 3: Using imdb_utils
         if not imdb_id:
             raise ValueError(f"No IMDb ID found in series path: {series_path}")
-        
+
         _log("INFO", f"Processing episode S{season_num:02d}E{episode_num:02d} of series: {series_path_obj.name}")
         
         # Get episode data
