@@ -66,36 +66,45 @@ if [ "${ENV_FILE}" != "/app/.env" ]; then
 fi
 
 # ========================================
-# Emby Plugin Deployment (Optional)
+# Emby Plugin Deployment (Optional - core container only)
 # ========================================
-if [ -d "/emby-plugins" ]; then
-    echo "🎬 Deploying Chronarr Emby Plugin to mounted directory: /emby-plugins"
-    if [ -f /app/emby-plugin/Chronarr.Emby.Plugin.dll ]; then
-        if cp /app/emby-plugin/Chronarr.Emby.Plugin.dll /emby-plugins/ 2>/dev/null && [ -f /emby-plugins/Chronarr.Emby.Plugin.dll ]; then
-            echo "✅ Plugin deployed successfully! ($(stat -c%s /emby-plugins/Chronarr.Emby.Plugin.dll) bytes)"
+# The web interface never mounts /emby-plugins and doesn't need the
+# plugin, so skip this entirely there to avoid a confusing "not found"
+# message that looks like an error in its logs.
+case "$*" in
+    *start_web.py*)
+        ;;
+    *)
+        if [ -d "/emby-plugins" ]; then
+            echo "🎬 Deploying Chronarr Emby Plugin to mounted directory: /emby-plugins"
+            if [ -f /app/emby-plugin/Chronarr.Emby.Plugin.dll ]; then
+                if cp /app/emby-plugin/Chronarr.Emby.Plugin.dll /emby-plugins/ 2>/dev/null && [ -f /emby-plugins/Chronarr.Emby.Plugin.dll ]; then
+                    echo "✅ Plugin deployed successfully! ($(stat -c%s /emby-plugins/Chronarr.Emby.Plugin.dll) bytes)"
+                else
+                    echo "❌ Plugin deployment failed - check permissions on the mounted directory"
+                fi
+            else
+                echo "⚠️  Emby plugin DLL not found at /app/emby-plugin/Chronarr.Emby.Plugin.dll"
+                echo "   Skipping plugin deployment"
+            fi
+        elif [ -n "$EMBY_PLUGINS_PATH" ] && [ -d "$EMBY_PLUGINS_PATH" ]; then
+            echo "🎬 Deploying Chronarr Emby Plugin to: $EMBY_PLUGINS_PATH"
+            if [ -f /app/emby-plugin/Chronarr.Emby.Plugin.dll ]; then
+                if cp /app/emby-plugin/Chronarr.Emby.Plugin.dll "$EMBY_PLUGINS_PATH/" 2>/dev/null && [ -f "$EMBY_PLUGINS_PATH/Chronarr.Emby.Plugin.dll" ]; then
+                    echo "✅ Plugin deployed successfully! ($(stat -c%s "$EMBY_PLUGINS_PATH/Chronarr.Emby.Plugin.dll") bytes)"
+                else
+                    echo "❌ Plugin deployment failed - check permissions on $EMBY_PLUGINS_PATH"
+                fi
+            else
+                echo "⚠️  Emby plugin DLL not found at /app/emby-plugin/Chronarr.Emby.Plugin.dll"
+                echo "   Skipping plugin deployment"
+            fi
         else
-            echo "❌ Plugin deployment failed - check permissions on the mounted directory"
+            echo "ℹ️  No Emby plugins directory found - skipping plugin deployment"
+            echo "   To enable plugin deployment, bind mount your Emby plugins directory to /emby-plugins"
         fi
-    else
-        echo "⚠️  Emby plugin DLL not found at /app/emby-plugin/Chronarr.Emby.Plugin.dll"
-        echo "   Skipping plugin deployment"
-    fi
-elif [ -n "$EMBY_PLUGINS_PATH" ] && [ -d "$EMBY_PLUGINS_PATH" ]; then
-    echo "🎬 Deploying Chronarr Emby Plugin to: $EMBY_PLUGINS_PATH"
-    if [ -f /app/emby-plugin/Chronarr.Emby.Plugin.dll ]; then
-        if cp /app/emby-plugin/Chronarr.Emby.Plugin.dll "$EMBY_PLUGINS_PATH/" 2>/dev/null && [ -f "$EMBY_PLUGINS_PATH/Chronarr.Emby.Plugin.dll" ]; then
-            echo "✅ Plugin deployed successfully! ($(stat -c%s "$EMBY_PLUGINS_PATH/Chronarr.Emby.Plugin.dll") bytes)"
-        else
-            echo "❌ Plugin deployment failed - check permissions on $EMBY_PLUGINS_PATH"
-        fi
-    else
-        echo "⚠️  Emby plugin DLL not found at /app/emby-plugin/Chronarr.Emby.Plugin.dll"
-        echo "   Skipping plugin deployment"
-    fi
-else
-    echo "ℹ️  No Emby plugins directory found - skipping plugin deployment"
-    echo "   To enable plugin deployment, bind mount your Emby plugins directory to /emby-plugins"
-fi
+        ;;
+esac
 
 # ========================================
 # Start Application
