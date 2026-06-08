@@ -17,3 +17,7 @@ terms from the rest of this repository — see [LICENSE](LICENSE).
 It is currently free to use during the preview/trial period. Paid licensing
 details will be announced here and on the plugin's configuration page before
 any change takes effect.
+
+If you register a license before that change goes live, you'll get a full
+year of paid use for free — our way of saying thanks for trying this out
+while it was still being built.
