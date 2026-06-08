@@ -16,8 +16,9 @@ from utils.logging import _log
 
 
 # Status file for cross-process communication
-# Use /tmp which is writable in both core and web containers
-POPULATE_STATUS_FILE = "/app/data/chronarr_populate_status.json"
+# Use /tmp which is writable in both core and web containers (unlike /app/data,
+# which can be mounted read-only)
+POPULATE_STATUS_FILE = os.path.join(tempfile.gettempdir(), "chronarr_populate_status.json")
 
 # Process tracking
 _populate_process = None
