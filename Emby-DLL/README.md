@@ -3,6 +3,8 @@
 This directory contains the compiled Emby plugin binary
 (`Chronarr.Emby.Plugin.dll`) bundled with the Chronarr application.
 
+**Bundled plugin version:** 2.0.13
+
 The plugin syncs media "date added" metadata between Chronarr and your
 Emby server. Drop the DLL into your Emby `plugins` folder to install it —
 see the main project documentation for setup instructions.
