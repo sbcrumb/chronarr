@@ -37,12 +37,25 @@ class WebhookBatcher:
         with self.lock:
             if key in self.timers:
                 self.timers[key].cancel()
-            
+
             webhook_data['media_type'] = media_type
+
+            # Accumulate episodes for same-series webhooks that arrive within the batch window.
+            # Without this, each incoming webhook overwrites the previous one and only the last
+            # episode in the batch window gets processed — silently dropping the rest.
+            if key in self.pending and webhook_data.get('episodes'):
+                existing_eps = self.pending[key].get('episodes', [])
+                seen = {(e.get('seasonNumber'), e.get('episodeNumber')) for e in existing_eps}
+                for ep in webhook_data['episodes']:
+                    if (ep.get('seasonNumber'), ep.get('episodeNumber')) not in seen:
+                        existing_eps.append(ep)
+                        seen.add((ep.get('seasonNumber'), ep.get('episodeNumber')))
+                webhook_data['episodes'] = existing_eps
+
             self.pending[key] = webhook_data
-            _log("INFO", f"Batched {media_type} webhook for {key}")
+            _log("INFO", f"Batched {media_type} webhook for {key} ({len(webhook_data.get('episodes', []))} episode(s) pending)")
             _log("DEBUG", f"Batch added - key: {key}, media_type: {media_type}, timer scheduled for {config.batch_delay}s")
-            
+
             timer = threading.Timer(config.batch_delay, self._process_item, args=[key])
             self.timers[key] = timer
             timer.start()
@@ -50,7 +63,15 @@ class WebhookBatcher:
     def _process_item(self, key: str):
         """Process a batched item"""
         with self.lock:
-            if key in self.processing or key not in self.pending:
+            if key not in self.pending:
+                return
+            if key in self.processing:
+                # Previous batch for this key is still running — re-schedule so accumulated
+                # episode data isn't stranded with no timer and no processor to pick it up.
+                _log("DEBUG", f"Batch item {key} still processing, re-scheduling in {config.batch_delay}s")
+                timer = threading.Timer(config.batch_delay, self._process_item, args=[key])
+                self.timers[key] = timer
+                timer.start()
                 return
             self.processing.add(key)
             webhook_data = self.pending.pop(key)
