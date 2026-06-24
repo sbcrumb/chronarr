@@ -325,9 +325,9 @@ class ChronarrDatabase:
                 (imdb_id, season, episode, aired, dateadded, source, has_video_file, last_updated)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (imdb_id, season, episode) DO UPDATE SET
-                    aired = EXCLUDED.aired,
-                    dateadded = EXCLUDED.dateadded,
-                    source = EXCLUDED.source,
+                    aired = COALESCE(EXCLUDED.aired, episodes.aired),
+                    dateadded = COALESCE(EXCLUDED.dateadded, episodes.dateadded),
+                    source = COALESCE(EXCLUDED.source, episodes.source),
                     has_video_file = EXCLUDED.has_video_file,
                     last_updated = EXCLUDED.last_updated
             """, (imdb_id, season, episode, aired, dateadded, source, has_video_file, timestamp))
@@ -364,11 +364,11 @@ class ChronarrDatabase:
                 INSERT INTO movies (imdb_id, title, year, path, released, dateadded, source, has_video_file, last_updated)
                 VALUES (%s, %s, %s, COALESCE((SELECT path FROM movies WHERE imdb_id = %s), 'unknown'), %s, %s, %s, %s, %s)
                 ON CONFLICT (imdb_id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    year = EXCLUDED.year,
-                    released = EXCLUDED.released,
-                    dateadded = EXCLUDED.dateadded,
-                    source = EXCLUDED.source,
+                    title = COALESCE(EXCLUDED.title, movies.title),
+                    year = COALESCE(EXCLUDED.year, movies.year),
+                    released = COALESCE(EXCLUDED.released, movies.released),
+                    dateadded = COALESCE(EXCLUDED.dateadded, movies.dateadded),
+                    source = COALESCE(EXCLUDED.source, movies.source),
                     has_video_file = EXCLUDED.has_video_file,
                     last_updated = EXCLUDED.last_updated
             """, (imdb_id, title, year, imdb_id, released, dateadded, source, has_video_file, timestamp))
