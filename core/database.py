@@ -36,8 +36,9 @@ class ChronarrDatabase:
     
     
     def _get_connection(self) -> 'psycopg2.extensions.connection':
-        """Get thread-local PostgreSQL database connection"""
-        if not hasattr(self._local, 'connection'):
+        """Get thread-local PostgreSQL database connection, reconnecting if closed"""
+        conn = getattr(self._local, 'connection', None)
+        if conn is None or conn.closed:
             self._local.connection = psycopg2.connect(
                 host=self.db_host,
                 port=self.db_port,
@@ -60,9 +61,14 @@ class ChronarrDatabase:
         conn = self._get_connection()
         try:
             yield conn
-            # PostgreSQL uses autocommit - no manual commit needed
-        except Exception:
-            # PostgreSQL uses autocommit - no manual rollback needed
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            # Connection died mid-use — discard it so the next caller reconnects
+            if hasattr(self._local, 'connection'):
+                try:
+                    self._local.connection.close()
+                except Exception:
+                    pass
+                delattr(self._local, 'connection')
             raise
     
     def _init_database(self):
