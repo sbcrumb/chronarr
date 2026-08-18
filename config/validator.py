@@ -150,12 +150,6 @@ class ConfigValidator:
         # Validate release date configuration
         self._validate_release_date_config()
         
-        # Validate performance settings
-        self._validate_performance_settings()
-        
-        # Validate cross-setting dependencies
-        self._validate_dependencies()
-        
         return self.result
     
     def _validate_required_settings(self) -> None:
@@ -373,70 +367,6 @@ class ConfigValidator:
                     current_value=priority
                 ))
     
-    def _validate_performance_settings(self) -> None:
-        """Validate performance-related settings"""
-        batch_delay = os.environ.get("BATCH_DELAY")
-        max_concurrent = os.environ.get("MAX_CONCURRENT_SERIES")
-        
-        # Performance recommendations
-        if batch_delay:
-            try:
-                delay = float(batch_delay)
-                if delay < 1.0:
-                    self.result.add_issue(ValidationIssue(
-                        setting="BATCH_DELAY",
-                        severity=ValidationSeverity.WARNING,
-                        message="Very low batch delay may increase system load",
-                        current_value=batch_delay,
-                        suggested_value="Consider using 1.0 or higher for better stability"
-                    ))
-            except ValueError:
-                pass  # Already caught in numeric validation
-        
-        if max_concurrent:
-            try:
-                concurrent = int(max_concurrent)
-                if concurrent > 5:
-                    self.result.add_issue(ValidationIssue(
-                        setting="MAX_CONCURRENT_SERIES",
-                        severity=ValidationSeverity.WARNING,
-                        message="High concurrency may overload system resources",
-                        current_value=max_concurrent,
-                        suggested_value="Consider using 3-5 for optimal balance"
-                    ))
-            except ValueError:
-                pass  # Already caught in numeric validation
-    
-    def _validate_dependencies(self) -> None:
-        """Validate cross-setting dependencies"""
-        # If database is configured, recommend using database over API
-        db_type = os.environ.get("RADARR_DB_TYPE")
-        radarr_url = os.environ.get("RADARR_URL")
-        
-        if db_type and radarr_url:
-            self.result.add_issue(ValidationIssue(
-                setting="RADARR_DB_TYPE",
-                severity=ValidationSeverity.INFO,
-                message="Database connection preferred over API for better performance",
-                details={"recommendation": "Database access is faster and more reliable"}
-            ))
-        
-        # Check path mapping consistency
-        tv_paths = os.environ.get("TV_PATHS", "").split(",")
-        sonarr_paths = os.environ.get("SONARR_ROOT_FOLDERS", "").split(",")
-        
-        if len([p for p in tv_paths if p.strip()]) != len([p for p in sonarr_paths if p.strip()]):
-            self.result.add_issue(ValidationIssue(
-                setting="TV_PATHS",
-                severity=ValidationSeverity.WARNING,
-                message="TV_PATHS and SONARR_ROOT_FOLDERS should have matching number of paths",
-                details={
-                    "tv_paths_count": len([p for p in tv_paths if p.strip()]),
-                    "sonarr_paths_count": len([p for p in sonarr_paths if p.strip()])
-                }
-            ))
-
-
 def validate_configuration() -> ValidationResult:
     """
     Validate the complete Chronarr configuration
