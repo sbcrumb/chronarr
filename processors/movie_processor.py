@@ -171,9 +171,13 @@ class MovieProcessor:
             _log("ERROR", f"Error checking movie completion for {imdb_id}: {e}")
             return False, f"Error checking completion: {e}"
     
-    def process_movie(self, movie_path: Path, webhook_mode: bool = False, force_scan: bool = False, scan_mode: str = "smart", shutdown_event=None) -> str:
+    def process_movie(self, movie_path: Path, webhook_mode: bool = False, force_scan: bool = False, scan_mode: str = "smart", shutdown_event=None, imdb_id: str = None) -> str:
         """Process a movie directory"""
-        imdb_id = find_imdb_in_directory(movie_path)  # Phase 3: Using imdb_utils instead of NFOManager
+        # Prefer the IMDb ID passed in (e.g. from webhook payload) over filesystem detection.
+        # Filesystem detection only works when the ID is embedded in the folder/file name,
+        # which standard Radarr naming doesn't do.
+        if not imdb_id:
+            imdb_id = find_imdb_in_directory(movie_path)
         if not imdb_id:
             _log("ERROR", f"No IMDb ID found in movie directory, filenames, or NFO file: {movie_path}")
             return "error"
