@@ -162,7 +162,7 @@ class WebhookBatcher:
                     _log("ERROR", "Movie processor not available")
                     return
                     
-                self.movie_processor.process_movie(path_obj, webhook_mode=True)
+                self.movie_processor.process_movie(path_obj, webhook_mode=True, imdb_id=expected_imdb)
             else:
                 _log("ERROR", f"Unknown media type: {media_type}")
         
