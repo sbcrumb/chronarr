@@ -331,9 +331,7 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             _log("ERROR", "This prevents processing wrong movies due to path mapping issues")
             return {"status": "error", "message": f"Mapped movie path does not exist: {container_path}"}
         
-        # Verify the path contains the expected IMDb ID
-        if imdb_id not in container_path.lower():
-            print(f"WARNING: IMDb ID {imdb_id} not found in container path {container_path}")
+        # IMDb ID won't be in the path for standard Radarr folder naming — omit the check
         
         # Create movie-specific webhook data with proper path validation
         movie_webhook_data = {
