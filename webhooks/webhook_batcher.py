@@ -152,10 +152,10 @@ class WebhookBatcher:
                         _log("INFO", f"Processing {len(episodes_data)} episodes sequentially with {config.sequential_delay}s delay")
                         self._process_episodes_sequentially(path_obj, episodes_data)
                     else:
-                        self.tv_processor.process_webhook_episodes(path_obj, episodes_data)
+                        self.tv_processor.process_webhook_episodes(path_obj, episodes_data, imdb_id=expected_imdb)
                 else:
                     _log("INFO", f"Using series processing mode (fallback or configured)")
-                    self.tv_processor.process_series(path_obj)
+                    self.tv_processor.process_series(path_obj, imdb_id=expected_imdb)
                     
             elif media_type == 'movie':
                 if not self.movie_processor:
