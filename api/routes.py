@@ -810,7 +810,35 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
         movie_total = 0
         movie_skipped = 0
         movie_processed = 0
-        
+
+        # Build folder-name → IMDb indexes from Radarr/Sonarr at scan start.
+        # Used as a fallback when filesystem detection finds no IMDb ID in the
+        # folder or file name (standard Radarr/Sonarr naming like "Movie (Year)").
+        radarr_path_index = {}
+        sonarr_path_index = {}
+
+        radarr_db = getattr(movie_processor, 'radarr_db', None)
+        if radarr_db:
+            try:
+                for m in radarr_db.get_all_movies():
+                    p, imdb = m.get('path'), m.get('imdb_id')
+                    if p and imdb:
+                        radarr_path_index[Path(p).name] = imdb
+                print(f"INFO: Radarr path index built — {len(radarr_path_index)} movies")
+            except Exception as e:
+                print(f"WARNING: Could not build Radarr path index: {e}")
+
+        sonarr = getattr(tv_processor, 'sonarr', None)
+        if sonarr:
+            try:
+                for s in sonarr.get_all_series():
+                    p, imdb = s.get('path'), s.get('imdb_id')
+                    if p and imdb:
+                        sonarr_path_index[Path(p).name] = imdb
+                print(f"INFO: Sonarr path index built — {len(sonarr_path_index)} series")
+            except Exception as e:
+                print(f"WARNING: Could not build Sonarr path index: {e}")
+
         def translate_host_path_to_container(path_str):
             """Translate host paths to container paths for Docker volume mounts"""
             path_str = str(path_str)
@@ -912,8 +940,9 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                                 not item.name.lower().startswith('season') and
                                 not re.match(r'^season\s+\d+$', item.name, re.IGNORECASE)):
                                 
-                                # Check for IMDb ID in directory name (Phase 3: imdb_utils)
-                                imdb_id = parse_imdb_from_path(item)
+                                # Check for IMDb ID in directory name, then fall back to
+                                # Sonarr path index for standard naming (e.g. "Series (Year)")
+                                imdb_id = parse_imdb_from_path(item) or sonarr_path_index.get(item.name)
                                 if imdb_id:
                                     tv_series_list.append(item)
                                 else:
@@ -984,8 +1013,9 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                         return
                         
                     if item.is_dir():
-                        # Check for IMDb ID in directory name (Phase 3: imdb_utils)
-                        imdb_id = find_imdb_in_directory(item)
+                        # Check for IMDb ID in directory name, then fall back to
+                        # Radarr path index for standard naming (e.g. "Movie (Year)")
+                        imdb_id = find_imdb_in_directory(item) or radarr_path_index.get(item.name)
                         if imdb_id:
                             movie_list.append(item)
                         else:
