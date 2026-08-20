@@ -1,23 +1,30 @@
 # Chronarr Emby Plugin
 
-This directory contains the compiled Emby plugin binary
-(`Chronarr.Emby.Plugin.dll`) bundled with the Chronarr application.
+The Chronarr Emby plugin syncs accurate import dates from the Chronarr database back to your Emby library, so your media sorts by when you actually added it — not when Emby last scanned the file.
 
-**Bundled plugin version:** 2.0.13
+## Auto-Deploy (Recommended)
 
-The plugin syncs media "date added" metadata between Chronarr and your
-Emby server. Drop the DLL into your Emby `plugins` folder to install it —
-see the main project documentation for setup instructions.
+Chronarr ships the plugin DLL inside the Docker image and deploys it automatically on startup. Mount your Emby plugins directory in `docker-compose.yml`:
 
-## Licensing
+```yaml
+volumes:
+  - /path/to/emby/plugins:/emby-plugins
+```
 
-This is closed-source software distributed in binary form under separate
-terms from the rest of this repository — see [LICENSE](LICENSE).
+Or set `EMBY_PLUGINS_PATH` in your `.env` to the Emby plugins folder on the host. On startup you'll see:
 
-It is currently free to use during the preview/trial period. Paid licensing
-details will be announced here and on the plugin's configuration page before
-any change takes effect.
+```
+✅ Plugin deployed successfully! (257536 bytes)
+```
 
-If you register a license before that change goes live, you'll get a full
-year of paid use for free — our way of saying thanks for trying this out
-while it was still being built.
+## Manual Install
+
+If you prefer to install manually, download `Chronarr.Emby.Plugin.dll` from this directory and place it in your Emby plugins folder. Restart Emby.
+
+## Code Signing
+
+This project uses [SignPath Foundation](https://signpath.org) for code signing.
+
+## Changelog
+
+The plugin changelog is visible in the Emby configuration page under **Dashboard → Plugins → Chronarr → Version & Changelog**.

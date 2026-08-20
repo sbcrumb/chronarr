@@ -501,6 +501,20 @@ A: **Radarr requires direct database access** (PostgreSQL or SQLite) - the Radar
 **Q: Does this work with SQLite Radarr/Sonarr databases?**
 A: Yes, Chronarr can read from both SQLite and PostgreSQL databases for both Radarr and Sonarr. **Important for Docker users**: You must mount the directory containing the SQLite database file(s) as a read-only volume in your `docker-compose.yml`. See the Quick Start guide for configuration details.
 
+## Privacy Policy
+
+Chronarr's core application does not collect personal data. It reads only from your local Radarr and Sonarr databases and stores date information in your own PostgreSQL instance.
+
+The **Emby plugin** collects the following information during license registration:
+
+- **Name** — used to identify your license
+- **Email address** — used to deliver your license key and send license status notifications
+- **Server name** — used to associate a license with a specific Emby installation
+
+This data is transmitted to the Chronarr license server and is used solely for license management. It is never sold, shared with third parties, or used for any purpose other than validating and managing your license.
+
+To request removal of your data, open an issue at [github.com/sbcrumb/chronarr/issues](https://github.com/sbcrumb/chronarr/issues).
+
 ## Contributing
 
 Contributions welcome! Please:
