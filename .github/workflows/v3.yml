@@ -1,0 +1,60 @@
+name: Build & Push V3 to DockerHub
+
+on:
+  push:
+    branches: [ feature/v3 ]
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Read VERSION
+        run: |
+          if [[ ! -f VERSION ]]; then echo "VERSION file missing"; exit 1; fi
+          RAW=$(tr -d ' \n' < VERSION)
+          if [[ -z "$RAW" ]]; then echo "VERSION empty"; exit 1; fi
+          if [[ "$RAW" =~ ^v ]]; then NUM="${RAW#v}"; else NUM="$RAW"; fi
+          REPO_NAME=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
+          echo "DOCKER_REPO=${{ secrets.DOCKER_HUB_USERNAME }}/${REPO_NAME}" >> $GITHUB_ENV
+          echo "VERSION_NUM=$NUM" >> $GITHUB_ENV
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.DOCKER_REPO }}:v3
+          build-args: |
+            APP_VERSION=${{ env.VERSION_NUM }}-v3
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Summary
+        run: |
+          echo "✅ V3 image pushed!"
+          echo "Tag: ${{ env.DOCKER_REPO }}:v3"
+          echo ""
+          echo "To test, update docker-compose.yml:"
+          echo "  image: ${{ env.DOCKER_REPO }}:v3"
