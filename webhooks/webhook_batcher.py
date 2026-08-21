@@ -102,43 +102,39 @@ class WebhookBatcher:
                 _log("ERROR", f"This indicates a path mapping issue - webhook rejected to prevent wrong processing")
                 return
             
-            # CRITICAL: Validate that the path contains the expected IMDb ID for movies
+            # Validate IMDb ID for movies — only reject if a conflicting ID is found.
+            # Standard Radarr folder naming (Movie Title (Year)) doesn't embed IMDb IDs,
+            # so no detection is normal and not a reason to reject.
             if media_type == 'movie':
                 expected_imdb = key.replace('movie:', '') if key.startswith('movie:') else key
 
-                # Use imdb_utils for IMDb detection (Phase 3: no NFO reading)
                 detected_imdb = find_imdb_in_directory(path_obj)
-                imdb_match = False
                 if detected_imdb:
-                    # Compare with and without 'tt' prefix for flexibility
+                    # An ID was found — check it matches
                     if detected_imdb == expected_imdb or detected_imdb.replace('tt', '') == expected_imdb.replace('tt', ''):
-                        imdb_match = True
+                        _log("DEBUG", f"Batch validation passed: IMDb {expected_imdb} confirmed in folder name")
+                    else:
+                        _log("ERROR", f"BATCH VALIDATION FAILED: folder contains {detected_imdb} but webhook expected {expected_imdb} in {path_str}")
+                        _log("ERROR", f"This prevents processing the wrong movie due to a mismatched batch entry")
+                        return
+                else:
+                    # No IMDb ID in folder/file names — standard naming, trust the webhook
+                    _log("DEBUG", f"Batch validation: no IMDb in folder name for {path_str}, trusting webhook ID {expected_imdb}")
 
-                if not imdb_match:
-                    _log("ERROR", f"BATCH VALIDATION FAILED: Expected IMDb {expected_imdb} but found {detected_imdb} in {path_str}")
-                    _log("ERROR", f"Detected IMDb: {detected_imdb}, Expected: {expected_imdb}")
-                    _log("ERROR", f"This prevents processing wrong movies due to batch corruption")
-                    return
-                _log("DEBUG", f"Batch validation passed: IMDb {expected_imdb} matches detected {detected_imdb}")
-            
-            # CRITICAL: Validate that the path contains the expected IMDb ID for TV shows
+            # Validate IMDb ID for TV shows — same logic: conflict = reject, absent = proceed.
             if media_type == 'tv':
                 expected_imdb = key.replace('tv:', '') if key.startswith('tv:') else key
 
-                # Use imdb_utils for IMDb detection (Phase 3: no NFO reading)
                 detected_imdb = parse_imdb_from_path(path_obj)
-                imdb_match = False
                 if detected_imdb:
-                    # Compare with and without 'tt' prefix for flexibility
                     if detected_imdb == expected_imdb or detected_imdb.replace('tt', '') == expected_imdb.replace('tt', ''):
-                        imdb_match = True
-
-                if not imdb_match:
-                    _log("ERROR", f"BATCH VALIDATION FAILED: Expected IMDb {expected_imdb} but found {detected_imdb} in TV {path_str}")
-                    _log("ERROR", f"Detected TV IMDb: {detected_imdb}, Expected: {expected_imdb}")
-                    _log("ERROR", f"This prevents processing wrong TV series due to batch corruption")
-                    return
-                _log("DEBUG", f"TV batch validation passed: IMDb {expected_imdb} matches detected {detected_imdb}")
+                        _log("DEBUG", f"TV batch validation passed: IMDb {expected_imdb} confirmed in folder name")
+                    else:
+                        _log("ERROR", f"BATCH VALIDATION FAILED: folder contains {detected_imdb} but webhook expected {expected_imdb} in TV {path_str}")
+                        _log("ERROR", f"This prevents processing the wrong series due to a mismatched batch entry")
+                        return
+                else:
+                    _log("DEBUG", f"TV batch validation: no IMDb in folder name for {path_str}, trusting webhook ID {expected_imdb}")
                 
                 if not self.tv_processor:
                     _log("ERROR", "TV processor not available")
@@ -156,17 +152,17 @@ class WebhookBatcher:
                         _log("INFO", f"Processing {len(episodes_data)} episodes sequentially with {config.sequential_delay}s delay")
                         self._process_episodes_sequentially(path_obj, episodes_data)
                     else:
-                        self.tv_processor.process_webhook_episodes(path_obj, episodes_data)
+                        self.tv_processor.process_webhook_episodes(path_obj, episodes_data, imdb_id=expected_imdb)
                 else:
                     _log("INFO", f"Using series processing mode (fallback or configured)")
-                    self.tv_processor.process_series(path_obj)
+                    self.tv_processor.process_series(path_obj, imdb_id=expected_imdb)
                     
             elif media_type == 'movie':
                 if not self.movie_processor:
                     _log("ERROR", "Movie processor not available")
                     return
                     
-                self.movie_processor.process_movie(path_obj, webhook_mode=True)
+                self.movie_processor.process_movie(path_obj, webhook_mode=True, imdb_id=expected_imdb)
             else:
                 _log("ERROR", f"Unknown media type: {media_type}")
         

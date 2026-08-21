@@ -171,9 +171,13 @@ class MovieProcessor:
             _log("ERROR", f"Error checking movie completion for {imdb_id}: {e}")
             return False, f"Error checking completion: {e}"
     
-    def process_movie(self, movie_path: Path, webhook_mode: bool = False, force_scan: bool = False, scan_mode: str = "smart", shutdown_event=None) -> str:
+    def process_movie(self, movie_path: Path, webhook_mode: bool = False, force_scan: bool = False, scan_mode: str = "smart", shutdown_event=None, imdb_id: str = None) -> str:
         """Process a movie directory"""
-        imdb_id = find_imdb_in_directory(movie_path)  # Phase 3: Using imdb_utils instead of NFOManager
+        # Prefer the IMDb ID passed in (e.g. from webhook payload) over filesystem detection.
+        # Filesystem detection only works when the ID is embedded in the folder/file name,
+        # which standard Radarr naming doesn't do.
+        if not imdb_id:
+            imdb_id = find_imdb_in_directory(movie_path)
         if not imdb_id:
             _log("ERROR", f"No IMDb ID found in movie directory, filenames, or NFO file: {movie_path}")
             return "error"
@@ -255,12 +259,17 @@ class MovieProcessor:
         
         # TIER 2: Query external APIs directly (NFO layer removed in Phase 2)
         _log("INFO", f"🔍 TIER 2 - No database cache, querying external APIs")
-        
+
+        # Fetch title/year from Radarr now so we can store them alongside dates
+        radarr_meta = self.radarr.movie_by_imdb(imdb_id) if self.radarr else None
+        title = radarr_meta.get("title") if radarr_meta else None
+        year = radarr_meta.get("year") if radarr_meta else None
+
         # Check for shutdown signal before expensive API operations
         if shutdown_event and shutdown_event.is_set():
             _log("INFO", f"⚠️ SHUTDOWN SIGNAL RECEIVED - Stopping movie processing before API calls: {movie_path.name}")
             return "shutdown"
-        
+
         # TIER 3: No cached data found - determine if we should query APIs
         if webhook_mode:
             _log("INFO", f"Webhook processing - no cached data found, using full date decision logic")
@@ -298,7 +307,7 @@ class MovieProcessor:
         # Skip remaining processing if no valid date found and file dates disabled
         if final_dateadded is None:
             _log("WARNING", f"Movie {movie_path.name} - no valid date source available, but NFO was still processed")
-            self.db.upsert_movie_dates(imdb_id, released, None, source, True)
+            self.db.upsert_movie_dates(imdb_id, released, None, source, True, title=title, year=year)
             return "processed"
             
         # Update dateadded and source for the rest of processing
@@ -316,7 +325,7 @@ class MovieProcessor:
         # Save to database
         _log("DEBUG", f"About to save to database: imdb_id={imdb_id}, dateadded={dateadded}")
         try:
-            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True)
+            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True, title=title, year=year)
             _log("DEBUG", f"Database save completed for {imdb_id}")
         except Exception as e:
             _log("ERROR", f"Database save failed for {imdb_id}: {e}")
@@ -385,8 +394,11 @@ class MovieProcessor:
         
         # Save to database only (NFO operations removed in Phase 1)
         if dateadded:
-            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True)
-            
+            radarr_meta = self.radarr.movie_by_imdb(imdb_id) if self.radarr else None
+            title = radarr_meta.get("title") if radarr_meta else None
+            year = radarr_meta.get("year") if radarr_meta else None
+            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True, title=title, year=year)
+
             _log("INFO", f"🔍 INCOMPLETE MODE COMPLETE: {movie_path.name} (source: {source})")
             return "processed"
         else:

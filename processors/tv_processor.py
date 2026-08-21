@@ -178,9 +178,10 @@ class TVProcessor:
             _log("ERROR", f"Error checking series completion for {imdb_id}: {e}")
             return False, f"Error checking completion: {e}"
     
-    def process_series(self, series_path: Path, force_scan: bool = False, scan_mode: str = "smart") -> str:
+    def process_series(self, series_path: Path, force_scan: bool = False, scan_mode: str = "smart", imdb_id: str = None) -> str:
         """Process a TV series directory"""
-        imdb_id = parse_imdb_from_path(series_path)  # Phase 3: Using imdb_utils
+        if not imdb_id:
+            imdb_id = parse_imdb_from_path(series_path)
         if not imdb_id:
             _log("ERROR", f"No IMDb ID found in series path: {series_path}")
             return "error"
@@ -779,9 +780,10 @@ class TVProcessor:
         
         return processed_results
     
-    def process_webhook_episodes(self, series_path: Path, webhook_episodes: List[Dict[str, Any]]) -> None:
+    def process_webhook_episodes(self, series_path: Path, webhook_episodes: List[Dict[str, Any]], imdb_id: str = None) -> None:
         """Process only the specific episodes mentioned in a webhook (targeted mode)"""
-        imdb_id = parse_imdb_from_path(series_path)  # Phase 3: Using imdb_utils
+        if not imdb_id:
+            imdb_id = parse_imdb_from_path(series_path)
         if not imdb_id:
             _log("ERROR", f"No IMDb ID found in series path: {series_path}")
             return

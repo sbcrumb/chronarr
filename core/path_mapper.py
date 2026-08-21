@@ -35,65 +35,80 @@ class PathMapper:
             print(f"PATH_DEBUG: movie_paths: {self.movie_paths}")
             print(f"PATH_DEBUG: tv_paths: {self.tv_paths}")
 
+    @staticmethod
+    def _normalize_separators(path: str) -> str:
+        """Normalize path separators to forward slashes — handles UNC paths from Windows/Radarr"""
+        return path.replace('\\', '/')
+
     def sonarr_path_to_container_path(self, sonarr_path: str) -> str:
         """Convert Sonarr path to container path using environment mappings"""
+        # Normalize separators so UNC paths (\\server\share\...) match correctly
+        normalized_path = self._normalize_separators(sonarr_path)
+
         if self.path_debug:
             print(f"PATH_DEBUG: sonarr_path_to_container_path input: {sonarr_path}")
+            print(f"PATH_DEBUG: normalized input: {normalized_path}")
             print(f"PATH_DEBUG: sonarr_roots: {self.sonarr_roots}")
             print(f"PATH_DEBUG: tv_paths: {self.tv_paths}")
-        
+
         # Sort roots by length (longest first) to avoid substring matching issues
         indexed_roots = [(i, root) for i, root in enumerate(self.sonarr_roots)]
         indexed_roots.sort(key=lambda x: len(x[1]), reverse=True)
-        
+
         # Try to match against configured Sonarr root folders (longest first)
         for original_index, sonarr_root in indexed_roots:
+            normalized_root = self._normalize_separators(sonarr_root)
             if self.path_debug:
-                print(f"PATH_DEBUG: Checking sonarr_root[{original_index}]: {sonarr_root}")
-            if sonarr_path.startswith(sonarr_root + '/') or sonarr_path == sonarr_root:
+                print(f"PATH_DEBUG: Checking sonarr_root[{original_index}]: {normalized_root}")
+            if normalized_path.startswith(normalized_root + '/') or normalized_path == normalized_root:
                 if self.path_debug:
                     print(f"PATH_DEBUG: Match found! Index {original_index}")
                 # Map to corresponding TV path
                 if original_index < len(self.tv_paths):
                     container_root = self.tv_paths[original_index]
-                    relative_path = sonarr_path[len(sonarr_root):].lstrip('/')
+                    relative_path = normalized_path[len(normalized_root):].lstrip('/')
                     result = str(Path(container_root) / relative_path) if relative_path else container_root
                     if self.path_debug:
                         print(f"PATH_DEBUG: Mapped to: {result}")
                     return result
-        
+
         if self.path_debug:
             print(f"PATH_DEBUG: No match found, returning original: {sonarr_path}")
         # No fallback - if path mapping fails, return original and let validation catch it
         return sonarr_path
-    
+
     def radarr_path_to_container_path(self, radarr_path: str) -> str:
         """Convert Radarr path to container path using environment mappings"""
+        # Normalize separators so UNC paths (\\server\share\...) match correctly
+        normalized_path = self._normalize_separators(radarr_path)
+
         if self.path_debug:
             print(f"PATH_DEBUG: radarr_path_to_container_path input: {radarr_path}")
+            print(f"PATH_DEBUG: normalized input: {normalized_path}")
             print(f"PATH_DEBUG: radarr_roots: {self.radarr_roots}")
             print(f"PATH_DEBUG: movie_paths: {self.movie_paths}")
-        
+
         # Sort roots by length (longest first) to avoid substring matching issues
         indexed_roots = [(i, root) for i, root in enumerate(self.radarr_roots)]
         indexed_roots.sort(key=lambda x: len(x[1]), reverse=True)
-        
+
         # Try to match against configured Radarr root folders (longest first)
         for original_index, radarr_root in indexed_roots:
+            normalized_root = self._normalize_separators(radarr_root)
             if self.path_debug:
-                print(f"PATH_DEBUG: Checking radarr_root[{original_index}]: {radarr_root}")
-            if radarr_path.startswith(radarr_root + '/') or radarr_path == radarr_root:
+                print(f"PATH_DEBUG: Checking radarr_root[{original_index}]: {normalized_root}")
+            if normalized_path.startswith(normalized_root + '/') or normalized_path == normalized_root:
                 if self.path_debug:
                     print(f"PATH_DEBUG: Match found! Index {original_index}")
                 # Map to corresponding movie path
                 if original_index < len(self.movie_paths):
                     container_root = self.movie_paths[original_index]
-                    relative_path = radarr_path[len(radarr_root):].lstrip('/')
+                    relative_path = normalized_path[len(normalized_root):].lstrip('/')
                     result = str(Path(container_root) / relative_path) if relative_path else container_root
                     if self.path_debug:
                         print(f"PATH_DEBUG: Mapped to: {result}")
                     return result
-        
+
         if self.path_debug:
             print(f"PATH_DEBUG: No match found, returning original: {radarr_path}")
         # No fallback - if path mapping fails, return original and let validation catch it

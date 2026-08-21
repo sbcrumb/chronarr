@@ -215,6 +215,30 @@ Watch as Chronarr imports all your media with proper dates!
 
 > **📖 For detailed setup instructions, see [QUICKSTART.md](QUICKSTART.md)**
 
+## Folder Naming
+
+Chronarr works with standard Radarr/Sonarr folder naming out of the box — no changes required.
+
+**Standard naming (always works):**
+```
+/movies/Selena (1997)/
+/tv/Breaking Bad (2008)/
+```
+
+**Optional — embed IMDb ID in folder name:**
+```
+/movies/Selena (1997) [imdb-tt0120094]/
+/tv/Breaking Bad (2008) [imdb-tt0903747]/
+```
+
+When an IMDb ID is present in the folder or file name, Chronarr cross-checks it against the webhook payload as an extra validation step. If a conflicting ID is found, the webhook is rejected to prevent processing the wrong media. If no ID is present, the webhook payload is trusted as the authoritative source — which is correct for all standard naming setups.
+
+**Radarr** — if your movie file naming includes `[{ImdbId}]`, Chronarr detects it from the filename inside the folder even when the folder name itself is standard.
+
+**Sonarr** — the series folder name is checked. If your series folder format includes `[imdb-{ImdbId}]`, Chronarr will cross-check on every TV webhook.
+
+Supported IMDb formats in folder/file names: `[imdb-tt1234567]`, `[tt1234567]`, `{imdb-tt1234567}`, `(imdb-tt1234567)`.
+
 ## Architecture
 
 Chronarr uses a 3-container Docker Compose architecture:
