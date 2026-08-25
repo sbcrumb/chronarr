@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Chronarr Core - Automated NFO file management and processing engine
-Core processing container with webhooks, scanning, and database management
-Web interface separated to chronarr-web container
-"""
+"""Chronarr core — webhook processor, scanner, and scheduling engine."""
 import os
 import sys
 import signal
@@ -22,13 +18,9 @@ from utils.logging import _log
 
 # Import core components
 from core.database import ChronarrDatabase
-# from core.nfo_manager import NFOManager  # Phase 3: Removed - no longer needed
-from core.path_mapper import PathMapper
+from core.instance_registry import build_registry
 
-# Import clients
-from clients.external_clients import ExternalClientManager
-from clients.radarr_db_client import RadarrDbClient
-from clients.sonarr_db_client import SonarrDbClient
+from core.path_mapper import PathMapper
 
 # Import processors
 from processors.tv_processor import TVProcessor
@@ -87,45 +79,43 @@ def create_app() -> FastAPI:
     return app
 
 
+def _noop_mapper() -> PathMapper:
+    """Return an empty PathMapper — used when a default instance isn't configured."""
+    return PathMapper(root_folders=[], container_paths=[])
+
+
 def initialize_components():
-    """Initialize all application components"""
     start_time = datetime.now(timezone.utc)
 
-    # Initialize core components
     db = ChronarrDatabase(config=config)
-    # nfo_manager = NFOManager(config.manager_brand, config.debug)  # Phase 3: Removed
-    path_mapper = PathMapper(config)
 
-    # Initialize processors (nfo_manager=None for backward compatibility)
-    tv_processor = TVProcessor(db, None, path_mapper)
-    movie_processor = MovieProcessor(db, None, path_mapper)
+    # Build the instance registry — one client + one path mapper per configured
+    # Radarr/Sonarr instance, derived from env vars at startup.
+    registry = build_registry(config)
 
-    # Initialize webhook batcher (no longer needs nfo_manager - Phase 3)
+    # Processors get the default instance's client and mapper. Multi-instance
+    # requests pass instance name explicitly at process time; the processors look
+    # up the right client from the registry during their DB writes.
+    default_radarr_mapper = registry.radarr_mapper("radarr")
+    default_sonarr_mapper = registry.sonarr_mapper("sonarr")
+
+    tv_processor = TVProcessor(
+        db, None,
+        default_sonarr_mapper or _noop_mapper(),
+        sonarr_client=registry.sonarr("sonarr"),
+    )
+    movie_processor = MovieProcessor(
+        db, None,
+        default_radarr_mapper or _noop_mapper(),
+        radarr_client=registry.radarr("radarr"),
+    )
+
     batcher = WebhookBatcher(nfo_manager=None)
     batcher.set_processors(tv_processor, movie_processor)
 
-    # Initialize optional Radarr/Sonarr database clients for orphaned record cleanup
-    radarr_db_client = None
-    sonarr_db_client = None
-
-    try:
-        radarr_db_client = RadarrDbClient.from_env()
-        if radarr_db_client:
-            _log("INFO", "Radarr database client initialized for orphaned record cleanup")
-    except Exception as e:
-        _log("WARNING", f"Could not initialize Radarr database client: {e}")
-
-    try:
-        sonarr_db_client = SonarrDbClient.from_env()
-        if sonarr_db_client:
-            _log("INFO", "Sonarr database client initialized for orphaned record cleanup")
-    except Exception as e:
-        _log("WARNING", f"Could not initialize Sonarr database client: {e}")
-
     return {
         "db": db,
-        # "nfo_manager": nfo_manager,  # Phase 3: Removed
-        "path_mapper": path_mapper,
+        "registry": registry,
         "tv_processor": tv_processor,
         "movie_processor": movie_processor,
         "batcher": batcher,
@@ -133,8 +123,6 @@ def initialize_components():
         "config": config,
         "version": get_version(),
         "shutdown_event": shutdown_event,
-        "radarr_db_client": radarr_db_client,
-        "sonarr_db_client": sonarr_db_client
     }
 
 
