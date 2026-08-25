@@ -1,7 +1,4 @@
-"""
-File utility functions for Chronarr
-Common file operations to eliminate code duplication
-"""
+"""File utilities — path resolution, video file discovery, episode parsing."""
 import glob
 import re
 from pathlib import Path
@@ -10,65 +7,42 @@ from typing import Optional, List, Dict, Tuple, Union
 from utils.logging import _log
 
 
-# Video file extensions used throughout the application
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.ts'}
 
-# Episode pattern for TV series files
 EPISODE_PATTERN = re.compile(
     r'.*[sS](\d{1,2})[eE](\d{1,3}).*|.*(\d{1,2})x(\d{1,3}).*'
 )
 
 
 def find_media_path_by_imdb_and_title(
-    title: str, 
-    imdb_id: str, 
-    search_paths: List[Path], 
+    title: str,
+    imdb_id: str,
+    search_paths: List[Path],
     webhook_path: Optional[str] = None,
-    path_mapper = None
+    path_mapper=None
 ) -> Optional[Path]:
-    """
-    Unified media path finder for both TV series and movies
-    
-    Args:
-        title: Media title to search for
-        imdb_id: IMDb ID to search for
-        search_paths: List of paths to search in (tv_paths or movie_paths)
-        webhook_path: Optional webhook path to try first
-        path_mapper: Optional path mapper for webhook path conversion
-    
-    Returns:
-        Path to media directory if found, None otherwise
-    """
-    # Try webhook path first if provided
+    """Find a media directory by trying the webhook path first, then searching configured paths."""
+    # The webhook payload often carries the exact path — try it before scanning directories.
     if webhook_path and path_mapper:
         try:
-            if hasattr(path_mapper, 'sonarr_path_to_container_path'):
-                container_path = path_mapper.sonarr_path_to_container_path(webhook_path)
-            elif hasattr(path_mapper, 'radarr_path_to_container_path'):
-                container_path = path_mapper.radarr_path_to_container_path(webhook_path)
-            else:
-                container_path = webhook_path
-                
+            container_path = path_mapper.map(webhook_path)
             path_obj = Path(container_path)
             if path_obj.exists():
                 return path_obj
         except Exception as e:
             _log("WARNING", f"Failed to process webhook path {webhook_path}: {e}")
     
-    # Search by IMDb ID or title in configured paths
     for media_path in search_paths:
         if not media_path.exists():
             continue
-        
-        # Search by IMDb ID first (more reliable)
+
         if imdb_id:
-            # Use proper glob pattern - escape brackets to match literal [imdb-ID]
+            # Escape brackets so glob treats them as literals, not character classes.
             pattern = str(media_path / f"*\\[imdb-{imdb_id}\\]*")
             matches = glob.glob(pattern)
             if matches:
                 return Path(matches[0])
-        
-        # Search by title as fallback
+
         if title:
             title_clean = clean_title_for_search(title)
             for item in media_path.iterdir():
@@ -81,29 +55,11 @@ def find_media_path_by_imdb_and_title(
 
 
 def clean_title_for_search(title: str) -> str:
-    """
-    Clean title for fuzzy matching
-    
-    Args:
-        title: Raw title string
-        
-    Returns:
-        Cleaned title for comparison
-    """
+    """Strip spaces, dashes, and dots for fuzzy directory name matching."""
     return title.lower().replace(" ", "").replace("-", "").replace(".", "")
 
 
 def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
-    """
-    Find all video files in a directory
-    
-    Args:
-        directory: Directory to search
-        recursive: Whether to search recursively
-        
-    Returns:
-        List of video file paths
-    """
     if not directory.exists():
         return []
     
@@ -122,15 +78,6 @@ def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
 
 
 def extract_episode_info(filename: str) -> Optional[Tuple[int, int]]:
-    """
-    Extract season and episode numbers from filename
-    
-    Args:
-        filename: Video filename to parse
-        
-    Returns:
-        Tuple of (season, episode) if found, None otherwise
-    """
     match = EPISODE_PATTERN.match(filename)
     if not match:
         return None
@@ -148,15 +95,7 @@ def extract_episode_info(filename: str) -> Optional[Tuple[int, int]]:
 
 
 def find_episodes_on_disk(series_path: Path) -> Dict[Tuple[int, int], List[Path]]:
-    """
-    Find all episodes on disk and return mapping of (season, episode) -> [video_files]
-    
-    Args:
-        series_path: Path to series directory
-        
-    Returns:
-        Dictionary mapping (season, episode) tuples to lists of video files
-    """
+    """Map (season, episode) tuples to their video files for a series directory."""
     episodes = {}
     
     if not series_path.exists():

@@ -1,9 +1,9 @@
 """
 Instance registry for Radarr and Sonarr clients.
 
-Builds one client per configured instance at startup and provides a central
-lookup by instance name. Processors and webhook handlers resolve the right
-client from here rather than each constructing their own from env vars.
+Builds one client and one PathMapper per configured instance at startup.
+Processors and webhook handlers resolve the right client/mapper from here
+rather than each constructing their own from env vars.
 """
 from typing import Dict, Optional, Union
 
@@ -13,6 +13,7 @@ from clients.sonarr_client import SonarrClient
 from clients.sonarr_db_client import SonarrDbClient
 from config.settings import RadarrInstance, SonarrInstance
 from core.logging import _log
+from core.path_mapper import PathMapper
 
 # Type aliases
 AnyRadarrClient = Union[RadarrClient, RadarrDbClient]
@@ -92,21 +93,31 @@ def _build_sonarr_client(instance: SonarrInstance) -> Optional[AnySonarrClient]:
 
 
 class InstanceRegistry:
-    """Central store of all Radarr and Sonarr clients, keyed by instance name."""
+    """Central store of all Radarr and Sonarr clients and path mappers, keyed by instance name."""
 
     def __init__(self, radarr_instances, sonarr_instances):
         self._radarr: Dict[str, AnyRadarrClient] = {}
         self._sonarr: Dict[str, AnySonarrClient] = {}
+        self._radarr_mappers: Dict[str, PathMapper] = {}
+        self._sonarr_mappers: Dict[str, PathMapper] = {}
 
         for inst in radarr_instances:
             client = _build_radarr_client(inst)
             if client:
                 self._radarr[inst.name] = client
+            self._radarr_mappers[inst.name] = PathMapper(
+                root_folders=inst.root_folders,
+                container_paths=inst.movie_paths,
+            )
 
         for inst in sonarr_instances:
             client = _build_sonarr_client(inst)
             if client:
                 self._sonarr[inst.name] = client
+            self._sonarr_mappers[inst.name] = PathMapper(
+                root_folders=inst.root_folders,
+                container_paths=inst.tv_paths,
+            )
 
         _log("INFO", f"Instance registry: {len(self._radarr)} Radarr, {len(self._sonarr)} Sonarr")
 
@@ -117,6 +128,14 @@ class InstanceRegistry:
     def sonarr(self, name: str = "sonarr") -> Optional[AnySonarrClient]:
         """Look up a Sonarr client by instance name."""
         return self._sonarr.get(name)
+
+    def radarr_mapper(self, name: str = "radarr") -> Optional[PathMapper]:
+        """Look up the PathMapper for a Radarr instance."""
+        return self._radarr_mappers.get(name)
+
+    def sonarr_mapper(self, name: str = "sonarr") -> Optional[PathMapper]:
+        """Look up the PathMapper for a Sonarr instance."""
+        return self._sonarr_mappers.get(name)
 
     def all_radarr(self) -> Dict[str, AnyRadarrClient]:
         return dict(self._radarr)
