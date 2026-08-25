@@ -1,7 +1,4 @@
-"""
-Movie Processor for Chronarr
-Handles movie processing and metadata management
-"""
+"""Movie processing — date discovery and DB writes for Radarr-managed movies."""
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -67,34 +64,31 @@ def convert_utc_to_local(utc_iso_string: str) -> str:
 
 
 class MovieProcessor:
-    """Handles movie processing"""
 
-    def __init__(self, db: ChronarrDatabase, nfo_manager, path_mapper: PathMapper):
-        # nfo_manager parameter kept for backward compatibility but no longer used (Phase 3)
+    def __init__(self, db: ChronarrDatabase, nfo_manager, path_mapper: PathMapper, radarr_client=None):
+        # nfo_manager kept for call-site compat but is unused
         self.db = db
         self.path_mapper = path_mapper
 
-        # Try database client first, fall back to API client
-        self.radarr_db = None
-        self.radarr_api = None
-        self.using_db = False
-
-        try:
-            self.radarr_db = RadarrDbClient.from_env()
-            if self.radarr_db:
-                _log("INFO", "Using Radarr direct database access")
-                self.radarr = self.radarr_db  # Primary client
+        if radarr_client:
+            # Pre-built client from InstanceRegistry (preferred path)
+            self.radarr = radarr_client
+            self.using_db = isinstance(radarr_client, RadarrDbClient)
+        else:
+            # Fallback: construct from env vars (single-instance legacy path)
+            try:
+                self.radarr = RadarrDbClient.from_env()
+                if not self.radarr:
+                    raise Exception("Database not configured")
                 self.using_db = True
-            else:
-                raise Exception("Database not configured")
-        except Exception:
-            # Fall back to API client
-            self.radarr_api = RadarrClient(
-                os.environ.get("RADARR_URL", ""),
-                os.environ.get("RADARR_API_KEY", "")
-            )
-            self.radarr = self.radarr_api  # Primary client
-            _log("INFO", "Using Radarr API client (database not configured)")
+                _log("INFO", "Using Radarr direct database access")
+            except Exception:
+                self.radarr = RadarrClient(
+                    os.environ.get("RADARR_URL", ""),
+                    os.environ.get("RADARR_API_KEY", "")
+                )
+                self.using_db = False
+                _log("INFO", "Using Radarr API client (database not configured)")
 
         self.external_clients = ExternalClientManager()
     
@@ -108,70 +102,32 @@ class MovieProcessor:
             path_mapper=self.path_mapper
         )
     
-    def should_skip_movie(self, imdb_id: str, movie_name: str = "") -> Tuple[bool, str]:
-        """
-        Determine if we should skip processing this movie based on completion status
-        
-        Args:
-            imdb_id: Movie IMDb ID  
-            movie_name: Movie name for logging
-            
-        Returns:
-            (should_skip: bool, reason: str)
-        """
+    def should_skip_movie(self, imdb_id: str, movie_name: str = "", instance: str = 'radarr') -> Tuple[bool, str]:
+        """Return (should_skip, reason) — skip when date, source, and video file are all present."""
         try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                if self.db.db_type == "postgresql":
-                    cursor.execute("""
-                        SELECT dateadded, source, has_video_file
-                        FROM movies 
-                        WHERE imdb_id = %s
-                    """, (imdb_id,))
-                else:
-                    cursor.execute("""
-                        SELECT dateadded, source, has_video_file
-                        FROM movies 
-                        WHERE imdb_id = ?
-                    """, (imdb_id,))
-                
-                result = cursor.fetchone()
-                if not result:
-                    return False, "No database record found"
-                
-                if self.db.db_type == "postgresql":
-                    dateadded = result['dateadded']
-                    source = result['source']
-                    has_video_file = result['has_video_file']
-                else:
-                    dateadded = result[0] if result[0] else None
-                    source = result[1] if result[1] else None  
-                    has_video_file = result[2] if result[2] else False
-                
-                # Skip if:
-                # 1. Movie has a valid dateadded timestamp
-                # 2. Source is valid (not 'unknown' or 'no_valid_date_source')  
-                # 3. Has video file on disk
-                if (dateadded and 
-                    source and 
-                    source not in ['unknown', 'no_valid_date_source'] and
-                    has_video_file):
-                    return True, f"Complete: Has valid date '{dateadded}' from source '{source}'"
-                elif not dateadded:
-                    return False, "Missing dateadded"
-                elif not source or source in ['unknown', 'no_valid_date_source']:
-                    return False, f"Invalid source: '{source}'"
-                elif not has_video_file:
-                    return False, "No video file detected"
-                else:
-                    return False, "Incomplete movie data"
-                    
+            result = self.db.get_movie_dates(imdb_id, instance)
+            if not result:
+                return False, "No database record found"
+
+            dateadded = result.get('dateadded')
+            source = result.get('source')
+            has_video_file = result.get('has_video_file', False)
+
+            if dateadded and source and source not in ('unknown', 'no_valid_date_source') and has_video_file:
+                return True, f"Complete: Has valid date '{dateadded}' from source '{source}'"
+            if not dateadded:
+                return False, "Missing dateadded"
+            if not source or source in ('unknown', 'no_valid_date_source'):
+                return False, f"Invalid source: '{source}'"
+            if not has_video_file:
+                return False, "No video file detected"
+            return False, "Incomplete movie data"
+
         except Exception as e:
             _log("ERROR", f"Error checking movie completion for {imdb_id}: {e}")
             return False, f"Error checking completion: {e}"
     
-    def process_movie(self, movie_path: Path, webhook_mode: bool = False, force_scan: bool = False, scan_mode: str = "smart", shutdown_event=None, imdb_id: str = None) -> str:
+    def process_movie(self, movie_path: Path, webhook_mode: bool = False, force_scan: bool = False, scan_mode: str = "smart", shutdown_event=None, imdb_id: str = None, instance: str = 'radarr') -> str:
         """Process a movie directory"""
         # Prefer the IMDb ID passed in (e.g. from webhook payload) over filesystem detection.
         # Filesystem detection only works when the ID is embedded in the folder/file name,
@@ -192,11 +148,10 @@ class MovieProcessor:
         # Check if we should skip this movie (unless forced, webhook mode, or incomplete mode)
         # Skip database optimization for incomplete mode since we need to check NFO files first
         if not force_scan and not webhook_mode and scan_mode != "incomplete":
-            should_skip, reason = self.should_skip_movie(imdb_id, movie_path.name)
+            should_skip, reason = self.should_skip_movie(imdb_id, movie_path.name, instance=instance)
             if should_skip:
                 _log("INFO", f"⏭️ SKIPPING MOVIE: {movie_path.name} [{imdb_id}] - {reason}")
-                # Still update the movie record to track that we've seen it
-                self.db.upsert_movie(imdb_id, str(movie_path))
+                self.db.upsert_movie(imdb_id, str(movie_path), instance=instance)
                 return "skipped"
             else:
                 _log("INFO", f"🎬 PROCESSING MOVIE: {movie_path.name} [{imdb_id}] - {reason}")
@@ -211,7 +166,7 @@ class MovieProcessor:
             return "shutdown"
         
         # Update database
-        self.db.upsert_movie(imdb_id, str(movie_path))
+        self.db.upsert_movie(imdb_id, str(movie_path), instance=instance)
         
         # Check for video files
         video_exts = (".mkv", ".mp4", ".avi", ".mov", ".m4v")
@@ -221,13 +176,12 @@ class MovieProcessor:
             _log("WARNING", f"No video files found in: {movie_path} - skipping database entry")
             return "no_video_files"
         
-        # For incomplete mode: Start with NFO check to find missing dateadded elements
         if scan_mode == "incomplete":
-            return self._process_movie_nfo_first(movie_path, imdb_id, shutdown_event)
+            return self._process_movie_nfo_first(movie_path, imdb_id, shutdown_event, instance=instance)
         
         # For smart/full modes: Use database-first optimization
         # TIER 1: Check database first (fastest - local lookup)
-        existing = self.db.get_movie_dates(imdb_id)
+        existing = self.db.get_movie_dates(imdb_id, instance)
         _log("DEBUG", f"Database lookup for {imdb_id}: {existing}")
         
         # Enhanced debug for database state
@@ -307,7 +261,7 @@ class MovieProcessor:
         # Skip remaining processing if no valid date found and file dates disabled
         if final_dateadded is None:
             _log("WARNING", f"Movie {movie_path.name} - no valid date source available, but NFO was still processed")
-            self.db.upsert_movie_dates(imdb_id, released, None, source, True, title=title, year=year)
+            self.db.upsert_movie_dates(imdb_id, released, None, source, True, title=title, year=year, instance=instance)
             return "processed"
             
         # Update dateadded and source for the rest of processing
@@ -325,7 +279,7 @@ class MovieProcessor:
         # Save to database
         _log("DEBUG", f"About to save to database: imdb_id={imdb_id}, dateadded={dateadded}")
         try:
-            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True, title=title, year=year)
+            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True, title=title, year=year, instance=instance)
             _log("DEBUG", f"Database save completed for {imdb_id}")
         except Exception as e:
             _log("ERROR", f"Database save failed for {imdb_id}: {e}")
@@ -334,18 +288,15 @@ class MovieProcessor:
         _log("INFO", f"Completed processing movie: {movie_path.name} (source: {source})")
         return "processed"
     
-    def _process_movie_nfo_first(self, movie_path: Path, imdb_id: str, shutdown_event=None) -> str:
+    def _process_movie_nfo_first(self, movie_path: Path, imdb_id: str, shutdown_event=None, instance: str = 'radarr') -> str:
         """Process movie for incomplete mode: Database-first then API (NFO checks removed in Phase 2)"""
         _log("INFO", f"🔍 INCOMPLETE MODE: Checking movie for missing data: {movie_path.name}")
 
-        # Check for shutdown signal
         if shutdown_event and shutdown_event.is_set():
             _log("INFO", f"⚠️ SHUTDOWN SIGNAL RECEIVED - Stopping movie processing: {movie_path.name}")
             return "shutdown"
 
-        # STEP 1: Check database for existing data (Phase 2: NFO check removed)
-        _log("DEBUG", f"STEP 1 - Checking database for existing data")
-        existing = self.db.get_movie_dates(imdb_id)
+        existing = self.db.get_movie_dates(imdb_id, instance)
 
         if existing and existing.get("dateadded") and existing.get("source") != "no_valid_date_source":
             # Found in database - data is complete
@@ -392,12 +343,11 @@ class MovieProcessor:
                 dateadded, source, released = self._get_file_mtime_date(movie_path)
                 _log("INFO", f"Using file mtime as fallback: {dateadded}")
         
-        # Save to database only (NFO operations removed in Phase 1)
         if dateadded:
             radarr_meta = self.radarr.movie_by_imdb(imdb_id) if self.radarr else None
             title = radarr_meta.get("title") if radarr_meta else None
             year = radarr_meta.get("year") if radarr_meta else None
-            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True, title=title, year=year)
+            self.db.upsert_movie_dates(imdb_id, released, dateadded, source, True, title=title, year=year, instance=instance)
 
             _log("INFO", f"🔍 INCOMPLETE MODE COMPLETE: {movie_path.name} (source: {source})")
             return "processed"

@@ -139,30 +139,29 @@ class WebhookBatcher:
                 if not self.tv_processor:
                     _log("ERROR", "TV processor not available")
                     return
-                    
-                # Check processing mode for TV webhooks
+
+                instance = webhook_data.get('instance', 'sonarr')
                 processing_mode = webhook_data.get('processing_mode', config.tv_webhook_processing_mode)
                 episodes_data = webhook_data.get('episodes', [])
-                
+
                 if processing_mode == 'targeted' and episodes_data:
                     _log("INFO", f"Using targeted episode processing for {len(episodes_data)} episodes")
-                    
-                    # Handle sequential processing for bulk downloads
                     if len(episodes_data) > 1 and config.sequential_delay > 0:
                         _log("INFO", f"Processing {len(episodes_data)} episodes sequentially with {config.sequential_delay}s delay")
-                        self._process_episodes_sequentially(path_obj, episodes_data)
+                        self._process_episodes_sequentially(path_obj, episodes_data, instance=instance)
                     else:
-                        self.tv_processor.process_webhook_episodes(path_obj, episodes_data, imdb_id=expected_imdb)
+                        self.tv_processor.process_webhook_episodes(path_obj, episodes_data, imdb_id=expected_imdb, instance=instance)
                 else:
                     _log("INFO", f"Using series processing mode (fallback or configured)")
-                    self.tv_processor.process_series(path_obj, imdb_id=expected_imdb)
-                    
+                    self.tv_processor.process_series(path_obj, imdb_id=expected_imdb, instance=instance)
+
             elif media_type == 'movie':
                 if not self.movie_processor:
                     _log("ERROR", "Movie processor not available")
                     return
-                    
-                self.movie_processor.process_movie(path_obj, webhook_mode=True, imdb_id=expected_imdb)
+
+                instance = webhook_data.get('instance', 'radarr')
+                self.movie_processor.process_movie(path_obj, webhook_mode=True, imdb_id=expected_imdb, instance=instance)
             else:
                 _log("ERROR", f"Unknown media type: {media_type}")
         
@@ -172,27 +171,21 @@ class WebhookBatcher:
             with self.lock:
                 self.processing.discard(key)
     
-    def _process_episodes_sequentially(self, path_obj: Path, episodes_data: list):
-        """Process episodes one by one with delays to avoid API spam"""        
+    def _process_episodes_sequentially(self, path_obj: Path, episodes_data: list, instance: str = 'sonarr'):
+        """Process episodes one by one with delays to avoid Sonarr API spam."""
         total_episodes = len(episodes_data)
         for i, episode in enumerate(episodes_data, 1):
             try:
                 season = episode.get('seasonNumber', '?')
                 episode_num = episode.get('episodeNumber', '?')
                 _log("INFO", f"Processing episode {i}/{total_episodes}: S{season:02d}E{episode_num:02d}")
-                
-                # Process single episode
-                self.tv_processor.process_webhook_episodes(path_obj, [episode])
-                
-                # Add delay between episodes (except for the last one)
+                self.tv_processor.process_webhook_episodes(path_obj, [episode], instance=instance)
                 if i < total_episodes and config.sequential_delay > 0:
                     _log("INFO", f"Waiting {config.sequential_delay}s before next episode...")
                     time.sleep(config.sequential_delay)
-                    
             except Exception as e:
                 _log("ERROR", f"Error processing episode {i}/{total_episodes}: {e}")
-                # Continue with next episode even if one fails
-                
+
         _log("INFO", f"Completed sequential processing of {total_episodes} episodes")
     
     def get_status(self) -> Dict:

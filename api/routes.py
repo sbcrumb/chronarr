@@ -80,8 +80,8 @@ async def _verify_webhook_signature(request: Request, body: bytes, secret: str, 
 # Route Handlers
 # ---------------------------
 
-async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict):
-    """Handle Sonarr webhooks"""
+async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict, instance: str = "sonarr"):
+    """Handle Sonarr webhooks — instance name comes from the URL path."""
     tv_processor = dependencies["tv_processor"]
     batcher = dependencies["batcher"]
     config = dependencies["config"]
@@ -267,14 +267,14 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             processing_mode = "targeted"
             _log("INFO", f"Forcing targeted mode for {len(episodes_data)} episode(s)")
         
-        # Add to batch queue with TV-prefixed key to avoid movie conflicts
         tv_batch_key = f"tv:{imdb_id}"
         webhook_dict = {
             'path': str(series_path),
             'series_info': series_info,
             'event_type': webhook.eventType,
-            'episodes': episodes_data,  # Include enhanced episode data for targeted processing
-            'processing_mode': processing_mode  # Use forced targeted mode when appropriate
+            'episodes': episodes_data,
+            'processing_mode': processing_mode,
+            'instance': instance,
         }
         batcher.add_webhook(tv_batch_key, webhook_dict, 'tv')
         
@@ -285,9 +285,10 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         raise HTTPException(status_code=422, detail=f"Invalid webhook: {e}")
 
 
-async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict):
-    """Handle Radarr webhooks"""
-    path_mapper = dependencies["path_mapper"]
+async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict, instance: str = "radarr"):
+    """Handle Radarr webhooks — instance name comes from the URL path."""
+    registry = dependencies.get("registry")
+    path_mapper = registry.radarr_mapper(instance) if registry else dependencies.get("path_mapper")
     batcher = dependencies["batcher"]
     config = dependencies["config"]
 
@@ -333,17 +334,16 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         
         # IMDb ID won't be in the path for standard Radarr folder naming — omit the check
         
-        # Create movie-specific webhook data with proper path validation
         movie_webhook_data = {
-            'path': container_path,  # Use verified container path
+            'path': container_path,
             'movie_info': movie_data,
             'event_type': payload.get('eventType'),
-            'original_payload': payload
+            'original_payload': payload,
+            'instance': instance,
         }
-        
-        # Add to batch queue with movie-prefixed key to avoid TV conflicts
+
         movie_batch_key = f"movie:{imdb_id}"
-        _log("DEBUG", f"Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}")
+        _log("DEBUG", f"Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}, instance={instance}")
         batcher.add_webhook(movie_batch_key, movie_webhook_data, "movie")
         
         return {"status": "success", "message": f"Radarr webhook queued for {movie_batch_key}"}
@@ -2990,30 +2990,47 @@ _populate_status = {"running": False, "completed": False}
 
 
 def register_routes(app, dependencies: dict):
-    """
-    Register all routes with the FastAPI app
-    
-    Args:
-        app: FastAPI application instance
-        dependencies: Dictionary containing:
-            - db: ChronarrDatabase instance
-            - nfo_manager: NFOManager instance
-            - path_mapper: PathMapper instance
-            - tv_processor: TVProcessor instance
-            - movie_processor: MovieProcessor instance
-            - batcher: WebhookBatcher instance
-            - start_time: Application start time
-            - config: ChronarrConfig instance
-            - version: Application version string
-    """
-    
-    @app.post("/webhook/sonarr")
-    async def _sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
-        return await sonarr_webhook(request, background_tasks, dependencies)
+    """Register all routes. Webhook routes are registered per-instance dynamically."""
 
-    @app.post("/webhook/radarr") 
-    async def _radarr_webhook(request: Request, background_tasks: BackgroundTasks):
-        return await radarr_webhook(request, background_tasks, dependencies)
+    # Backward-compat aliases for single-instance users: /webhook/sonarr, /webhook/radarr
+    @app.post("/webhook/sonarr")
+    async def _sonarr_webhook_default(request: Request, background_tasks: BackgroundTasks):
+        return await sonarr_webhook(request, background_tasks, dependencies, instance="sonarr")
+
+    @app.post("/webhook/radarr")
+    async def _radarr_webhook_default(request: Request, background_tasks: BackgroundTasks):
+        return await radarr_webhook(request, background_tasks, dependencies, instance="radarr")
+
+    # Per-instance webhook routes derived from discovered instance names.
+    # Each instance named "radarr_4k" gets /radarr_4k/webhook; the default "radarr"
+    # instance gets /radarr/webhook in addition to the /webhook/radarr alias above.
+    registry = dependencies.get("registry")
+    if registry:
+        for name in registry.radarr_names:
+            _inst = name  # capture for closure
+
+            async def _radarr_instance_handler(request: Request, background_tasks: BackgroundTasks, _n=_inst):
+                return await radarr_webhook(request, background_tasks, dependencies, instance=_n)
+
+            app.add_api_route(
+                f"/{name}/webhook",
+                _radarr_instance_handler,
+                methods=["POST"],
+                name=f"radarr_webhook_{name}",
+            )
+
+        for name in registry.sonarr_names:
+            _inst = name
+
+            async def _sonarr_instance_handler(request: Request, background_tasks: BackgroundTasks, _n=_inst):
+                return await sonarr_webhook(request, background_tasks, dependencies, instance=_n)
+
+            app.add_api_route(
+                f"/{name}/webhook",
+                _sonarr_instance_handler,
+                methods=["POST"],
+                name=f"sonarr_webhook_{name}",
+            )
 
     @app.post("/webhook/maintainarr")
     async def _maintainarr_webhook(request: Request, background_tasks: BackgroundTasks):
