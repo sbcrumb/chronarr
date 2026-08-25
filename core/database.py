@@ -4,6 +4,7 @@ PostgreSQL database management for Chronarr
 Handles database operations for tracking media dates and processing history
 """
 import json
+import os
 import threading
 from datetime import datetime
 from typing import Optional, Dict, List, Any
@@ -16,12 +17,6 @@ class ChronarrDatabase:
     """PostgreSQL database manager for Chronarr media tracking and processing history"""
     
     def __init__(self, config):
-        """
-        Initialize PostgreSQL database connection
-        
-        Args:
-            config: Configuration object with database settings
-        """
         if not config:
             raise ValueError("PostgreSQL configuration is required")
         self.db_host = config.db_host
@@ -72,32 +67,29 @@ class ChronarrDatabase:
             raise
     
     def _init_database(self):
-        """Initialize PostgreSQL database tables"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             self._init_postgresql_tables(cursor)
-            
-            # Test the connection works and verify autocommit
-            cursor.execute("SELECT 1")
-            print(f"✅ PostgreSQL database initialized and connection verified")
-            print(f"🔍 Autocommit status: {conn.autocommit}")
     
     def _init_postgresql_tables(self, cursor):
-        """Initialize database tables"""
-        # Series table
+        # Series — instance is part of the PK so two different Sonarr instances
+        # can track the same show independently.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS series (
-                imdb_id VARCHAR(20) PRIMARY KEY,
+                imdb_id VARCHAR(20) NOT NULL,
+                instance VARCHAR(100) NOT NULL DEFAULT 'sonarr',
                 path TEXT NOT NULL,
                 last_updated TIMESTAMP NOT NULL,
-                metadata JSONB
+                metadata JSONB,
+                missing_from_source_since TIMESTAMP DEFAULT NULL,
+                PRIMARY KEY (imdb_id, instance)
             )
         """)
-        
-        # Episodes table
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 imdb_id VARCHAR(20) NOT NULL,
+                instance VARCHAR(100) NOT NULL DEFAULT 'sonarr',
                 season INTEGER NOT NULL,
                 episode INTEGER NOT NULL,
                 aired DATE,
@@ -105,69 +97,70 @@ class ChronarrDatabase:
                 source VARCHAR(100),
                 last_updated TIMESTAMP NOT NULL,
                 has_video_file BOOLEAN DEFAULT FALSE,
-                PRIMARY KEY (imdb_id, season, episode),
-                FOREIGN KEY (imdb_id) REFERENCES series(imdb_id)
+                skipped BOOLEAN DEFAULT FALSE,
+                skip_reason TEXT,
+                PRIMARY KEY (imdb_id, season, episode, instance),
+                FOREIGN KEY (imdb_id, instance) REFERENCES series(imdb_id, instance)
             )
         """)
-        
-        # Movies table
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS movies (
-                imdb_id VARCHAR(20) PRIMARY KEY,
+                imdb_id VARCHAR(20) NOT NULL,
+                instance VARCHAR(100) NOT NULL DEFAULT 'radarr',
                 title TEXT,
                 year INTEGER,
-                path TEXT NOT NULL,
+                path TEXT NOT NULL DEFAULT 'unknown',
                 released DATE,
                 dateadded TIMESTAMP,
                 source VARCHAR(100),
                 last_updated TIMESTAMP NOT NULL,
-                has_video_file BOOLEAN DEFAULT FALSE
+                has_video_file BOOLEAN DEFAULT FALSE,
+                skipped BOOLEAN DEFAULT FALSE,
+                skip_reason TEXT,
+                missing_from_source_since TIMESTAMP DEFAULT NULL,
+                PRIMARY KEY (imdb_id, instance)
             )
         """)
 
-        # Add title and year columns if they don't exist (migration for existing databases)
+        # Migrate existing single-instance databases to the composite-PK schema.
+        # Runs only when the instance column is absent (first upgrade to v3).
         cursor.execute("""
             DO $$
             BEGIN
+                -- Series: drop the old FK from episodes before touching the series PK.
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='movies' AND column_name='title') THEN
-                    ALTER TABLE movies ADD COLUMN title TEXT;
+                               WHERE table_name='series' AND column_name='instance') THEN
+                    ALTER TABLE episodes DROP CONSTRAINT IF EXISTS episodes_imdb_id_fkey;
+                    ALTER TABLE series ADD COLUMN instance VARCHAR(100) NOT NULL DEFAULT 'sonarr';
+                    ALTER TABLE series ADD COLUMN IF NOT EXISTS missing_from_source_since TIMESTAMP DEFAULT NULL;
+                    ALTER TABLE series DROP CONSTRAINT series_pkey;
+                    ALTER TABLE series ADD PRIMARY KEY (imdb_id, instance);
                 END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='movies' AND column_name='year') THEN
-                    ALTER TABLE movies ADD COLUMN year INTEGER;
-                END IF;
-            END $$;
-        """)
 
-        # Add skipped and skip_reason columns if they don't exist (migration for skip tracking)
-        cursor.execute("""
-            DO $$
-            BEGIN
+                -- Movies: independent of series.
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='movies' AND column_name='skipped') THEN
-                    ALTER TABLE movies ADD COLUMN skipped BOOLEAN DEFAULT FALSE;
+                               WHERE table_name='movies' AND column_name='instance') THEN
+                    ALTER TABLE movies ADD COLUMN instance VARCHAR(100) NOT NULL DEFAULT 'radarr';
+                    ALTER TABLE movies ADD COLUMN IF NOT EXISTS title TEXT;
+                    ALTER TABLE movies ADD COLUMN IF NOT EXISTS year INTEGER;
+                    ALTER TABLE movies ADD COLUMN IF NOT EXISTS skipped BOOLEAN DEFAULT FALSE;
+                    ALTER TABLE movies ADD COLUMN IF NOT EXISTS skip_reason TEXT;
+                    ALTER TABLE movies ADD COLUMN IF NOT EXISTS missing_from_source_since TIMESTAMP DEFAULT NULL;
+                    ALTER TABLE movies DROP CONSTRAINT movies_pkey;
+                    ALTER TABLE movies ADD PRIMARY KEY (imdb_id, instance);
                 END IF;
+
+                -- Episodes: needs series to have its composite PK in place first.
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='movies' AND column_name='skip_reason') THEN
-                    ALTER TABLE movies ADD COLUMN skip_reason TEXT;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='episodes' AND column_name='skipped') THEN
-                    ALTER TABLE episodes ADD COLUMN skipped BOOLEAN DEFAULT FALSE;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='episodes' AND column_name='skip_reason') THEN
-                    ALTER TABLE episodes ADD COLUMN skip_reason TEXT;
-                END IF;
-                -- Library sync: track when items were first noticed missing from Radarr/Sonarr
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='movies' AND column_name='missing_from_source_since') THEN
-                    ALTER TABLE movies ADD COLUMN missing_from_source_since TIMESTAMP DEFAULT NULL;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                              WHERE table_name='series' AND column_name='missing_from_source_since') THEN
-                    ALTER TABLE series ADD COLUMN missing_from_source_since TIMESTAMP DEFAULT NULL;
+                               WHERE table_name='episodes' AND column_name='instance') THEN
+                    ALTER TABLE episodes ADD COLUMN instance VARCHAR(100) NOT NULL DEFAULT 'sonarr';
+                    ALTER TABLE episodes ADD COLUMN IF NOT EXISTS skipped BOOLEAN DEFAULT FALSE;
+                    ALTER TABLE episodes ADD COLUMN IF NOT EXISTS skip_reason TEXT;
+                    ALTER TABLE episodes DROP CONSTRAINT episodes_pkey;
+                    ALTER TABLE episodes ADD PRIMARY KEY (imdb_id, season, episode, instance);
+                    ALTER TABLE episodes ADD CONSTRAINT episodes_series_fk
+                        FOREIGN KEY (imdb_id, instance) REFERENCES series(imdb_id, instance);
                 END IF;
             END $$;
         """)
@@ -303,73 +296,62 @@ class ChronarrDatabase:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_executions_schedule ON cleanup_executions(schedule_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_executions_status ON cleanup_executions(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_executions_started ON cleanup_executions(started_at)")
-    def upsert_series(self, imdb_id: str, path: str, metadata: Optional[Dict] = None):
-        """Insert or update series record"""
+    def upsert_series(self, imdb_id: str, path: str, instance: str = 'sonarr', metadata: Optional[Dict] = None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             timestamp = datetime.utcnow()
-            
             cursor.execute("""
-                INSERT INTO series (imdb_id, path, last_updated, metadata)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (imdb_id) DO UPDATE SET
+                INSERT INTO series (imdb_id, instance, path, last_updated, metadata)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (imdb_id, instance) DO UPDATE SET
                     path = EXCLUDED.path,
                     last_updated = EXCLUDED.last_updated,
                     metadata = EXCLUDED.metadata
-            """, (imdb_id, path, timestamp, json.dumps(metadata) if metadata else None))
+            """, (imdb_id, instance, path, timestamp, json.dumps(metadata) if metadata else None))
     
-    def upsert_episode_date(self, imdb_id: str, season: int, episode: int, 
-                           aired: Optional[str], dateadded: Optional[str], 
-                           source: str, has_video_file: bool = False):
-        """Insert or update episode date record"""
+    def upsert_episode_date(self, imdb_id: str, season: int, episode: int,
+                           aired: Optional[str], dateadded: Optional[str],
+                           source: str, has_video_file: bool = False, instance: str = 'sonarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             timestamp = datetime.utcnow()
-            
             cursor.execute("""
-                INSERT INTO episodes 
-                (imdb_id, season, episode, aired, dateadded, source, has_video_file, last_updated)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (imdb_id, season, episode) DO UPDATE SET
+                INSERT INTO episodes
+                (imdb_id, instance, season, episode, aired, dateadded, source, has_video_file, last_updated)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (imdb_id, season, episode, instance) DO UPDATE SET
                     aired = COALESCE(EXCLUDED.aired, episodes.aired),
                     dateadded = COALESCE(EXCLUDED.dateadded, episodes.dateadded),
                     source = COALESCE(EXCLUDED.source, episodes.source),
                     has_video_file = EXCLUDED.has_video_file,
                     last_updated = EXCLUDED.last_updated
-            """, (imdb_id, season, episode, aired, dateadded, source, has_video_file, timestamp))
-            import os
-            if os.environ.get("DEBUG", "false").lower() == "true":
-                print(f"🔍 DEBUG: PostgreSQL upsert executed for {imdb_id} S{season:02d}E{episode:02d}, rows affected: {cursor.rowcount}")
+            """, (imdb_id, instance, season, episode, aired, dateadded, source, has_video_file, timestamp))
     
-    def upsert_movie(self, imdb_id: str, path: str):
-        """Insert or update movie record"""
+    def upsert_movie(self, imdb_id: str, path: str, instance: str = 'radarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             timestamp = datetime.utcnow()
-            
             cursor.execute("""
-                INSERT INTO movies (imdb_id, path, last_updated)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (imdb_id) DO UPDATE SET
+                INSERT INTO movies (imdb_id, instance, path, last_updated)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (imdb_id, instance) DO UPDATE SET
                     path = EXCLUDED.path,
                     last_updated = EXCLUDED.last_updated
-            """, (imdb_id, path, timestamp))
+            """, (imdb_id, instance, path, timestamp))
     
     def upsert_movie_dates(self, imdb_id: str, released: Optional[str],
                           dateadded: Optional[str], source: str, has_video_file: bool = False,
-                          title: Optional[str] = None, year: Optional[int] = None):
-        """Insert or update movie date record"""
-        import os
-        if os.environ.get("DEBUG", "false").lower() == "true":
-            print(f"🔍 DATABASE UPSERT: imdb_id={imdb_id}, title={title}, dateadded={dateadded}, source={source}")
+                          title: Optional[str] = None, year: Optional[int] = None,
+                          instance: str = 'radarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             timestamp = datetime.utcnow()
-
             cursor.execute("""
-                INSERT INTO movies (imdb_id, title, year, path, released, dateadded, source, has_video_file, last_updated)
-                VALUES (%s, %s, %s, COALESCE((SELECT path FROM movies WHERE imdb_id = %s), 'unknown'), %s, %s, %s, %s, %s)
-                ON CONFLICT (imdb_id) DO UPDATE SET
+                INSERT INTO movies (imdb_id, instance, title, year, path, released, dateadded, source, has_video_file, last_updated)
+                VALUES (%s, %s, %s, %s,
+                        COALESCE((SELECT path FROM movies WHERE imdb_id = %s AND instance = %s), 'unknown'),
+                        %s, %s, %s, %s, %s)
+                ON CONFLICT (imdb_id, instance) DO UPDATE SET
                     title = COALESCE(EXCLUDED.title, movies.title),
                     year = COALESCE(EXCLUDED.year, movies.year),
                     released = COALESCE(EXCLUDED.released, movies.released),
@@ -377,114 +359,91 @@ class ChronarrDatabase:
                     source = COALESCE(EXCLUDED.source, movies.source),
                     has_video_file = EXCLUDED.has_video_file,
                     last_updated = EXCLUDED.last_updated
-            """, (imdb_id, title, year, imdb_id, released, dateadded, source, has_video_file, timestamp))
-            
-            # Debug: Check what was actually saved
-            cursor.execute("SELECT dateadded, source FROM movies WHERE imdb_id = %s", (imdb_id,))
-            result = cursor.fetchone()
-            import os
-            if os.environ.get("DEBUG", "false").lower() == "true":
-                print(f"🔍 DATABASE VERIFY: After upsert, found dateadded={result['dateadded'] if result else 'NOT_FOUND'}, source={result['source'] if result else 'NOT_FOUND'}")
+            """, (imdb_id, instance, title, year, imdb_id, instance, released, dateadded, source, has_video_file, timestamp))
 
-    def mark_movie_skipped(self, imdb_id: str, title: str, year: int, path: str, reason: str):
-        """Mark a movie as skipped with reason"""
+    def mark_movie_skipped(self, imdb_id: str, title: str, year: int, path: str, reason: str, instance: str = 'radarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             timestamp = datetime.utcnow()
             cursor.execute("""
-                INSERT INTO movies (imdb_id, title, year, path, skipped, skip_reason, has_video_file, last_updated)
-                VALUES (%s, %s, %s, %s, TRUE, %s, FALSE, %s)
-                ON CONFLICT (imdb_id) DO UPDATE SET
+                INSERT INTO movies (imdb_id, instance, title, year, path, skipped, skip_reason, has_video_file, last_updated)
+                VALUES (%s, %s, %s, %s, %s, TRUE, %s, FALSE, %s)
+                ON CONFLICT (imdb_id, instance) DO UPDATE SET
                     title = EXCLUDED.title,
                     year = EXCLUDED.year,
                     path = EXCLUDED.path,
                     skipped = TRUE,
                     skip_reason = EXCLUDED.skip_reason,
                     last_updated = EXCLUDED.last_updated
-            """, (imdb_id, title, year, path, reason, timestamp))
+            """, (imdb_id, instance, title, year, path, reason, timestamp))
 
-    def mark_episode_skipped(self, imdb_id: str, season: int, episode: int, reason: str):
-        """Mark an episode as skipped with reason"""
+    def mark_episode_skipped(self, imdb_id: str, season: int, episode: int, reason: str, instance: str = 'sonarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             timestamp = datetime.utcnow()
             cursor.execute("""
-                INSERT INTO episodes (imdb_id, season, episode, skipped, skip_reason, has_video_file, last_updated)
-                VALUES (%s, %s, %s, TRUE, %s, FALSE, %s)
-                ON CONFLICT (imdb_id, season, episode) DO UPDATE SET
+                INSERT INTO episodes (imdb_id, instance, season, episode, skipped, skip_reason, has_video_file, last_updated)
+                VALUES (%s, %s, %s, %s, TRUE, %s, FALSE, %s)
+                ON CONFLICT (imdb_id, season, episode, instance) DO UPDATE SET
                     skipped = TRUE,
                     skip_reason = EXCLUDED.skip_reason,
                     last_updated = EXCLUDED.last_updated
-            """, (imdb_id, season, episode, reason, timestamp))
+            """, (imdb_id, instance, season, episode, reason, timestamp))
 
-    def clear_movie_skipped(self, imdb_id: str):
-        """Clear skipped flag for a movie"""
+    def clear_movie_skipped(self, imdb_id: str, instance: str = 'radarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE movies SET skipped = FALSE, skip_reason = NULL
-                WHERE imdb_id = %s
-            """, (imdb_id,))
+                WHERE imdb_id = %s AND instance = %s
+            """, (imdb_id, instance))
 
-    def clear_episode_skipped(self, imdb_id: str, season: int, episode: int):
-        """Clear skipped flag for an episode"""
+    def clear_episode_skipped(self, imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE episodes SET skipped = FALSE, skip_reason = NULL
-                WHERE imdb_id = %s AND season = %s AND episode = %s
-            """, (imdb_id, season, episode))
+                WHERE imdb_id = %s AND season = %s AND episode = %s AND instance = %s
+            """, (imdb_id, season, episode, instance))
 
     def get_skipped_counts(self) -> Dict:
-        """Get counts of skipped movies and episodes"""
+        """Total skipped counts across all instances — for dashboard summary."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-
-            # Count skipped movies
             cursor.execute("SELECT COUNT(*) as count FROM movies WHERE skipped = TRUE")
             skipped_movies = cursor.fetchone()['count']
-
-            # Count skipped episodes
             cursor.execute("SELECT COUNT(*) as count FROM episodes WHERE skipped = TRUE")
             skipped_episodes = cursor.fetchone()['count']
-
             return {
                 'movies': skipped_movies,
                 'episodes': skipped_episodes,
                 'total': skipped_movies + skipped_episodes
             }
 
-    def get_series_episodes(self, imdb_id: str, has_video_file_only: bool = False) -> List[Dict]:
-        """Get all episodes for a series"""
+    def get_series_episodes(self, imdb_id: str, instance: str = 'sonarr', has_video_file_only: bool = False) -> List[Dict]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            query = "SELECT * FROM episodes WHERE imdb_id = %s"
-            params = [imdb_id]
+            query = "SELECT * FROM episodes WHERE imdb_id = %s AND instance = %s"
+            params = [imdb_id, instance]
             if has_video_file_only:
                 query += " AND has_video_file = TRUE"
-            
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
-    
-    def get_episode_date(self, imdb_id: str, season: int, episode: int) -> Optional[Dict]:
-        """Get episode date record"""
+
+    def get_episode_date(self, imdb_id: str, season: int, episode: int, instance: str = 'sonarr') -> Optional[Dict]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM episodes 
-                WHERE imdb_id = %s AND season = %s AND episode = %s
-            """, (imdb_id, season, episode))
-            
+                SELECT * FROM episodes
+                WHERE imdb_id = %s AND season = %s AND episode = %s AND instance = %s
+            """, (imdb_id, season, episode, instance))
             row = cursor.fetchone()
             return dict(row) if row else None
-    
-    def get_movie_dates(self, imdb_id: str) -> Optional[Dict]:
-        """Get movie date record"""
+
+    def get_movie_dates(self, imdb_id: str, instance: str = 'radarr') -> Optional[Dict]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s", (imdb_id,))
-            
+            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -498,79 +457,65 @@ class ChronarrDatabase:
             """, (imdb_id, media_type, event_type, datetime.utcnow().isoformat(), 
                   json.dumps(details) if details else None))
     
-    def migrate_movie_imdb_id(self, old_imdb_id: str, new_imdb_id: str) -> bool:
-        """Migrate a movie from placeholder IMDb ID to real IMDb ID"""
+    def migrate_movie_imdb_id(self, old_imdb_id: str, new_imdb_id: str, instance: str = 'radarr') -> bool:
+        """Replace a placeholder IMDb ID with the real one, preserving all other data."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            # Check if old record exists
-            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s", (old_imdb_id,))
+            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
             old_record = cursor.fetchone()
             if not old_record:
                 return False
 
             old_data = dict(old_record)
 
-            # Check if new IMDb ID already exists
-            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s", (new_imdb_id,))
+            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", (new_imdb_id, instance))
             if cursor.fetchone():
-                # New IMDb ID already exists, just delete the old one
-                cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (old_imdb_id,))
+                cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
                 return True
 
-            # Create new record with correct IMDb ID
             cursor.execute("""
-                INSERT INTO movies (imdb_id, title, year, path, released, dateadded, source,
+                INSERT INTO movies (imdb_id, instance, title, year, path, released, dateadded, source,
                                    has_video_file, last_updated, skipped, skip_reason)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (new_imdb_id, old_data.get('title'), old_data.get('year'),
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, NULL)
+            """, (new_imdb_id, instance, old_data.get('title'), old_data.get('year'),
                   old_data.get('path'), old_data.get('released'), old_data.get('dateadded'),
-                  old_data.get('source'), old_data.get('has_video_file'),
-                  datetime.utcnow(), False, None))  # Clear skipped status
+                  old_data.get('source'), old_data.get('has_video_file'), datetime.utcnow()))
 
-            # Delete old placeholder record
-            cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (old_imdb_id,))
+            cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
             return True
 
-    def migrate_series_imdb_id(self, old_imdb_id: str, new_imdb_id: str) -> bool:
-        """Migrate a series and all its episodes from placeholder IMDb ID to real IMDb ID"""
+    def migrate_series_imdb_id(self, old_imdb_id: str, new_imdb_id: str, instance: str = 'sonarr') -> bool:
+        """Replace a placeholder series IMDb ID with the real one, migrating all episodes."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            # Check if old series exists
-            cursor.execute("SELECT * FROM series WHERE imdb_id = %s", (old_imdb_id,))
+            cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
             old_series = cursor.fetchone()
             if not old_series:
                 return False
 
             old_series_data = dict(old_series)
 
-            # Check if new series IMDb ID already exists
-            cursor.execute("SELECT * FROM series WHERE imdb_id = %s", (new_imdb_id,))
+            cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", (new_imdb_id, instance))
             if cursor.fetchone():
-                # New series already exists, migrate episodes and delete old series
-                cursor.execute("""
-                    UPDATE episodes SET imdb_id = %s WHERE imdb_id = %s
-                """, (new_imdb_id, old_imdb_id))
-                cursor.execute("DELETE FROM series WHERE imdb_id = %s", (old_imdb_id,))
+                cursor.execute("UPDATE episodes SET imdb_id = %s WHERE imdb_id = %s AND instance = %s",
+                               (new_imdb_id, old_imdb_id, instance))
+                cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
                 return True
 
-            # Create new series record
             cursor.execute("""
-                INSERT INTO series (imdb_id, path, last_updated, metadata)
-                VALUES (%s, %s, %s, %s)
-            """, (new_imdb_id, old_series_data.get('path'),
+                INSERT INTO series (imdb_id, instance, path, last_updated, metadata)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (new_imdb_id, instance, old_series_data.get('path'),
                   datetime.utcnow(), old_series_data.get('metadata')))
 
-            # Migrate all episodes to new series IMDb ID and clear skipped status
             cursor.execute("""
-                UPDATE episodes
-                SET imdb_id = %s, skipped = FALSE, skip_reason = NULL
-                WHERE imdb_id = %s
-            """, (new_imdb_id, old_imdb_id))
+                UPDATE episodes SET imdb_id = %s, skipped = FALSE, skip_reason = NULL
+                WHERE imdb_id = %s AND instance = %s
+            """, (new_imdb_id, old_imdb_id, instance))
 
-            # Delete old placeholder series
-            cursor.execute("DELETE FROM series WHERE imdb_id = %s", (old_imdb_id,))
+            cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
             return True
 
     def get_stats(self) -> Dict[str, Any]:
@@ -616,62 +561,27 @@ class ChronarrDatabase:
                 "database_type": "postgresql"
             }
     
-    def delete_episode(self, imdb_id: str, season: int, episode: int) -> bool:
-        """
-        Delete a specific episode from the database
-        
-        Args:
-            imdb_id: Series IMDb ID
-            season: Season number
-            episode: Episode number
-            
-        Returns:
-            True if episode was deleted, False if not found
-        """
+    def delete_episode(self, imdb_id: str, season: int, episode: int, instance: str = 'sonarr') -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
             cursor.execute("""
-                DELETE FROM episodes 
-                WHERE imdb_id = %s AND season = %s AND episode = %s
-            """, (imdb_id, season, episode))
-            
+                DELETE FROM episodes
+                WHERE imdb_id = %s AND season = %s AND episode = %s AND instance = %s
+            """, (imdb_id, season, episode, instance))
             deleted_count = cursor.rowcount
             conn.commit()
-            
             return deleted_count > 0
-    
-    def delete_series_episodes(self, imdb_id: str) -> int:
-        """
-        Delete all episodes for a series from the database
-        
-        Args:
-            imdb_id: Series IMDb ID
-            
-        Returns:
-            Number of episodes deleted
-        """
+
+    def delete_series_episodes(self, imdb_id: str, instance: str = 'sonarr') -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                DELETE FROM episodes 
-                WHERE imdb_id = %s
-            """, (imdb_id,))
-            
+            cursor.execute("DELETE FROM episodes WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
             deleted_count = cursor.rowcount
             conn.commit()
-            
             return deleted_count
     
     def delete_orphaned_episodes(self) -> List[Dict]:
-        """
-        Find and delete episodes that don't have corresponding video files on disk
-        This requires checking filesystem for each episode, so use carefully
-        
-        Returns:
-            List of deleted episodes with their details
-        """
+        """Delete DB episode rows that have no matching file on disk. Checks filesystem."""
         from utils.file_utils import find_episodes_on_disk
         from pathlib import Path
         
@@ -679,119 +589,60 @@ class ChronarrDatabase:
         
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Get all series with their paths
-            cursor.execute("""
-                SELECT DISTINCT imdb_id, path FROM series
-            """)
-            
+            cursor.execute("SELECT DISTINCT imdb_id, path FROM series")
             series_list = cursor.fetchall()
-            
+
             for series in series_list:
                 imdb_id = series['imdb_id']
                 series_path = Path(series['path'])
-                
                 if not series_path.exists():
                     continue
-                
-                # Get episodes on disk
+
                 disk_episodes = find_episodes_on_disk(series_path)
                 disk_episode_keys = set(disk_episodes.keys())
-                
-                # Get episodes in database
-                cursor.execute("""
-                    SELECT season, episode, dateadded, source 
-                    FROM episodes 
-                    WHERE imdb_id = %s
-                """, (imdb_id,))
-                
-                db_episodes = cursor.fetchall()
-                
-                # Find orphaned episodes (in DB but not on disk)
-                for db_episode in db_episodes:
-                    season = db_episode['season']
-                    episode = db_episode['episode']
-                    episode_key = (season, episode)
-                    
-                    if episode_key not in disk_episode_keys:
-                        # Episode is orphaned - delete it
-                        cursor.execute("""
-                            DELETE FROM episodes 
-                            WHERE imdb_id = %s AND season = %s AND episode = %s
-                        """, (imdb_id, season, episode))
-                        
+
+                cursor.execute(
+                    "SELECT season, episode, dateadded, source FROM episodes WHERE imdb_id = %s",
+                    (imdb_id,)
+                )
+                for ep in cursor.fetchall():
+                    season, episode = ep['season'], ep['episode']
+                    if (season, episode) not in disk_episode_keys:
+                        cursor.execute(
+                            "DELETE FROM episodes WHERE imdb_id = %s AND season = %s AND episode = %s",
+                            (imdb_id, season, episode)
+                        )
                         deleted_episodes.append({
                             'imdb_id': imdb_id,
                             'season': season,
                             'episode': episode,
-                            'dateadded': db_episode['dateadded'],
-                            'source': db_episode['source'],
+                            'dateadded': ep['dateadded'],
+                            'source': ep['source'],
                             'series_path': str(series_path)
                         })
-            
+
             conn.commit()
-            
+
         return deleted_episodes
     
-    def delete_movie(self, imdb_id: str) -> bool:
-        """
-        Delete a specific movie from the database
-        
-        Args:
-            imdb_id: Movie IMDb ID
-            
-        Returns:
-            True if movie was deleted, False if not found
-        """
+    def delete_movie(self, imdb_id: str, instance: str = 'radarr') -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                DELETE FROM movies 
-                WHERE imdb_id = %s
-            """, (imdb_id,))
-            
+            cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
             deleted_count = cursor.rowcount
             conn.commit()
-            
             return deleted_count > 0
-    
-    def delete_series(self, imdb_id: str) -> bool:
-        """
-        Delete a specific series from the database
-        
-        Args:
-            imdb_id: Series IMDb ID
-            
-        Returns:
-            True if series was deleted, False if not found
-        """
+
+    def delete_series(self, imdb_id: str, instance: str = 'sonarr') -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                DELETE FROM series 
-                WHERE imdb_id = %s
-            """, (imdb_id,))
-            
+            cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
             deleted_count = cursor.rowcount
             conn.commit()
-            
             return deleted_count > 0
 
     def update_movie_file_info(self, imdb_id: str, path: str, has_video_file: bool = True) -> bool:
-        """
-        Update path and video file status for an existing movie
-        Used when population finds a video file for a manually-added movie
-
-        Args:
-            imdb_id: Movie IMDb ID
-            path: File path to the video file
-            has_video_file: Whether a video file exists (default True)
-
-        Returns:
-            True if movie was updated, False if not found
-        """
+        """Update path and file status — used when a population scan finds a video for a queued movie."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -842,24 +693,22 @@ class ChronarrDatabase:
     # ── Library sync helpers ──────────────────────────────────────────────────
 
     def get_all_movie_records(self) -> List[Dict]:
-        """Return all movies with id, title, path, and missing_from_source_since."""
+        """Return all movie records including instance — used by library sync."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT imdb_id, title, path, missing_from_source_since FROM movies"
+                "SELECT imdb_id, instance, title, path, missing_from_source_since FROM movies"
             )
-            rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in cursor.fetchall()]
 
     def get_all_series_records(self) -> List[Dict]:
-        """Return all series with imdb_id, path, metadata, and missing_from_source_since."""
+        """Return all series records including instance — used by library sync."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT imdb_id, path, metadata, missing_from_source_since FROM series"
+                "SELECT imdb_id, instance, path, metadata, missing_from_source_since FROM series"
             )
-            rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in cursor.fetchall()]
 
     def mark_movies_missing_from_source(self, imdb_ids: List[str], timestamp) -> None:
         """Set missing_from_source_since for movies not yet marked."""
@@ -938,112 +787,63 @@ class ChronarrDatabase:
             return [dict(r) for r in cursor.fetchall()]
 
     def delete_orphaned_movies(self) -> List[Dict]:
-        """
-        Find and delete movies that don't have corresponding video files on disk
-        This requires checking filesystem for each movie, so use carefully
-        
-        Returns:
-            List of deleted movies with their details
-        """
+        """Delete DB movie rows whose directory or video files no longer exist on disk."""
         from pathlib import Path
-        
+
         deleted_movies = []
-        
+        video_exts = (".mkv", ".mp4", ".avi", ".mov", ".m4v")
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Get all movies with their paths
-            cursor.execute("""
-                SELECT imdb_id, path, dateadded, source 
-                FROM movies
-            """)
-            
-            movies_list = cursor.fetchall()
-            
-            for movie in movies_list:
+            cursor.execute("SELECT imdb_id, path, dateadded, source FROM movies")
+
+            for movie in cursor.fetchall():
                 imdb_id = movie['imdb_id']
                 movie_path = Path(movie['path'])
-                
+
                 if not movie_path.exists():
-                    # Movie directory doesn't exist - delete it
-                    cursor.execute("""
-                        DELETE FROM movies 
-                        WHERE imdb_id = %s
-                    """, (imdb_id,))
-                    
+                    cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (imdb_id,))
                     deleted_movies.append({
-                        'imdb_id': imdb_id,
-                        'reason': 'directory_not_found',
-                        'path': str(movie_path),
-                        'dateadded': movie['dateadded'],
+                        'imdb_id': imdb_id, 'reason': 'directory_not_found',
+                        'path': str(movie_path), 'dateadded': movie['dateadded'],
                         'source': movie['source']
                     })
                     continue
-                
-                # Check for video files
-                video_exts = (".mkv", ".mp4", ".avi", ".mov", ".m4v")
-                has_video = any(f.is_file() and f.suffix.lower() in video_exts 
-                              for f in movie_path.iterdir() if f.is_file())
-                
+
+                has_video = any(
+                    f.is_file() and f.suffix.lower() in video_exts
+                    for f in movie_path.iterdir() if f.is_file()
+                )
                 if not has_video:
-                    # No video files found - delete this movie
-                    cursor.execute("""
-                        DELETE FROM movies 
-                        WHERE imdb_id = %s
-                    """, (imdb_id,))
-                    
+                    cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (imdb_id,))
                     deleted_movies.append({
-                        'imdb_id': imdb_id,
-                        'reason': 'no_video_files',
-                        'path': str(movie_path),
-                        'dateadded': movie['dateadded'],
+                        'imdb_id': imdb_id, 'reason': 'no_video_files',
+                        'path': str(movie_path), 'dateadded': movie['dateadded'],
                         'source': movie['source']
                     })
-            
+
             conn.commit()
-            
+
         return deleted_movies
     
     def delete_orphaned_series(self) -> List[Dict]:
-        """
-        Find and delete TV series that don't have corresponding directories on disk
-        This requires checking filesystem for each series, so use carefully
-        
-        Returns:
-            List of deleted series with their details
-        """
+        """Delete DB series (and all their episodes) whose directory no longer exists on disk."""
         from pathlib import Path
-        
+
         deleted_series = []
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Get all series with their paths
-            cursor.execute("""
-                SELECT imdb_id, path, last_updated, metadata 
-                FROM series
-            """)
-            
-            series_list = cursor.fetchall()
-            
-            for series in series_list:
+            cursor.execute("SELECT imdb_id, path, last_updated, metadata FROM series")
+
+            for series in cursor.fetchall():
                 imdb_id = series['imdb_id']
                 series_path = Path(series['path'])
-                
+
                 if not series_path.exists():
-                    # Series directory doesn't exist - delete the series and all its episodes
-                    cursor.execute("""
-                        DELETE FROM episodes 
-                        WHERE imdb_id = %s
-                    """, (imdb_id,))
+                    cursor.execute("DELETE FROM episodes WHERE imdb_id = %s", (imdb_id,))
                     episodes_deleted = cursor.rowcount
-                    
-                    cursor.execute("""
-                        DELETE FROM series 
-                        WHERE imdb_id = %s
-                    """, (imdb_id,))
-                    
+                    cursor.execute("DELETE FROM series WHERE imdb_id = %s", (imdb_id,))
                     deleted_series.append({
                         'imdb_id': imdb_id,
                         'reason': 'directory_not_found',
@@ -1051,9 +851,9 @@ class ChronarrDatabase:
                         'last_updated': series['last_updated'],
                         'episodes_deleted': episodes_deleted
                     })
-            
+
             conn.commit()
-            
+
         return deleted_series
     
     def add_missing_imdb(self, file_path: str, media_type: str, folder_name: str = None, filename: str = None, notes: str = None):
