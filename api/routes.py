@@ -4054,9 +4054,26 @@ def register_routes(app, dependencies: dict):
             }
 
     # ---------------------------
+    # Emby Plugin Support
+    # ---------------------------
+
+    @app.get("/emby/changelog")
+    async def _emby_changelog():
+        """Serve the Emby plugin changelog from the bundled CHANGELOG.md."""
+        import os
+        from fastapi.responses import PlainTextResponse
+        changelog_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "Emby-DLL", "CHANGELOG.md"
+        )
+        if os.path.exists(changelog_path):
+            with open(changelog_path, "r", encoding="utf-8") as f:
+                return PlainTextResponse(f.read(), media_type="text/markdown; charset=utf-8")
+        return PlainTextResponse("Changelog not found.", status_code=404)
+
+    # ---------------------------
     # Core API - No Web Interface
     # ---------------------------
-    
+
     @app.get("/")
     async def _core_info():
         """Core container API information - Web interface on separate container"""
