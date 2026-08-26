@@ -2434,6 +2434,39 @@ def register_database_admin_routes(app, dependencies):
         """Get database population status"""
         return await get_populate_status()
 
+    # /setup page and its data endpoint — proxy /api/instances to the core
+    @app.get("/api/instances")
+    async def api_instances(request: Request):
+        """Proxy instance list and connection status from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_API_HOST", "chronarr")
+        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/instances"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/setup")
+    async def setup_page():
+        """Serve the instance setup / webhook URL reference page."""
+        import os
+        setup_file = os.path.join(os.path.dirname(__file__), "..", "static", "setup.html")
+        from fastapi.responses import FileResponse
+        if os.path.exists(setup_file):
+            return FileResponse(os.path.normpath(setup_file))
+        raise HTTPException(status_code=404, detail="Setup page not found")
+
 
 # Scheduled Scans Functions
 
