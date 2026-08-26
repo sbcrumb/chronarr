@@ -91,13 +91,14 @@ async def get_movies_list(dependencies: dict,
                          source_filter: Optional[str] = Query(None),
                          search: Optional[str] = Query(None),
                          imdb_search: Optional[str] = Query(None),
-                         skipped: Optional[bool] = Query(None)):
+                         skipped: Optional[bool] = Query(None),
+                         instance_filter: Optional[str] = Query(None)):
     """Get paginated list of movies with filtering options"""
     db = dependencies["db"]
-    
+
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        
+
         # Build dynamic query
         where_conditions = []
         params = []
@@ -110,10 +111,8 @@ async def get_movies_list(dependencies: dict,
 
         if has_date is not None:
             if has_date:
-                # PostgreSQL - NULL handling
                 where_conditions.append("dateadded IS NOT NULL")
             else:
-                # PostgreSQL - NULL handling
                 where_conditions.append("dateadded IS NULL")
 
         if source_filter:
@@ -127,17 +126,21 @@ async def get_movies_list(dependencies: dict,
         if imdb_search:
             where_conditions.append("imdb_id ILIKE %s")
             params.append(f"%{imdb_search}%")
-        
+
+        if instance_filter:
+            where_conditions.append("instance = %s")
+            params.append(instance_filter)
+
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
-        
+
         # Get total count
         count_query = f"SELECT COUNT(*) FROM movies WHERE {where_clause}"
         cursor.execute(count_query, params)
         total_count = db._get_first_value(cursor.fetchone())
-        
-        # Get paginated results - PostgreSQL
+
+        # Get paginated results
         query = f"""
-            SELECT imdb_id, title, year, path, released, dateadded, source, has_video_file, last_updated, skipped, skip_reason
+            SELECT imdb_id, instance, title, year, path, released, dateadded, source, has_video_file, last_updated, skipped, skip_reason
             FROM movies
             WHERE {where_clause}
             ORDER BY last_updated DESC
@@ -169,12 +172,13 @@ async def get_movies_list(dependencies: dict,
 
 
 async def get_tv_series_list(dependencies: dict,
-                           skip: int = Query(0, ge=0), 
+                           skip: int = Query(0, ge=0),
                            limit: int = Query(50, le=500),
                            search: Optional[str] = Query(None),
                            imdb_search: Optional[str] = Query(None),
                            date_filter: Optional[str] = Query(None),
-                           source_filter: Optional[str] = Query(None)):
+                           source_filter: Optional[str] = Query(None),
+                           instance_filter: Optional[str] = Query(None)):
     """Get paginated list of TV series with episode counts"""
     db = dependencies["db"]
     
@@ -199,10 +203,13 @@ async def get_tv_series_list(dependencies: dict,
             params.append(f"%{imdb_search}%")
             
         if source_filter:
-            # Need to check episodes for source filter
             where_conditions.append("e.source = %s")
             params.append(source_filter)
-            
+
+        if instance_filter:
+            where_conditions.append("s.instance = %s")
+            params.append(instance_filter)
+
         if date_filter:
             if date_filter == "complete":
                 # All episodes have dates
@@ -225,14 +232,13 @@ async def get_tv_series_list(dependencies: dict,
 
         # Get total count with same filtering logic as main query
         if having_clause or needs_episode_join:
-            # When using HAVING clause or filtering by episode fields, need to count filtered results with JOIN
             count_query = f"""
                 SELECT COUNT(*) FROM (
-                    SELECT s.imdb_id
+                    SELECT s.imdb_id, s.instance
                     FROM series s
-                    LEFT JOIN episodes e ON s.imdb_id = e.imdb_id
+                    LEFT JOIN episodes e ON s.imdb_id = e.imdb_id AND s.instance = e.instance
                     WHERE {where_clause}
-                    GROUP BY s.imdb_id
+                    GROUP BY s.imdb_id, s.instance
                     {('HAVING ' + having_clause) if having_clause else ''}
                 ) filtered_series
             """
@@ -245,10 +251,10 @@ async def get_tv_series_list(dependencies: dict,
         
         # Get series with episode statistics
         having_part = f" HAVING {having_clause}" if having_clause else ""
-        # PostgreSQL query
         query = f"""
             SELECT
                 s.imdb_id,
+                s.instance,
                 s.path,
                 s.last_updated,
                 COUNT(e.episode) as total_episodes,
@@ -256,9 +262,9 @@ async def get_tv_series_list(dependencies: dict,
                 COUNT(CASE WHEN e.has_video_file = TRUE THEN 1 END) as episodes_with_video,
                 COUNT(CASE WHEN e.skipped = TRUE THEN 1 END) as episodes_skipped
             FROM series s
-            LEFT JOIN episodes e ON s.imdb_id = e.imdb_id
+            LEFT JOIN episodes e ON s.imdb_id = e.imdb_id AND s.instance = e.instance
             WHERE {where_clause}
-            GROUP BY s.imdb_id, s.path, s.last_updated{having_part}
+            GROUP BY s.imdb_id, s.instance, s.path, s.last_updated{having_part}
             ORDER BY s.last_updated DESC
             LIMIT %s OFFSET %s
         """
@@ -1486,8 +1492,8 @@ def register_web_routes(app, dependencies):
     @app.get("/api/movies")
     async def api_movies_list(skip: int = 0, limit: int = 100, has_date: bool = None,
                              source_filter: str = None, search: str = None, imdb_search: str = None,
-                             skipped: bool = None):
-        return await get_movies_list(dependencies, skip, limit, has_date, source_filter, search, imdb_search, skipped)
+                             skipped: bool = None, instance: str = None):
+        return await get_movies_list(dependencies, skip, limit, has_date, source_filter, search, imdb_search, skipped, instance)
     
     @app.post("/api/movies/{imdb_id}/update-date")
     async def api_update_movie_date(imdb_id: str, dateadded: str = None, source: str = "manual"):
@@ -1599,9 +1605,10 @@ def register_web_routes(app, dependencies):
 
     # TV series endpoints
     @app.get("/api/series")
-    async def api_series_list(skip: int = 0, limit: int = 50, search: str = None, 
-                             imdb_search: str = None, date_filter: str = None, source_filter: str = None):
-        return await get_tv_series_list(dependencies, skip, limit, search, imdb_search, date_filter, source_filter)
+    async def api_series_list(skip: int = 0, limit: int = 50, search: str = None,
+                             imdb_search: str = None, date_filter: str = None,
+                             source_filter: str = None, instance: str = None):
+        return await get_tv_series_list(dependencies, skip, limit, search, imdb_search, date_filter, source_filter, instance)
     
     @app.get("/api/series/{imdb_id}/episodes")
     async def api_series_episodes(imdb_id: str):
