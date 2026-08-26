@@ -20,8 +20,6 @@ from utils.logging import _log
 from core.database import ChronarrDatabase
 from core.instance_registry import build_registry
 from core.path_mapper import PathMapper
-from clients.radarr_db_client import RadarrDbClient
-from clients.sonarr_db_client import SonarrDbClient
 
 # Import processors
 from processors.tv_processor import TVProcessor
@@ -216,10 +214,10 @@ def test_database_connections(registry=None):
         print(f"  No Radarr instances configured")
     else:
         for inst in config.radarr_instances:
-            client = registry.radarr(inst.name)
-            if client is None:
-                print(f"  [{inst.name}]  ⚠️  No client — check URL and API key config")
-            elif isinstance(client, RadarrDbClient):
+            status = registry.radarr_status(inst.name)
+            if not status["connected"]:
+                print(f"  [{inst.name}]  ⚠️  No client — check URL, API key, and DB settings in .env")
+            elif status["method"] == "direct_db":
                 print(f"  [{inst.name}]  ✅ CONNECTED (direct DB)")
             else:
                 print(f"  [{inst.name}]  ✅ CONNECTED (API)")
@@ -230,13 +228,22 @@ def test_database_connections(registry=None):
         print(f"  No Sonarr instances configured")
     else:
         for inst in config.sonarr_instances:
-            client = registry.sonarr(inst.name)
-            if client is None:
-                print(f"  [{inst.name}]  ⚠️  No client — check URL and API key config")
-            elif isinstance(client, SonarrDbClient):
+            status = registry.sonarr_status(inst.name)
+            if not status["connected"]:
+                print(f"  [{inst.name}]  ⚠️  No client — check URL, API key, and DB settings in .env")
+            elif status["method"] == "direct_db":
                 print(f"  [{inst.name}]  ✅ CONNECTED (direct DB)")
             else:
                 print(f"  [{inst.name}]  ✅ CONNECTED (API)")
+
+    # Summary warning — flag any instance without a working client
+    no_client = (
+        [n for n, s in registry.all_radarr_statuses().items() if not s["connected"]]
+        + [n for n, s in registry.all_sonarr_statuses().items() if not s["connected"]]
+    )
+    if no_client:
+        print(f"\n  ⚠️  {len(no_client)} instance(s) have no client: {', '.join(no_client)}")
+        print(f"  Webhooks received for these instances will be ignored until resolved.")
 
     print("\n" + "="*70 + "\n")
 

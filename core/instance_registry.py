@@ -100,11 +100,19 @@ class InstanceRegistry:
         self._sonarr: Dict[str, AnySonarrClient] = {}
         self._radarr_mappers: Dict[str, PathMapper] = {}
         self._sonarr_mappers: Dict[str, PathMapper] = {}
+        # Connection status keyed by instance name — used by /setup and startup reporting.
+        # {"connected": True, "method": "direct_db"|"api"} or {"connected": False}
+        self._radarr_status: Dict[str, dict] = {}
+        self._sonarr_status: Dict[str, dict] = {}
 
         for inst in radarr_instances:
             client = _build_radarr_client(inst)
             if client:
                 self._radarr[inst.name] = client
+                method = "direct_db" if isinstance(client, RadarrDbClient) else "api"
+                self._radarr_status[inst.name] = {"connected": True, "method": method}
+            else:
+                self._radarr_status[inst.name] = {"connected": False}
             self._radarr_mappers[inst.name] = PathMapper(
                 root_folders=inst.root_folders,
                 container_paths=inst.movie_paths,
@@ -114,6 +122,10 @@ class InstanceRegistry:
             client = _build_sonarr_client(inst)
             if client:
                 self._sonarr[inst.name] = client
+                method = "direct_db" if isinstance(client, SonarrDbClient) else "api"
+                self._sonarr_status[inst.name] = {"connected": True, "method": method}
+            else:
+                self._sonarr_status[inst.name] = {"connected": False}
             self._sonarr_mappers[inst.name] = PathMapper(
                 root_folders=inst.root_folders,
                 container_paths=inst.tv_paths,
@@ -136,6 +148,23 @@ class InstanceRegistry:
     def sonarr_mapper(self, name: str = "sonarr") -> Optional[PathMapper]:
         """Look up the PathMapper for a Sonarr instance."""
         return self._sonarr_mappers.get(name)
+
+    def radarr_status(self, name: str = "radarr") -> dict:
+        """Return connection status for a Radarr instance by name.
+
+        Returns {"connected": True, "method": "direct_db"|"api"} or {"connected": False}.
+        """
+        return self._radarr_status.get(name, {"connected": False})
+
+    def sonarr_status(self, name: str = "sonarr") -> dict:
+        """Return connection status for a Sonarr instance by name."""
+        return self._sonarr_status.get(name, {"connected": False})
+
+    def all_radarr_statuses(self) -> Dict[str, dict]:
+        return dict(self._radarr_status)
+
+    def all_sonarr_statuses(self) -> Dict[str, dict]:
+        return dict(self._sonarr_status)
 
     def all_radarr(self) -> Dict[str, AnyRadarrClient]:
         return dict(self._radarr)
