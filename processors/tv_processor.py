@@ -486,58 +486,48 @@ class TVProcessor:
             _log("ERROR", f"Failed to get Sonarr episodes for {imdb_id}: {e}")
             return {}
     
-    def process_season(self, series_path: str, season_name: str) -> Dict[str, Any]:
+    def process_season(self, series_path: str, season_name: str, instance: str = 'sonarr') -> Dict[str, Any]:
         """Process a specific season"""
         series_path_obj = Path(series_path)
         if not series_path_obj.exists():
             raise FileNotFoundError(f"Series path not found: {series_path}")
-        
+
         season_path = series_path_obj / season_name
         if not season_path.exists():
             raise FileNotFoundError(f"Season directory not found: {season_path}")
-        
-        # Extract season number from directory name
+
         season_match = re.search(r'(\d+)', season_name)
         if not season_match:
             raise ValueError(f"Could not extract season number from: {season_name}")
-        
+
         season_num = int(season_match.group(1))
-        
-        # Get series IMDb ID
-        imdb_id = parse_imdb_from_path(series_path_obj)  # Phase 3: Using imdb_utils
+
+        imdb_id = parse_imdb_from_path(series_path_obj)
         if not imdb_id:
             raise ValueError(f"No IMDb ID found in series path: {series_path}")
 
         _log("INFO", f"Processing season {season_num} of series: {series_path_obj.name}")
-        
-        # Find episodes in this season
+
         disk_episodes = find_episodes_on_disk(series_path_obj)
         season_episodes = {k: v for k, v in disk_episodes.items() if k[0] == season_num}
-        
+
         if not season_episodes:
             return {"status": "no_episodes", "season": season_num, "episodes_found": 0}
-        
-        # Get episode dates
-        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, season_episodes)
-        
-        # Process episodes
+
+        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, season_episodes, instance=instance)
+
         processed_count = 0
         for (season, episode), (aired, dateadded, source) in episode_dates.items():
             if (season, episode) in season_episodes:
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                
-                # Save to database
                 try:
-                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True)
+                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True, instance=instance)
                     _log("DEBUG", f"S{season:02d}E{episode:02d}: Database record saved successfully")
                 except Exception as e:
                     _log("ERROR", f"S{season:02d}E{episode:02d}: Database write failed: {e}")
-                    # Continue processing other episodes
                 processed_count += 1
-        
+
         _log("INFO", f"Processed {processed_count} episodes in season {season_num}")
-        
+
         return {
             "status": "success",
             "season": season_num,
@@ -545,63 +535,56 @@ class TVProcessor:
             "episodes_processed": processed_count
         }
     
-    def process_episode(self, series_path: str, season_name: str, episode_name: str) -> Dict[str, Any]:
+    def process_episode(self, series_path: str, season_name: str, episode_name: str, instance: str = 'sonarr') -> Dict[str, Any]:
         """Process a specific episode"""
         series_path_obj = Path(series_path)
         if not series_path_obj.exists():
             raise FileNotFoundError(f"Series path not found: {series_path}")
-        
+
         season_path = series_path_obj / season_name
         if not season_path.exists():
             raise FileNotFoundError(f"Season directory not found: {season_path}")
-        
+
         episode_path = season_path / episode_name
         if not episode_path.exists():
             raise FileNotFoundError(f"Episode file not found: {episode_path}")
-        
-        # Extract season and episode numbers
+
         season_match = re.search(r'(\d+)', season_name)
         episode_match = re.search(r'[sS](\d+)[eE](\d+)|(\d+)x(\d+)', episode_name)
-        
+
         if not season_match:
             raise ValueError(f"Could not extract season number from: {season_name}")
-        
+
         if not episode_match:
             raise ValueError(f"Could not extract episode number from: {episode_name}")
-        
+
         season_num = int(season_match.group(1))
-        
-        if episode_match.group(1) and episode_match.group(2):  # SxxExx format
+
+        if episode_match.group(1) and episode_match.group(2):
             episode_num = int(episode_match.group(2))
-        elif episode_match.group(3) and episode_match.group(4):  # NxNN format
+        elif episode_match.group(3) and episode_match.group(4):
             episode_num = int(episode_match.group(4))
         else:
             raise ValueError(f"Could not parse episode number from: {episode_name}")
-        
-        # Get series IMDb ID
-        imdb_id = parse_imdb_from_path(series_path_obj)  # Phase 3: Using imdb_utils
+
+        imdb_id = parse_imdb_from_path(series_path_obj)
         if not imdb_id:
             raise ValueError(f"No IMDb ID found in series path: {series_path}")
 
         _log("INFO", f"Processing episode S{season_num:02d}E{episode_num:02d} of series: {series_path_obj.name}")
-        
-        # Get episode data
+
         disk_episodes = {(season_num, episode_num): [episode_path]}
-        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, disk_episodes)
-        
+        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, disk_episodes, instance=instance)
+
         if (season_num, episode_num) not in episode_dates:
             return {"status": "no_data", "season": season_num, "episode": episode_num}
-        
+
         aired, dateadded, source = episode_dates[(season_num, episode_num)]
-        
-        # NFO file operations removed - database is now the single source of truth
-        # (Phase 1: Remove NFO file write operations)
-        
-        # Save to database
-        self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, True)
-        
+
+        self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, True, instance=instance)
+
         _log("INFO", f"Processed episode S{season_num:02d}E{episode_num:02d}")
-        
+
         return {
             "status": "success",
             "season": season_num,
@@ -613,61 +596,39 @@ class TVProcessor:
     
     # ===== ASYNC METHODS =====
     
-    async def async_process_series(self, series_path: Path) -> Dict[str, Any]:
-        """
-        Async process a TV series directory with concurrent episode processing
-        
-        Args:
-            series_path: Path to series directory
-            
-        Returns:
-            Dictionary with processing results
-        """
-        imdb_id = parse_imdb_from_path(series_path)  # Phase 3: Using imdb_utils
+    async def async_process_series(self, series_path: Path, instance: str = 'sonarr') -> Dict[str, Any]:
+        """Async process a TV series directory with concurrent episode processing."""
+        imdb_id = parse_imdb_from_path(series_path)
         if not imdb_id:
             return {"status": "error", "reason": f"No IMDb ID found in series path: {series_path}"}
-        
+
         _log("INFO", f"Async processing TV series: {series_path.name}")
-        
-        # Update database
-        self.db.upsert_series(imdb_id, str(series_path))
-        
-        # Find video files asynchronously
+
+        self.db.upsert_series(imdb_id, str(series_path), instance=instance)
+
         disk_episodes = await async_find_episodes_on_disk(series_path)
         _log("INFO", f"Found {len(disk_episodes)} episodes on disk")
-        
-        # Get episode dates (sync for now, could be made async later)
-        episode_dates = self._gather_episode_dates(series_path, imdb_id, disk_episodes)
-        
-        # Prepare episode data for concurrent processing
-        episode_data_list = []
-        mtime_operations = []
-        
+
+        # sync for now — could be made async if episode date gathering becomes a bottleneck
+        episode_dates = self._gather_episode_dates(series_path, imdb_id, disk_episodes, instance=instance)
+
+        processed_count = 0
         for (season, episode), (aired, dateadded, source) in episode_dates.items():
             if (season, episode) in disk_episodes:
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                
-                # Save to database
                 try:
-                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True)
+                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True, instance=instance)
                     _log("DEBUG", f"S{season:02d}E{episode:02d}: Database record saved successfully")
+                    processed_count += 1
                 except Exception as e:
                     _log("ERROR", f"S{season:02d}E{episode:02d}: Database write failed: {e}")
-                    # Continue processing other episodes
-        
-        # NFO and mtime operations removed - database is now the single source of truth
-        # (Phase 1: Remove NFO file write operations)
-        results = {}
-        
+
         _log("INFO", f"Completed async processing TV series: {series_path.name}")
-        
+
         return {
             "status": "success",
             "imdb_id": imdb_id,
             "episodes_found": len(disk_episodes),
-            "episodes_processed": len(episode_data_list),
-            "results": results
+            "episodes_processed": processed_count,
         }
     
     async def async_process_multiple_series(
@@ -1005,46 +966,30 @@ class TVProcessor:
     async def async_batch_episode_processing(
         self,
         episodes_data: List[Dict[str, Any]],
-        max_concurrent: int = 5
+        max_concurrent: int = 5,
+        instance: str = 'sonarr',
     ) -> Dict[str, Any]:
-        """
-        Process episodes from webhook data concurrently
-        
-        Args:
-            episodes_data: List of episode data from webhooks
-            max_concurrent: Maximum concurrent episode processing
-            
-        Returns:
-            Processing results summary
-        """
+        """Process episodes from webhook data concurrently."""
         async def _process_single_episode(episode_data: Dict[str, Any]) -> Dict[str, Any]:
             try:
-                # Extract episode information
                 series_path = Path(episode_data.get('series_path'))
                 season = episode_data.get('season')
                 episode = episode_data.get('episode')
                 aired = episode_data.get('aired')
                 dateadded = episode_data.get('dateadded')
-                
-                # Get IMDb ID
-                imdb_id = parse_imdb_from_path(series_path)  # Phase 3: Using imdb_utils
+
+                imdb_id = parse_imdb_from_path(series_path)
                 if not imdb_id:
                     return {"status": "error", "reason": "No IMDb ID found"}
-                
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                nfo_success = True  # Always True since we're not creating NFOs anymore
-                
-                # Update database
-                self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, "webhook", True)
-                
+
+                self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, "webhook", True, instance=instance)
+
                 return {
                     "status": "success",
                     "season": season,
                     "episode": episode,
-                    "nfo_created": nfo_success
                 }
-                
+
             except Exception as e:
                 return {
                     "status": "error",
