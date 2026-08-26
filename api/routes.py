@@ -3036,10 +3036,38 @@ def register_routes(app, dependencies: dict):
     async def _maintainarr_webhook(request: Request, background_tasks: BackgroundTasks):
         return await maintainarr_webhook(request, background_tasks, dependencies)
 
+    @app.get("/api/instances")
+    async def _api_instances():
+        """Return all configured instances with their webhook paths and connection status."""
+        registry = dependencies.get("registry")
+        cfg = dependencies.get("config")
+        if not registry or not cfg:
+            raise HTTPException(status_code=503, detail="Registry not initialised")
+
+        radarr_list = [
+            {
+                "name": inst.name,
+                "webhook_path": f"/{inst.name}/webhook",
+                "connected": registry.radarr_status(inst.name).get("connected", False),
+                "method": registry.radarr_status(inst.name).get("method"),
+            }
+            for inst in cfg.radarr_instances
+        ]
+        sonarr_list = [
+            {
+                "name": inst.name,
+                "webhook_path": f"/{inst.name}/webhook",
+                "connected": registry.sonarr_status(inst.name).get("connected", False),
+                "method": registry.sonarr_status(inst.name).get("method"),
+            }
+            for inst in cfg.sonarr_instances
+        ]
+        return {"radarr": radarr_list, "sonarr": sonarr_list}
+
     @app.get("/health")
     async def _health() -> HealthResponse:
         return await health(dependencies)
-    
+
     @app.get("/health/simple")
     async def _health_simple():
         """Simple health check for Docker without external dependencies"""
@@ -4026,9 +4054,26 @@ def register_routes(app, dependencies: dict):
             }
 
     # ---------------------------
+    # Emby Plugin Support
+    # ---------------------------
+
+    @app.get("/emby/changelog")
+    async def _emby_changelog():
+        """Serve the Emby plugin changelog from the bundled CHANGELOG.md."""
+        import os
+        from fastapi.responses import PlainTextResponse
+        changelog_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "Emby-DLL", "CHANGELOG.md"
+        )
+        if os.path.exists(changelog_path):
+            with open(changelog_path, "r", encoding="utf-8") as f:
+                return PlainTextResponse(f.read(), media_type="text/markdown; charset=utf-8")
+        return PlainTextResponse("Changelog not found.", status_code=404)
+
+    # ---------------------------
     # Core API - No Web Interface
     # ---------------------------
-    
+
     @app.get("/")
     async def _core_info():
         """Core container API information - Web interface on separate container"""

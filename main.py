@@ -19,7 +19,6 @@ from utils.logging import _log
 # Import core components
 from core.database import ChronarrDatabase
 from core.instance_registry import build_registry
-
 from core.path_mapper import PathMapper
 
 # Import processors
@@ -84,14 +83,14 @@ def _noop_mapper() -> PathMapper:
     return PathMapper(root_folders=[], container_paths=[])
 
 
-def initialize_components():
+def initialize_components(registry=None):
     start_time = datetime.now(timezone.utc)
 
     db = ChronarrDatabase(config=config)
 
-    # Build the instance registry — one client + one path mapper per configured
-    # Radarr/Sonarr instance, derived from env vars at startup.
-    registry = build_registry(config)
+    # Use the registry built at startup if passed in; otherwise build it now.
+    if registry is None:
+        registry = build_registry(config)
 
     # Processors get the default instance's client and mapper. Multi-instance
     # requests pass instance name explicitly at process time; the processors look
@@ -169,171 +168,82 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
-def test_database_connections():
-    """Test and report all database connections at startup with actual connection tests"""
+def test_database_connections(registry=None):
+    """Report all database connection statuses at startup."""
     import psycopg2
     import sqlite3
-    from pathlib import Path
 
     print("\n" + "="*70)
     print("  DATABASE CONNECTION STATUS")
     print("="*70)
 
-    # Test Chronarr internal database
+    # Chronarr's own DB — always present
     print(f"\n  Chronarr Database:")
     if config.db_type == "postgresql":
-        print(f"  Type: PostgreSQL")
-        print(f"  Host: {config.db_host}:{config.db_port}")
-        print(f"  Database: {config.db_name}")
-        print(f"  User: {config.db_user}")
-
+        print(f"  Type: PostgreSQL  Host: {config.db_host}:{config.db_port}  Database: {config.db_name}")
         try:
-            # Attempt actual connection
             conn = psycopg2.connect(
-                host=config.db_host,
-                port=config.db_port,
-                database=config.db_name,
-                user=config.db_user,
-                password=config.db_password
+                host=config.db_host, port=config.db_port,
+                database=config.db_name, user=config.db_user, password=config.db_password
             )
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            cursor.close()
+            conn.cursor().execute("SELECT 1")
             conn.close()
             print(f"  Status: ✅ CONNECTED")
         except Exception as e:
-            print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+            print(f"  Status: ❌ ERROR - {str(e)[:60]}")
     else:
-        print(f"  Type: SQLite")
-        print(f"  Path: {config.db_path}")
+        print(f"  Type: SQLite  Path: {config.db_path}")
         try:
             if Path(config.db_path).exists():
                 conn = sqlite3.connect(config.db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
+                conn.cursor().execute("SELECT 1")
                 conn.close()
                 print(f"  Status: ✅ CONNECTED")
             else:
-                print(f"  Status: ⚠️  Database file will be created on first use")
+                print(f"  Status: ⚠️  Will be created on first use")
         except Exception as e:
-            print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+            print(f"  Status: ❌ ERROR - {str(e)[:60]}")
 
-    # Test Radarr database
-    print(f"\n  Radarr Database:")
-    radarr_db_type = os.environ.get("RADARR_DB_TYPE", "").lower()
+    if not registry:
+        print("\n" + "="*70 + "\n")
+        return
 
-    if radarr_db_type == "postgresql":
-        radarr_db_host = os.environ.get("RADARR_DB_HOST", "")
-        radarr_db_port = os.environ.get("RADARR_DB_PORT", "5432")
-        radarr_db_name = os.environ.get("RADARR_DB_NAME", "")
-        radarr_db_user = os.environ.get("RADARR_DB_USER", "")
-        radarr_db_password = os.environ.get("RADARR_DB_PASSWORD", "")
-
-        print(f"  Type: PostgreSQL")
-        print(f"  Host: {radarr_db_host}:{radarr_db_port}")
-        print(f"  Database: {radarr_db_name}")
-        print(f"  User: {radarr_db_user}")
-
-        if not radarr_db_host or not radarr_db_name:
-            print(f"  Status: ⚠️  NOT CONFIGURED (missing host or database name)")
-        else:
-            try:
-                conn = psycopg2.connect(
-                    host=radarr_db_host,
-                    port=int(radarr_db_port),
-                    database=radarr_db_name,
-                    user=radarr_db_user,
-                    password=radarr_db_password
-                )
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
-                conn.close()
-                print(f"  Status: ✅ CONNECTED - Using direct database access")
-            except Exception as e:
-                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
-
-    elif radarr_db_type == "sqlite":
-        radarr_db_path = os.environ.get("RADARR_DB_PATH", "")
-        print(f"  Type: SQLite")
-        print(f"  Path: {radarr_db_path}")
-
-        if not radarr_db_path:
-            print(f"  Status: ⚠️  NOT CONFIGURED (missing database path)")
-        elif not Path(radarr_db_path).exists():
-            print(f"  Status: ❌ ERROR - Database file not found")
-        else:
-            try:
-                conn = sqlite3.connect(radarr_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
-                conn.close()
-                print(f"  Status: ✅ CONNECTED - Using direct database access")
-            except Exception as e:
-                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+    # Radarr instances — one line each
+    print(f"\n  Radarr:")
+    if not config.radarr_instances:
+        print(f"  No Radarr instances configured")
     else:
-        print(f"  Type: Not configured")
-        print(f"  Status: ⚠️  Will use Radarr API instead of direct database access")
+        for inst in config.radarr_instances:
+            status = registry.radarr_status(inst.name)
+            if not status["connected"]:
+                print(f"  [{inst.name}]  ⚠️  No client — check URL, API key, and DB settings in .env")
+            elif status["method"] == "direct_db":
+                print(f"  [{inst.name}]  ✅ CONNECTED (direct DB)")
+            else:
+                print(f"  [{inst.name}]  ✅ CONNECTED (API)")
 
-    # Test Sonarr database
-    print(f"\n  Sonarr Database:")
-    sonarr_db_type = os.environ.get("SONARR_DB_TYPE", "").lower()
-
-    if sonarr_db_type == "postgresql":
-        sonarr_db_host = os.environ.get("SONARR_DB_HOST", "")
-        sonarr_db_port = os.environ.get("SONARR_DB_PORT", "5432")
-        sonarr_db_name = os.environ.get("SONARR_DB_NAME", "")
-        sonarr_db_user = os.environ.get("SONARR_DB_USER", "")
-        sonarr_db_password = os.environ.get("SONARR_DB_PASSWORD", "")
-
-        print(f"  Type: PostgreSQL")
-        print(f"  Host: {sonarr_db_host}:{sonarr_db_port}")
-        print(f"  Database: {sonarr_db_name}")
-        print(f"  User: {sonarr_db_user}")
-
-        if not sonarr_db_host or not sonarr_db_name:
-            print(f"  Status: ⚠️  NOT CONFIGURED (missing host or database name)")
-        else:
-            try:
-                conn = psycopg2.connect(
-                    host=sonarr_db_host,
-                    port=int(sonarr_db_port),
-                    database=sonarr_db_name,
-                    user=sonarr_db_user,
-                    password=sonarr_db_password
-                )
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
-                conn.close()
-                print(f"  Status: ✅ CONNECTED - Using direct database access")
-            except Exception as e:
-                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
-
-    elif sonarr_db_type == "sqlite":
-        sonarr_db_path = os.environ.get("SONARR_DB_PATH", "")
-        print(f"  Type: SQLite")
-        print(f"  Path: {sonarr_db_path}")
-
-        if not sonarr_db_path:
-            print(f"  Status: ⚠️  NOT CONFIGURED (missing database path)")
-        elif not Path(sonarr_db_path).exists():
-            print(f"  Status: ❌ ERROR - Database file not found")
-        else:
-            try:
-                conn = sqlite3.connect(sonarr_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
-                conn.close()
-                print(f"  Status: ✅ CONNECTED - Using direct database access")
-            except Exception as e:
-                print(f"  Status: ❌ ERROR - {str(e)[:50]}")
+    # Sonarr instances — one line each
+    print(f"\n  Sonarr:")
+    if not config.sonarr_instances:
+        print(f"  No Sonarr instances configured")
     else:
-        print(f"  Type: Not configured")
-        print(f"  Status: ⚠️  Will use Sonarr API instead of direct database access")
+        for inst in config.sonarr_instances:
+            status = registry.sonarr_status(inst.name)
+            if not status["connected"]:
+                print(f"  [{inst.name}]  ⚠️  No client — check URL, API key, and DB settings in .env")
+            elif status["method"] == "direct_db":
+                print(f"  [{inst.name}]  ✅ CONNECTED (direct DB)")
+            else:
+                print(f"  [{inst.name}]  ✅ CONNECTED (API)")
+
+    # Summary warning — flag any instance without a working client
+    no_client = (
+        [n for n, s in registry.all_radarr_statuses().items() if not s["connected"]]
+        + [n for n, s in registry.all_sonarr_statuses().items() if not s["connected"]]
+    )
+    if no_client:
+        print(f"\n  ⚠️  {len(no_client)} instance(s) have no client: {', '.join(no_client)}")
+        print(f"  Webhooks received for these instances will be ignored until resolved.")
 
     print("\n" + "="*70 + "\n")
 
@@ -358,14 +268,17 @@ def main():
     _log("INFO", f"Config: manage_nfo={config.manage_nfo}, fix_mtimes={config.fix_dir_mtimes}")
     _log("INFO", f"Movie priority: {config.movie_priority}")
 
+    # Build registry once — used for connection status display and component init
+    registry = build_registry(config)
+
     # Test and display all database connections
-    test_database_connections()
-    
+    test_database_connections(registry)
+
     # Create FastAPI app
     app = create_app()
-    
+
     # Initialize components
-    dependencies = initialize_components()
+    dependencies = initialize_components(registry=registry)
     
     # Note: Authentication and web interface handled by separate chronarr-web container
     _log("INFO", "Core API: Authentication handled by separate web container")

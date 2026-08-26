@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chronarr — Setup</title>
+    <link rel="stylesheet" href="/static/css/styles.css?v=setup-page">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .setup-container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .setup-section {
+            background: white;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .setup-section h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--dark-color);
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .base-url-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .base-url-row label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .base-url-row input {
+            flex: 1;
+            min-width: 200px;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-family: inherit;
+        }
+
+        .base-url-row input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+        }
+
+        .instance-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .instance-row {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            background: var(--light-color);
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+
+        .instance-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+
+        .instance-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .instance-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-size: 0.75rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+
+        .badge-ok {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-warn {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge-method {
+            background: #e2e3e5;
+            color: #495057;
+            margin-left: 0.3rem;
+        }
+
+        .webhook-url-cell {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 0;
+        }
+
+        .webhook-url-cell input {
+            flex: 1;
+            padding: 0.35rem 0.6rem;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 0.82rem;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            color: #495057;
+            background: white;
+            min-width: 0;
+        }
+
+        .btn-copy {
+            flex-shrink: 0;
+            padding: 0.35rem 0.75rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .btn-copy:hover {
+            background: #5a6fd6;
+        }
+
+        .btn-copy.copied {
+            background: var(--success-color);
+        }
+
+        .empty-note {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            font-style: italic;
+        }
+
+        .hint-text {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-top: 0.75rem;
+            line-height: 1.5;
+        }
+
+        .hint-text code {
+            background: #f0f0f0;
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 0.8rem;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            margin-bottom: 1rem;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .loading-note {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .error-note {
+            color: var(--danger-color);
+            font-size: 0.9rem;
+        }
+
+        /* Responsive — on narrow screens, stack the instance row */
+        @media (max-width: 560px) {
+            .instance-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-content">
+                <h1><i class="fas fa-shield-alt"></i> Chronarr</h1>
+                <p>Setup &amp; Webhook Configuration</p>
+            </div>
+        </header>
+
+        <div class="setup-container">
+            <a href="/" class="back-link">
+                <i class="fas fa-arrow-left"></i> Back to Dashboard
+            </a>
+
+            <!-- Base URL -->
+            <div class="setup-section">
+                <h2><i class="fas fa-link"></i> Chronarr Core URL</h2>
+                <div class="base-url-row">
+                    <label for="base-url">Base URL:</label>
+                    <input type="text" id="base-url" placeholder="http://your-server:8080" />
+                </div>
+                <p class="hint-text">
+                    This is the address Radarr and Sonarr will use to reach Chronarr's core container.
+                    It should be the hostname (or IP) your media apps can reach, on port
+                    <code>8080</code> by default. Edit it once here and all webhook URLs below update automatically.
+                </p>
+            </div>
+
+            <!-- Radarr -->
+            <div class="setup-section">
+                <h2><i class="fas fa-film"></i> Radarr Instances</h2>
+                <div class="instance-list" id="radarr-list">
+                    <span class="loading-note">Loading&hellip;</span>
+                </div>
+            </div>
+
+            <!-- Sonarr -->
+            <div class="setup-section">
+                <h2><i class="fas fa-tv"></i> Sonarr Instances</h2>
+                <div class="instance-list" id="sonarr-list">
+                    <span class="loading-note">Loading&hellip;</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Infer the likely core URL from the current page's host, swapping port to 8080.
+        // The user can override this in the input.
+        function defaultCoreUrl() {
+            const { protocol, hostname } = window.location;
+            return `${protocol}//${hostname}:8080`;
+        }
+
+        const baseInput = document.getElementById('base-url');
+        baseInput.value = defaultCoreUrl();
+        baseInput.addEventListener('input', rebuildUrls);
+
+        function buildWebhookUrl(path) {
+            const base = (baseInput.value || '').replace(/\/$/, '');
+            return base + path;
+        }
+
+        function renderInstances(containerId, instances, serviceLabel) {
+            const container = document.getElementById(containerId);
+            if (!instances || instances.length === 0) {
+                container.innerHTML = `<span class="empty-note">No ${serviceLabel} instances configured.</span>`;
+                return;
+            }
+
+            container.innerHTML = '';
+            for (const inst of instances) {
+                const row = document.createElement('div');
+                row.className = 'instance-row';
+                row.dataset.path = inst.webhook_path;
+
+                const statusBadge = inst.connected
+                    ? `<span class="instance-badge badge-ok"><i class="fas fa-check-circle"></i> Connected</span>`
+                    : `<span class="instance-badge badge-warn"><i class="fas fa-exclamation-triangle"></i> No client</span>`;
+
+                const methodBadge = inst.method
+                    ? `<span class="instance-badge badge-method">${inst.method === 'direct_db' ? 'Direct DB' : 'API'}</span>`
+                    : '';
+
+                const webhookUrl = buildWebhookUrl(inst.webhook_path);
+
+                row.innerHTML = `
+                    <div class="instance-meta">
+                        <span class="instance-name">${escHtml(inst.name)}</span>
+                        <div>${statusBadge}${methodBadge}</div>
+                    </div>
+                    <div class="webhook-url-cell">
+                        <input type="text" class="url-field" value="${escHtml(webhookUrl)}" readonly />
+                    </div>
+                    <button class="btn-copy" onclick="copyUrl(this)">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                `;
+                container.appendChild(row);
+            }
+        }
+
+        function rebuildUrls() {
+            document.querySelectorAll('.instance-row').forEach(row => {
+                const path = row.dataset.path;
+                const input = row.querySelector('.url-field');
+                if (input && path) {
+                    input.value = buildWebhookUrl(path);
+                }
+            });
+        }
+
+        function copyUrl(btn) {
+            const input = btn.closest('.instance-row').querySelector('.url-field');
+            if (!input) return;
+            navigator.clipboard.writeText(input.value).then(() => {
+                btn.classList.add('copied');
+                const icon = btn.querySelector('i');
+                const originalHtml = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-check"></i> Copied';
+                setTimeout(() => {
+                    btn.innerHTML = originalHtml;
+                    btn.classList.remove('copied');
+                }, 1800);
+            }).catch(() => {
+                // Fallback for older browsers / HTTP contexts
+                input.select();
+                document.execCommand('copy');
+            });
+        }
+
+        function escHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        async function loadInstances() {
+            try {
+                const resp = await fetch('/api/instances');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                renderInstances('radarr-list', data.radarr || [], 'Radarr');
+                renderInstances('sonarr-list', data.sonarr || [], 'Sonarr');
+            } catch (err) {
+                const msg = `<span class="error-note"><i class="fas fa-times-circle"></i> Could not load instance data: ${escHtml(err.message)}</span>`;
+                document.getElementById('radarr-list').innerHTML = msg;
+                document.getElementById('sonarr-list').innerHTML = msg;
+            }
+        }
+
+        loadInstances();
+    </script>
+</body>
+</html>
