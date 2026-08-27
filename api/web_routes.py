@@ -4,6 +4,7 @@ Provides endpoints for the web-based database manipulation interface
 """
 import json
 import os
+import re
 import tempfile
 import multiprocessing
 from datetime import datetime, timezone
@@ -13,6 +14,13 @@ from pathlib import Path
 
 from api.models import *
 from utils.logging import _log
+
+# Strip [imdb-tt...] or [tmdb-...] suffixes that media managers append to folder names
+_FOLDER_ID_SUFFIX = re.compile(r'\s*\[[a-z]+-[^\]]+\]', re.IGNORECASE)
+
+def _clean_folder_title(raw: str) -> str:
+    """Remove media-manager ID suffixes from a folder name used as a display title."""
+    return _FOLDER_ID_SUFFIX.sub('', raw).strip()
 
 
 # Status file for cross-process communication
@@ -275,7 +283,7 @@ async def get_tv_series_list(dependencies: dict,
             series_data = dict(row)
             # Extract title from path
             try:
-                series_data['title'] = Path(series_data['path']).name if series_data['path'] else series_data['imdb_id']
+                series_data['title'] = _clean_folder_title(Path(series_data['path']).name) if series_data['path'] else series_data['imdb_id']
             except:
                 series_data['title'] = series_data['imdb_id']
             series.append(series_data)
@@ -383,7 +391,7 @@ async def get_series_episodes(dependencies: dict, imdb_id: str):
         
         series_info = dict(series_row)
         try:
-            series_info['title'] = Path(series_info['path']).name if series_info['path'] else imdb_id
+            series_info['title'] = _clean_folder_title(Path(series_info['path']).name) if series_info['path'] else imdb_id
         except:
             series_info['title'] = imdb_id
         
@@ -445,7 +453,7 @@ async def get_missing_dates_report(dependencies: dict):
         for row in cursor.fetchall():
             episode = dict(row)
             try:
-                episode['series_title'] = Path(episode['path']).name if episode['path'] else episode['imdb_id']
+                episode['series_title'] = _clean_folder_title(Path(episode['path']).name) if episode['path'] else episode['imdb_id']
             except:
                 episode['series_title'] = episode['imdb_id']
             # Map source to user-friendly description
