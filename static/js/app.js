@@ -202,6 +202,11 @@ function updateDashboardStats() {
     document.getElementById('no-valid-source-total').textContent = `${moviesWithoutDates} movies, ${episodesWithoutDates} episodes without dates`;
     
     document.getElementById('recent-activity').textContent = dashboardData.recent_activity_count || 0;
+
+    const moviesSkipped = dashboardData.movies_skipped || 0;
+    const episodesSkipped = dashboardData.episodes_skipped || 0;
+    document.getElementById('skipped-total').textContent = dashboardData.total_skipped || (moviesSkipped + episodesSkipped);
+    document.getElementById('skipped-breakdown').textContent = `${moviesSkipped} movies, ${episodesSkipped} episodes`;
 }
 
 function updateDashboardCharts() {
@@ -493,7 +498,7 @@ function updateSeriesTable(data) {
                     <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
                         <i class="fas fa-list"></i> Episodes
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id)})" style="margin-left: 5px;" title="Delete Series">
+                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id).replace(/"/g, '&quot;')})" style="margin-left: 5px;" title="Delete Series">
                         <i class="fas fa-trash"></i> Delete
                     </button>
                 </td>
