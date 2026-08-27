@@ -593,6 +593,22 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - **GitHub Issues**: [https://github.com/sbcrumb/chronarr/issues](https://github.com/sbcrumb/chronarr/issues)
 
+## Upgrading from v2 to v3
+
+v3 is a drop-in upgrade for single-instance setups. Pull the new image and restart — no config changes are required.
+
+**What you'll notice immediately:**
+- The horizontal tab bar is replaced by a collapsible sidebar. Dashboard, Movies, TV Shows, Reports, and Tools are all still there.
+- The "Admin" tab is now **Tools** in the sidebar.
+
+**Webhooks:** The old `/webhook/radarr` and `/webhook/sonarr` URLs still work — they're kept as aliases. The new canonical format is `/radarr/webhook` and `/sonarr/webhook`, and you can update your Radarr/Sonarr connections at any time, but there's no urgency.
+
+**Database:** Schema migrations run automatically on startup. Existing movie and episode records are preserved and tagged with the default instance name (`radarr` / `sonarr`).
+
+**Multi-instance (optional):** If you run a second Radarr (e.g., 4K) or second Sonarr, see the [Multi-Instance Configuration](#multi-instance-configuration-v30) block in the Configuration section. Each extra instance just needs a `RADARR_{NAME}_URL` block in your `.env` and its own webhook connection in Radarr/Sonarr.
+
+---
+
 ## Changelog
 
 ### v3.0.0
