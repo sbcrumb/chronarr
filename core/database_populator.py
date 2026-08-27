@@ -23,7 +23,16 @@ from utils.imdb_utils import parse_imdb_from_path
 class DatabasePopulator:
     """Populates Chronarr database from Radarr/Sonarr sources"""
 
-    def __init__(self, db: ChronarrDatabase, radarr_client: RadarrClient = None, sonarr_client: SonarrClient = None):
+    def __init__(self, db: ChronarrDatabase, radarr_client: RadarrClient = None,
+                 sonarr_client: SonarrClient = None,
+                 _radarr_db_override=None, _sonarr_db_override=None):
+        """
+        Build a DatabasePopulator.
+
+        Normal callers pass nothing (uses env vars) or pass API client fallbacks.
+        Per-instance constructors use _radarr_db_override / _sonarr_db_override to
+        inject a pre-built DB or API client directly, bypassing from_env() discovery.
+        """
         self.db = db
 
         # Try database clients first, fall back to API clients
@@ -35,38 +44,110 @@ class DatabasePopulator:
         self.using_sonarr_db = False
 
         # Radarr setup
-        try:
-            self.radarr_db = RadarrDbClient.from_env()
-            if self.radarr_db:
-                _log("INFO", "DatabasePopulator: Using Radarr direct database access")
-                self.radarr = self.radarr_db
+        if _radarr_db_override is not None:
+            # Pre-built client from from_radarr_instance() — skip env discovery
+            if isinstance(_radarr_db_override, RadarrDbClient):
+                self.radarr_db = _radarr_db_override
+                self.radarr = _radarr_db_override
                 self.using_radarr_db = True
+                _log("INFO", "DatabasePopulator: Using pre-built Radarr DB client")
             else:
-                raise Exception("Database not configured")
-        except Exception:
-            self.radarr_api = radarr_client if radarr_client else RadarrClient(
-                os.environ.get("RADARR_URL", ""),
-                os.environ.get("RADARR_API_KEY", "")
-            )
-            self.radarr = self.radarr_api
-            _log("INFO", "DatabasePopulator: Using Radarr API client")
+                self.radarr_api = _radarr_db_override
+                self.radarr = _radarr_db_override
+                _log("INFO", "DatabasePopulator: Using pre-built Radarr API client")
+        else:
+            try:
+                self.radarr_db = RadarrDbClient.from_env()
+                if self.radarr_db:
+                    _log("INFO", "DatabasePopulator: Using Radarr direct database access")
+                    self.radarr = self.radarr_db
+                    self.using_radarr_db = True
+                else:
+                    raise Exception("Database not configured")
+            except Exception:
+                self.radarr_api = radarr_client if radarr_client else RadarrClient(
+                    os.environ.get("RADARR_URL", ""),
+                    os.environ.get("RADARR_API_KEY", "")
+                )
+                self.radarr = self.radarr_api
+                _log("INFO", "DatabasePopulator: Using Radarr API client")
 
         # Sonarr setup
-        try:
-            self.sonarr_db = SonarrDbClient.from_env()
-            if self.sonarr_db:
-                _log("INFO", "DatabasePopulator: Using Sonarr direct database access")
-                self.sonarr = self.sonarr_db
+        if _sonarr_db_override is not None:
+            # Pre-built client from from_sonarr_instance() — skip env discovery
+            if isinstance(_sonarr_db_override, SonarrDbClient):
+                self.sonarr_db = _sonarr_db_override
+                self.sonarr = _sonarr_db_override
                 self.using_sonarr_db = True
+                _log("INFO", "DatabasePopulator: Using pre-built Sonarr DB client")
             else:
-                raise Exception("Database not configured")
-        except Exception:
-            self.sonarr_api = sonarr_client if sonarr_client else SonarrClient(
-                os.environ.get("SONARR_URL", ""),
-                os.environ.get("SONARR_API_KEY", "")
-            )
-            self.sonarr = self.sonarr_api
-            _log("INFO", "DatabasePopulator: Using Sonarr API client")
+                self.sonarr_api = _sonarr_db_override
+                self.sonarr = _sonarr_db_override
+                _log("INFO", "DatabasePopulator: Using pre-built Sonarr API client")
+        else:
+            try:
+                self.sonarr_db = SonarrDbClient.from_env()
+                if self.sonarr_db:
+                    _log("INFO", "DatabasePopulator: Using Sonarr direct database access")
+                    self.sonarr = self.sonarr_db
+                    self.using_sonarr_db = True
+                else:
+                    raise Exception("Database not configured")
+            except Exception:
+                self.sonarr_api = sonarr_client if sonarr_client else SonarrClient(
+                    os.environ.get("SONARR_URL", ""),
+                    os.environ.get("SONARR_API_KEY", "")
+                )
+                self.sonarr = self.sonarr_api
+                _log("INFO", "DatabasePopulator: Using Sonarr API client")
+
+    @classmethod
+    def from_radarr_instance(cls, inst, db: ChronarrDatabase) -> 'DatabasePopulator':
+        """Build a populator wired to one specific RadarrInstance.
+
+        Tries direct DB access using the instance's db_type/db_path/host config;
+        falls back to the HTTP API client if DB access isn't configured or fails.
+        """
+        client = None
+        if inst.db_type:
+            try:
+                client = RadarrDbClient(
+                    db_type=inst.db_type,
+                    db_path=inst.db_path or None,
+                    db_host=inst.db_host or None,
+                    db_port=inst.db_port or None,
+                    db_name=inst.db_name or None,
+                    db_user=inst.db_user or None,
+                    db_password=inst.db_password or None,
+                )
+                _log("INFO", f"DatabasePopulator: DB access configured for Radarr instance '{inst.name}'")
+            except Exception as e:
+                _log("WARNING", f"DatabasePopulator: DB access failed for Radarr '{inst.name}', falling back to API: {e}")
+        if client is None:
+            client = RadarrClient(inst.url, inst.api_key)
+        return cls(db, _radarr_db_override=client)
+
+    @classmethod
+    def from_sonarr_instance(cls, inst, db: ChronarrDatabase) -> 'DatabasePopulator':
+        """Build a populator wired to one specific SonarrInstance."""
+        client = None
+        if inst.db_type:
+            try:
+                client = SonarrDbClient(
+                    db_type=inst.db_type,
+                    db_path=inst.db_path or None,
+                    db_host=inst.db_host or None,
+                    db_port=inst.db_port or None,
+                    db_name=inst.db_name or None,
+                    db_user=inst.db_user or None,
+                    db_password=inst.db_password or None,
+                )
+                _log("INFO", f"DatabasePopulator: DB access configured for Sonarr instance '{inst.name}'")
+            except Exception as e:
+                _log("WARNING", f"DatabasePopulator: DB access failed for Sonarr '{inst.name}', falling back to API: {e}")
+        if client is None:
+            client = SonarrClient(inst.url, inst.api_key)
+        return cls(db, _sonarr_db_override=client)
 
     def get_episode_import_history(self, episode_id: int) -> Optional[str]:
         """
@@ -83,9 +164,12 @@ class DatabasePopulator:
         else:
             return None
 
-    def populate_movies(self) -> Dict[str, any]:
+    def populate_movies(self, instance: str = 'radarr') -> Dict[str, any]:
         """
-        Populate movies from Radarr database/API
+        Populate movies from Radarr database/API.
+
+        Args:
+            instance: Instance name to tag records with (e.g. 'radarr', 'radarr_4k').
 
         Returns:
             Dictionary with statistics: {
@@ -97,7 +181,7 @@ class DatabasePopulator:
                 'duration': float
             }
         """
-        _log("INFO", "Starting movie population from Radarr")
+        _log("INFO", f"Starting movie population from Radarr instance '{instance}'")
         start_time = time.time()
 
         stats = {
@@ -164,13 +248,14 @@ class DatabasePopulator:
                             title=movie.get('title', 'Unknown'),
                             year=movie.get('year', 0),
                             path=path,
-                            reason=skip_reason
+                            reason=skip_reason,
+                            instance=instance,
                         )
                         stats['skipped'] += 1
                         continue
 
                     # Check if movie already exists in database
-                    existing = self.db.get_movie_dates(imdb_id)
+                    existing = self.db.get_movie_dates(imdb_id, instance=instance)
                     if existing and existing.get('dateadded'):
                         # Already in database - update file path and video status if needed
                         existing_path = existing.get('path')
@@ -242,7 +327,8 @@ class DatabasePopulator:
                                 title=movie.get('title', 'Unknown'),
                                 year=movie.get('year', 0),
                                 path=path or 'unknown',
-                                reason=skip_reason
+                                reason=skip_reason,
+                                instance=instance,
                             )
                             stats['skipped'] += 1
                             continue
@@ -267,7 +353,8 @@ class DatabasePopulator:
                             title=movie.get('title', 'Unknown'),
                             year=movie.get('year', 0),
                             path=path or 'unknown',
-                            reason=skip_reason
+                            reason=skip_reason,
+                            instance=instance,
                         )
                         stats['skipped'] += 1
                         continue
@@ -277,7 +364,8 @@ class DatabasePopulator:
                     year = movie.get('year')
                     self.db.upsert_movie_dates(
                         imdb_id, released, dateadded, source,
-                        has_video_file=True, title=title, year=year
+                        has_video_file=True, title=title, year=year,
+                        instance=instance,
                     )
 
                     # Add to processing history
@@ -314,9 +402,12 @@ class DatabasePopulator:
 
         return stats
 
-    def populate_tv_episodes(self) -> Dict[str, any]:
+    def populate_tv_episodes(self, instance: str = 'sonarr') -> Dict[str, any]:
         """
-        Populate TV episodes from Sonarr API
+        Populate TV episodes from Sonarr database/API.
+
+        Args:
+            instance: Instance name to tag records with (e.g. 'sonarr', 'sonarr_4k').
 
         Returns:
             Dictionary with statistics: {
@@ -375,7 +466,7 @@ class DatabasePopulator:
                         _log("DEBUG", f"Series without IMDb ID: {series_title} (path: {series_path}), using placeholder {imdb_id}")
 
                     # Update series record
-                    self.db.upsert_series(imdb_id, series_path)
+                    self.db.upsert_series(imdb_id, series_path, instance=instance)
 
                     # Try high-performance database bulk query first
                     bulk_import_dates = {}
@@ -412,7 +503,7 @@ class DatabasePopulator:
                             stats['total_episodes'] += 1
 
                             # Check if episode already exists
-                            existing = self.db.get_episode_date(imdb_id, season_num, episode_num)
+                            existing = self.db.get_episode_date(imdb_id, season_num, episode_num, instance=instance)
                             if existing and existing.get('dateadded'):
                                 # Already in database - update file path and video status if needed
                                 existing_path = existing.get('path')
@@ -495,13 +586,14 @@ class DatabasePopulator:
                                     imdb_id=imdb_id,
                                     season=season_num,
                                     episode=episode_num,
-                                    reason=skip_reason
+                                    reason=skip_reason,
+                                    instance=instance,
                                 )
                                 stats['skipped'] += 1
                                 continue
 
                             # Insert into database
-                            self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, has_file)
+                            self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, has_file, instance=instance)
 
                             # Add to processing history
                             try:

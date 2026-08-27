@@ -1333,47 +1333,72 @@ def _populate_worker_process(media_type: str, status_file: str):
         # Import here (inside process) to avoid pickling issues
         from core.database import ChronarrDatabase
         from core.database_populator import DatabasePopulator
-        from clients.radarr_client import RadarrClient
-        from clients.sonarr_client import SonarrClient
         from config.settings import config
 
-        # Initialize components
         db = ChronarrDatabase(config)
-        radarr_client = RadarrClient(
-            os.environ.get("RADARR_URL", ""),
-            os.environ.get("RADARR_API_KEY", "")
-        )
-        sonarr_client = SonarrClient(
-            os.environ.get("SONARR_URL", ""),
-            os.environ.get("SONARR_API_KEY", "")
-        )
 
-        populator = DatabasePopulator(db, radarr_client, sonarr_client)
+        def _merge_movie_stats(all_stats):
+            merged = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
+                      'duration': 0.0, 'skipped_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+            return merged
+
+        def _merge_tv_stats(all_stats):
+            merged = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                      'skipped': 0, 'errors': 0, 'duration': 0.0, 'skipped_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total_series', 'total_episodes', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+            return merged
 
         print(f"INFO: [Worker Process] Starting database population: {media_type}")
+        radarr_instances = config.radarr_instances
+        sonarr_instances = config.sonarr_instances
+        print(f"INFO: [Worker Process] Radarr instances: {[i.name for i in radarr_instances]}")
+        print(f"INFO: [Worker Process] Sonarr instances: {[i.name for i in sonarr_instances]}")
 
         # Run population based on media type
         if media_type in ["movies", "both"]:
-            status["movies"]["status"] = "running"
-            update_status(status)
+            all_movie_stats = []
+            for inst in radarr_instances:
+                status["movies"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating movies for instance '{inst.name}'")
 
-            movie_stats = populator.populate_movies()
+                pop = DatabasePopulator.from_radarr_instance(inst, db)
+                inst_stats = pop.populate_movies(instance=inst.name)
+                all_movie_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] Movies done for '{inst.name}': {inst_stats}")
 
+            movie_stats = _merge_movie_stats(all_movie_stats)
             status["movies"]["status"] = "completed"
             status["movies"]["stats"] = movie_stats
             update_status(status)
-            print(f"INFO: [Worker Process] Movie population completed: {movie_stats}")
+            print(f"INFO: [Worker Process] All movie population complete: {movie_stats}")
 
         if media_type in ["tv", "both"]:
-            status["tv"]["status"] = "running"
-            update_status(status)
+            all_tv_stats = []
+            for inst in sonarr_instances:
+                status["tv"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating TV for instance '{inst.name}'")
 
-            tv_stats = populator.populate_tv_episodes()
+                pop = DatabasePopulator.from_sonarr_instance(inst, db)
+                inst_stats = pop.populate_tv_episodes(instance=inst.name)
+                all_tv_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] TV done for '{inst.name}': {inst_stats}")
 
+            tv_stats = _merge_tv_stats(all_tv_stats)
             status["tv"]["status"] = "completed"
             status["tv"]["stats"] = tv_stats
             update_status(status)
-            print(f"INFO: [Worker Process] TV population completed: {tv_stats}")
+            print(f"INFO: [Worker Process] All TV population complete: {tv_stats}")
 
         # Mark as completed
         status["completed"] = True
