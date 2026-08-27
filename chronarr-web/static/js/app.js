@@ -5,143 +5,140 @@ let currentTab = 'dashboard';
 let currentMoviesPage = 1;
 let currentSeriesPage = 1;
 let dashboardData = null;
+let currentMovieInstance = '';
+let currentTvInstance = '';
+
+// Instance badge color palette — assigned in order as instances are discovered
+const instanceColorMap = {};
+const instanceColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
+let instanceColorIndex = 0;
+
+function getInstanceColor(name) {
+    if (!name) return '#6b7280';
+    if (!instanceColorMap[name]) {
+        instanceColorMap[name] = instanceColors[instanceColorIndex++ % instanceColors.length];
+    }
+    return instanceColorMap[name];
+}
+
+function instanceBadge(name) {
+    if (!name) return '<span class="text-muted">-</span>';
+    const c = getInstanceColor(name);
+    return `<span class="instance-badge" style="background:${c}1a;color:${c};border-color:${c}40">${escapeHtml(name)}</span>`;
+}
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
-    // Populate sidebar version from the backend — stays in sync with VERSION file
-    fetch('/health')
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-            var el = document.getElementById('app-version');
-            if (el && d.version) el.textContent = 'v' + d.version;
-        })
-        .catch(function() { /* leave as-is on failure */ });
-
-    try {
-        initializeTabs();
-    } catch (error) {
-        console.error('Error initializing tabs:', error);
-    }
-
-    try {
-        initializeEventListeners();
-    } catch (error) {
-        console.error('Error initializing event listeners:', error);
-    }
-
-    try {
-        checkAuthStatus();  // Check authentication status on page load
-    } catch (error) {
-        console.error('Error checking auth status:', error);
-    }
-
-    try {
-        loadDashboard();
-    } catch (error) {
-        console.error('Error loading dashboard:', error);
-    }
-
-    try {
-        loadSeriesSources();
-    } catch (error) {
-        console.error('Error loading series sources:', error);
-    }
+    initializeEventListeners();
+    checkAuthStatus();
+    loadDashboard();
+    loadSeriesSources();
+    buildSidebarInstances();
 });
 
 // Tab management
-function initializeTabs() {
-    const tabButtons = document.querySelectorAll('.nav-item');
-    const tabContents = document.querySelectorAll('.tab-content');
-
-    tabButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            const tabName = this.dataset.tab;
-            if (tabName) switchTab(tabName);
-            // Close sidebar on mobile after nav
-            if (window.innerWidth <= 768 && typeof closeSidebar === 'function') closeSidebar();
-        });
-    });
-}
-
 function switchTab(tabName) {
-    // Update button states
-    document.querySelectorAll('.nav-item').forEach(btn => btn.classList.remove('active'));
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-    
+    // Update sidebar item active states
+    document.querySelectorAll('.sidebar-item[data-tab]').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = document.querySelector(`.sidebar-item[data-tab="${tabName}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+
     // Update content
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     document.getElementById(tabName).classList.add('active');
-    
+
     currentTab = tabName;
-    
-    // Load tab-specific data
+
     switch(tabName) {
-        case 'dashboard':
-            loadDashboard();
-            break;
-        case 'movies':
-            loadMovies();
-            break;
-        case 'tv':
-            loadSeries();
-            break;
-        case 'reports':
-            loadReport();
-            break;
-        case 'tools':
-            loadDetailedStats();
-            break;
+        case 'dashboard': loadDashboard(); break;
+        case 'movies': loadMovies(); break;
+        case 'tv': loadSeries(); break;
+        case 'reports': loadReport(); break;
+        case 'tools': loadDetailedStats(); break;
+    }
+}
+
+// Sidebar instance navigation
+function toggleSidebarGroup(subId, tabName) {
+    const sub = document.getElementById(subId);
+    const isExpanded = sub.classList.toggle('expanded');
+    const toggle = sub.closest('.sidebar-group').querySelector('.sidebar-group-toggle');
+    toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+    if (tabName) switchTab(tabName);
+}
+
+function selectMovieInstance(name) {
+    currentMovieInstance = name;
+    currentMoviesPage = 1;
+    document.querySelectorAll('#movies-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(name ? `sub-movies-${name}` : 'sub-movies-all');
+    if (target) target.classList.add('active');
+    switchTab('movies');
+}
+
+function selectTvInstance(name) {
+    currentTvInstance = name;
+    currentSeriesPage = 1;
+    document.querySelectorAll('#tv-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(name ? `sub-tv-${name}` : 'sub-tv-all');
+    if (target) target.classList.add('active');
+    switchTab('tv');
+}
+
+async function buildSidebarInstances() {
+    try {
+        const data = await apiCall('/api/instances');
+        const radarrNames = (data.radarr || []).map(i => i.name);
+        const sonarrNames = (data.sonarr || []).map(i => i.name);
+
+        // Pre-assign colors so badges match sidebar dots
+        [...radarrNames, ...sonarrNames].forEach(n => getInstanceColor(n));
+
+        const moviesSub = document.getElementById('movies-sub');
+        radarrNames.forEach(name => {
+            const color = getInstanceColor(name);
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-sub-item';
+            btn.id = `sub-movies-${name}`;
+            btn.onclick = () => selectMovieInstance(name);
+            btn.innerHTML = `<span class="instance-dot" style="background:${color}"></span>${escapeHtml(name)}`;
+            moviesSub.appendChild(btn);
+        });
+
+        const tvSub = document.getElementById('tv-sub');
+        sonarrNames.forEach(name => {
+            const color = getInstanceColor(name);
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-sub-item';
+            btn.id = `sub-tv-${name}`;
+            btn.onclick = () => selectTvInstance(name);
+            btn.innerHTML = `<span class="instance-dot" style="background:${color}"></span>${escapeHtml(name)}`;
+            tvSub.appendChild(btn);
+        });
+    } catch (error) {
+        console.error('Failed to build sidebar instances:', error);
     }
 }
 
 // Event listeners
 function initializeEventListeners() {
     // Search inputs
-    const moviesSearch = document.getElementById('movies-search');
-    const moviesImdbSearch = document.getElementById('movies-imdb-search');
-    const seriesSearch = document.getElementById('series-search');
-    const seriesImdbSearch = document.getElementById('series-imdb-search');
-
-    if (moviesSearch) moviesSearch.addEventListener('input', debounce(loadMovies, 500));
-    if (moviesImdbSearch) moviesImdbSearch.addEventListener('input', debounce(loadMovies, 500));
-    if (seriesSearch) seriesSearch.addEventListener('input', debounce(loadSeries, 500));
-    if (seriesImdbSearch) seriesImdbSearch.addEventListener('input', debounce(loadSeries, 500));
-
+    document.getElementById('movies-search').addEventListener('input', debounce(loadMovies, 500));
+    document.getElementById('movies-imdb-search').addEventListener('input', debounce(loadMovies, 500));
+    document.getElementById('series-search').addEventListener('input', debounce(loadSeries, 500));
+    document.getElementById('series-imdb-search').addEventListener('input', debounce(loadSeries, 500));
+    
     // Filter dropdowns
-    const moviesFilterDate = document.getElementById('movies-filter-date');
-    const moviesFilterSource = document.getElementById('movies-filter-source');
-    const seriesFilterDate = document.getElementById('series-filter-date');
-    const seriesFilterSource = document.getElementById('series-filter-source');
-
-    if (moviesFilterDate) moviesFilterDate.addEventListener('change', loadMovies);
-    if (moviesFilterSource) moviesFilterSource.addEventListener('change', loadMovies);
-    if (seriesFilterDate) seriesFilterDate.addEventListener('change', loadSeries);
-    if (seriesFilterSource) seriesFilterSource.addEventListener('change', loadSeries);
-
+    document.getElementById('movies-filter-date').addEventListener('change', loadMovies);
+    document.getElementById('movies-filter-source').addEventListener('change', loadMovies);
+    document.getElementById('series-filter-date').addEventListener('change', loadSeries);
+    document.getElementById('series-filter-source').addEventListener('change', loadSeries);
+    
     // Forms
-    const editForm = document.getElementById('edit-form');
-    const bulkUpdateForm = document.getElementById('bulk-update-form');
-    const manualScanForm = document.getElementById('manual-scan-form');
-    const manualCleanupForm = document.getElementById('manual-cleanup-form');
-    const populateForm = document.getElementById('populate-form');
-    const librarySyncForm = document.getElementById('library-sync-form');
-
-    if (editForm) editForm.addEventListener('submit', handleEditSubmit);
-    if (bulkUpdateForm) bulkUpdateForm.addEventListener('submit', handleBulkUpdate);
-    if (manualScanForm) manualScanForm.addEventListener('submit', handleManualScan);
-    if (manualCleanupForm) manualCleanupForm.addEventListener('submit', handleManualCleanup);
-    if (populateForm) populateForm.addEventListener('submit', handlePopulateDatabase);
-    if (librarySyncForm) {
-        librarySyncForm.addEventListener('submit', handleLibrarySync);
-        const dryRunCb = document.getElementById('sync-dry-run');
-        const immediateGroup = document.getElementById('sync-immediate-group');
-        if (dryRunCb && immediateGroup) {
-            dryRunCb.addEventListener('change', () => {
-                immediateGroup.style.display = dryRunCb.checked ? 'none' : 'block';
-            });
-        }
-        loadSyncSettings();
-    }
+    document.getElementById('edit-form').addEventListener('submit', handleEditSubmit);
+    document.getElementById('bulk-update-form').addEventListener('submit', handleBulkUpdate);
+    document.getElementById('manual-scan-form').addEventListener('submit', handleManualScan);
+    document.getElementById('populate-form').addEventListener('submit', handlePopulateDatabase);
 }
 
 // API calls
@@ -205,112 +202,50 @@ function updateDashboardStats() {
     document.getElementById('no-valid-source-total').textContent = `${moviesWithoutDates} movies, ${episodesWithoutDates} episodes without dates`;
     
     document.getElementById('recent-activity').textContent = dashboardData.recent_activity_count || 0;
-
-    // Skipped items
-    const skippedMovies = dashboardData.movies_skipped || 0;
-    const skippedEpisodes = dashboardData.episodes_skipped || 0;
-    const skippedTotal = dashboardData.total_skipped || (skippedMovies + skippedEpisodes);
-    document.getElementById('skipped-total').textContent = skippedTotal;
-    document.getElementById('skipped-breakdown').textContent = `${skippedMovies} movies, ${skippedEpisodes} episodes`;
-}
-
-function showSkippedItems() {
-    // Switch to Movies tab and filter to show only skipped items
-    switchTab('movies');
-    // Set the filter dropdown to "skipped"
-    const moviesFilter = document.getElementById('movies-filter-date');
-    if (moviesFilter) {
-        moviesFilter.value = 'skipped';
-        refreshMovies();
-    }
-}
-
-// Chart instances — kept so we can destroy before re-rendering on refresh
-const _chartInstances = {};
-
-const CHART_COLORS = [
-    '#00b4d8', '#6c63ff', '#10b981', '#f59e0b',
-    '#f43f5e', '#8b5cf6', '#06b6d4', '#84cc16'
-];
-
-function _isDark() {
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-}
-
-function _chartTextColor() {
-    return _isDark() ? '#8892b0' : '#718096';
 }
 
 function updateDashboardCharts() {
     if (!dashboardData) return;
-    renderDonutChart('movie-sources-chart', dashboardData.movie_sources);
-    renderDonutChart('episode-sources-chart', dashboardData.episode_sources);
+    
+    // Movie sources chart
+    const movieChart = document.getElementById('movie-sources-chart');
+    if (dashboardData.movie_sources && dashboardData.movie_sources.length > 0) {
+        movieChart.innerHTML = createSimpleChart(dashboardData.movie_sources);
+    } else {
+        movieChart.innerHTML = '<p>No movie source data available</p>';
+    }
+    
+    // Episode sources chart
+    const episodeChart = document.getElementById('episode-sources-chart');
+    if (dashboardData.episode_sources && dashboardData.episode_sources.length > 0) {
+        episodeChart.innerHTML = createSimpleChart(dashboardData.episode_sources);
+    } else {
+        episodeChart.innerHTML = '<p>No episode source data available</p>';
+    }
 }
 
-function renderDonutChart(containerId, data) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-
-    // Destroy previous instance if it exists
-    if (_chartInstances[containerId]) {
-        _chartInstances[containerId].destroy();
-        delete _chartInstances[containerId];
-    }
-
-    if (!data || data.length === 0) {
-        container.innerHTML = '<p style="color:var(--text-muted);font-size:0.875rem;">No data available</p>';
-        return;
-    }
-
-    // Build canvas + legend wrapper
-    container.innerHTML = `
-        <div style="display:flex;align-items:center;gap:1.25rem;width:100%;height:100%;">
-            <div style="flex-shrink:0;width:160px;height:160px;position:relative;">
-                <canvas id="${containerId}-canvas"></canvas>
+function createSimpleChart(data) {
+    const total = data.reduce((sum, item) => sum + item.count, 0);
+    let html = '<div class="simple-chart">';
+    
+    data.forEach((item, index) => {
+        const percentage = ((item.count / total) * 100).toFixed(1);
+        const color = getChartColor(index);
+        html += `
+            <div class="chart-item" style="background-color: ${color}20; border-left: 4px solid ${color};">
+                <span class="chart-label">${item.source}</span>
+                <span class="chart-value">${item.count} (${percentage}%)</span>
             </div>
-            <div id="${containerId}-legend" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:0.375rem;overflow:hidden;"></div>
-        </div>`;
-
-    const total = data.reduce((sum, i) => sum + i.count, 0);
-    const labels  = data.map(i => i.source);
-    const counts  = data.map(i => i.count);
-    const colors  = data.map((_, idx) => CHART_COLORS[idx % CHART_COLORS.length]);
-
-    const ctx = document.getElementById(`${containerId}-canvas`).getContext('2d');
-    _chartInstances[containerId] = new Chart(ctx, {
-        type: 'doughnut',
-        data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }] },
-        options: {
-            cutout: '68%',
-            animation: { duration: 400 },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        label: ctx => ` ${ctx.parsed.toLocaleString()} (${((ctx.parsed / total) * 100).toFixed(1)}%)`
-                    },
-                    backgroundColor: _isDark() ? '#1e2235' : '#fff',
-                    titleColor: _isDark() ? '#e2e8f0' : '#1a202c',
-                    bodyColor: _isDark() ? '#8892b0' : '#718096',
-                    borderColor: _isDark() ? '#2a2f4a' : '#e2e8f0',
-                    borderWidth: 1,
-                }
-            }
-        }
+        `;
     });
+    
+    html += '</div>';
+    return html;
+}
 
-    // Custom legend
-    const legend = document.getElementById(`${containerId}-legend`);
-    data.forEach((item, idx) => {
-        const pct = ((item.count / total) * 100).toFixed(1);
-        const el = document.createElement('div');
-        el.style.cssText = 'display:flex;align-items:center;gap:0.5rem;min-width:0;';
-        el.innerHTML = `
-            <span style="width:10px;height:10px;border-radius:2px;background:${colors[idx]};flex-shrink:0;"></span>
-            <span style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;" title="${item.source}">${item.source}</span>
-            <span style="font-size:0.75rem;font-weight:600;color:var(--text);flex-shrink:0;">${pct}%</span>`;
-        legend.appendChild(el);
-    });
+function getChartColor(index) {
+    const colors = ['#007bff', '#28a745', '#ffc107', '#dc3545', '#6c757d', '#17a2b8', '#6f42c1'];
+    return colors[index % colors.length];
 }
 
 // Movies
@@ -322,8 +257,9 @@ async function loadMovies(page = 1) {
     
     const search = document.getElementById('movies-search').value;
     const imdbSearch = document.getElementById('movies-imdb-search').value;
-    const dateFilter = document.getElementById('movies-filter-date').value;
+    const hasDate = document.getElementById('movies-filter-date').value;
     const sourceFilter = document.getElementById('movies-filter-source').value;
+    const instanceFilter = currentMovieInstance;
 
     const skip = (page - 1) * 100;
     console.log(`DEBUG: loadMovies called with page=${page}, calculated skip=${skip}`);
@@ -335,15 +271,9 @@ async function loadMovies(page = 1) {
 
     if (search) params.append('search', search);
     if (imdbSearch) params.append('imdb_search', imdbSearch);
-
-    // Handle different filter values
-    if (dateFilter === 'skipped') {
-        params.append('skipped', 'true');
-    } else if (dateFilter) {
-        params.append('has_date', dateFilter);
-    }
-
+    if (hasDate) params.append('has_date', hasDate);
     if (sourceFilter) params.append('source_filter', sourceFilter);
+    if (instanceFilter) params.append('instance', instanceFilter);
     
     try {
         const data = await apiCall(`/api/movies?${params}`);
@@ -360,7 +290,7 @@ function updateMoviesTable(data) {
     const tbody = document.getElementById('movies-tbody');
     
     if (!data.movies || data.movies.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center">No movies found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center">No movies found</td></tr>';
         return;
     }
     
@@ -409,35 +339,23 @@ function updateMoviesTable(data) {
             dateTypeBadge = 'badge-warning';
         }
         
-        // Check if skipped and if IMDb ID is placeholder
-        const isSkipped = movie.skipped === true;
-        const isPlaceholder = movie.imdb_id && movie.imdb_id.startsWith('missing-');
-        const skipReasonBadge = isSkipped ? `<br><span class="badge badge-warning" title="${escapeHtml(movie.skip_reason || 'Skipped')}"">Skipped</span>` : '';
-
-        // Add Update IMDb ID button for placeholder IDs
-        const updateImdbButton = isPlaceholder ? `
-            <button class="btn btn-sm btn-info" onclick="updateMovieImdbId('${movie.imdb_id}')" title="Update IMDb ID" style="margin-left: 5px;">
-                <i class="fas fa-id-card"></i> Update IMDb
-            </button>
-        ` : '';
-
         return `
             <tr>
                 <td>${escapeHtml(movie.title)}</td>
-                <td><code>${movie.imdb_id}</code>${skipReasonBadge}</td>
+                <td><code>${movie.imdb_id}</code></td>
                 <td>${movie.released || '-'}</td>
                 <td>${dateadded || '-'}</td>
                 <td><span class="badge badge-secondary">${movie.source_description || movie.source || 'Unknown'}</span></td>
                 <td><span class="badge ${dateTypeBadge}">${dateType}</span></td>
                 <td>${hasVideoBadge}</td>
+                <td>${instanceBadge(movie.instance)}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}')">
+                    <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-edit"></i> Edit
                     </button>
                     <button class="btn btn-sm btn-secondary" onclick="debugMovie('${movie.imdb_id}')" title="Debug Data">
                         <i class="fas fa-bug"></i>
                     </button>
-                    ${updateImdbButton}
                     <button class="btn btn-sm btn-danger" onclick="deleteMovie('${movie.imdb_id}')" style="margin-left: 5px;" title="Delete Movie">
                         <i class="fas fa-trash"></i> Delete
                     </button>
@@ -506,6 +424,7 @@ async function loadSeriesSources() {
     }
 }
 
+
 function refreshMovies() {
     loadMovies(isNaN(currentMoviesPage) ? 1 : currentMoviesPage);
 }
@@ -521,19 +440,21 @@ async function loadSeries(page = 1) {
     const imdbSearch = document.getElementById('series-imdb-search').value;
     const dateFilter = document.getElementById('series-filter-date').value;
     const sourceFilter = document.getElementById('series-filter-source').value;
-    
+    const instanceFilter = currentTvInstance;
+
     const skip = (page - 1) * 50;
     console.log(`DEBUG: loadSeries called with page=${page}, calculated skip=${skip}`);
-    
+
     const params = new URLSearchParams({
         skip: skip,
         limit: 50
     });
-    
+
     if (search) params.append('search', search);
     if (imdbSearch) params.append('imdb_search', imdbSearch);
     if (dateFilter) params.append('date_filter', dateFilter);
     if (sourceFilter) params.append('source_filter', sourceFilter);
+    if (instanceFilter) params.append('instance', instanceFilter);
     
     try {
         const data = await apiCall(`/api/series?${params}`);
@@ -552,20 +473,10 @@ function updateSeriesTable(data) {
         tbody.innerHTML = '<tr><td colspan="7" class="text-center">No series found</td></tr>';
         return;
     }
-    
+
     tbody.innerHTML = data.series.map(series => {
         const progressPercent = series.total_episodes > 0 ?
             ((series.episodes_with_dates / series.total_episodes) * 100).toFixed(1) : 0;
-
-        // Check if IMDb ID is placeholder
-        const isPlaceholder = series.imdb_id && series.imdb_id.startsWith('missing-');
-
-        // Add Update IMDb ID button for placeholder IDs
-        const updateImdbButton = isPlaceholder ? `
-            <button class="btn btn-sm btn-info" onclick="updateSeriesImdbId('${series.imdb_id}')" title="Update IMDb ID" style="margin-left: 5px;">
-                <i class="fas fa-id-card"></i> Update IMDb
-            </button>
-        ` : '';
 
         return `
             <tr>
@@ -577,12 +488,14 @@ function updateSeriesTable(data) {
                     <small class="text-muted">(${progressPercent}%)</small>
                 </td>
                 <td>${series.episodes_with_video}</td>
-                <td>${series.episodes_skipped || 0}</td>
+                <td>${instanceBadge(series.instance)}</td>
                 <td>
                     <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
                         <i class="fas fa-list"></i> Episodes
                     </button>
-                    ${updateImdbButton}
+                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id)})" style="margin-left: 5px;" title="Delete Series">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
                 </td>
             </tr>
         `;
@@ -667,66 +580,22 @@ function showEpisodesModal(data) {
                         <button id="bulk-select-all" class="btn btn-sm btn-secondary" onclick="toggleSelectAll()">
                             <i class="fas fa-check-square"></i> Select All
                         </button>
-                        <button id="bulk-update-dates" class="btn btn-sm btn-primary" onclick="showBulkUpdateModal()" style="margin-left: 10px;" disabled>
-                            <i class="fas fa-calendar"></i> Update Dates (<span id="update-count">0</span>)
-                        </button>
                         <button id="bulk-delete-selected" class="btn btn-sm btn-danger" onclick="bulkDeleteSelected()" style="margin-left: 10px;" disabled>
                             <i class="fas fa-trash"></i> Delete Selected (<span id="selected-count">0</span>)
                         </button>
                     </div>
-
-                    <!-- Bulk Update Dates Modal -->
-                    <div id="bulk-update-modal" class="modal" style="display: none;">
-                        <div class="modal-content" style="max-width: 500px;">
-                            <div class="modal-header">
-                                <h3>Bulk Update Episode Dates</h3>
-                                <button class="close-button" onclick="closeBulkUpdateModal()">&times;</button>
-                            </div>
-                            <div class="modal-body">
-                                <p>Update <strong><span id="modal-selected-count">0</span></strong> selected episode(s) to:</p>
-                                <div class="form-group">
-                                    <label>Date Source:</label>
-                                    <select id="bulk-date-source" class="form-control">
-                                        <option value="airdate">Air Date (from Sonarr)</option>
-                                        <option value="import">Import Date (from Sonarr history)</option>
-                                        <option value="custom">Custom Date</option>
-                                    </select>
-                                </div>
-                                <div id="custom-date-input" style="display: none; margin-top: 10px;">
-                                    <label>Custom Date:</label>
-                                    <input type="datetime-local" id="bulk-custom-date" class="form-control">
-                                </div>
-                            </div>
-                            <div class="modal-footer">
-                                <button class="btn btn-secondary" onclick="closeBulkUpdateModal()">Cancel</button>
-                                <button class="btn btn-primary" onclick="executeBulkUpdate()">
-                                    <i class="fas fa-save"></i> Update Dates
-                                </button>
-                            </div>
-                        </div>
-                    </div>
                     <div class="table-container">
-                        <table class="data-table sortable-table">
+                        <table class="data-table">
                             <thead>
                                 <tr>
                                     <th width="40px">
                                         <input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAll()">
                                     </th>
-                                    <th class="sortable" onclick="sortTable('episodes-table-body', 1, 'text')" style="cursor: pointer;">
-                                        Episode <i class="fas fa-sort"></i>
-                                    </th>
-                                    <th class="sortable" onclick="sortTable('episodes-table-body', 2, 'date')" style="cursor: pointer;">
-                                        Aired <i class="fas fa-sort"></i>
-                                    </th>
-                                    <th class="sortable" onclick="sortTable('episodes-table-body', 3, 'date')" style="cursor: pointer;">
-                                        Date Added <i class="fas fa-sort"></i>
-                                    </th>
-                                    <th class="sortable" onclick="sortTable('episodes-table-body', 4, 'text')" style="cursor: pointer;">
-                                        Source <i class="fas fa-sort"></i>
-                                    </th>
-                                    <th class="sortable" onclick="sortTable('episodes-table-body', 5, 'text')" style="cursor: pointer;">
-                                        Video <i class="fas fa-sort"></i>
-                                    </th>
+                                    <th>Episode</th>
+                                    <th>Aired</th>
+                                    <th>Date Added</th>
+                                    <th>Source</th>
+                                    <th>Video</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -754,7 +623,7 @@ function showEpisodesModal(data) {
                                             <td><span class="badge badge-secondary">${episode.source_description || episode.source || 'Unknown'}</span></td>
                                             <td>${hasVideoBadge}</td>
                                             <td>
-                                                <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}')">
+                                                <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}', '${episode.instance || 'sonarr'}')">
                                                     <i class="fas fa-edit"></i> Edit
                                                 </button>
                                                 <button class="btn btn-sm btn-danger" onclick="deleteEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode})" style="margin-left: 5px;">
@@ -837,7 +706,7 @@ function updateReportTables(data) {
                 <td>${movie.released || '-'}</td>
                 <td><span class="badge badge-warning">${movie.source_description || movie.source || 'Unknown'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-success" onclick="smartFixMovie('${movie.imdb_id}')">
+                    <button class="btn btn-sm btn-success" onclick="smartFixMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-magic"></i> Smart Fix
                     </button>
                 </td>
@@ -858,7 +727,7 @@ function updateReportTables(data) {
                 <td>${episode.aired || '-'}</td>
                 <td><span class="badge badge-warning">${episode.source_description || episode.source || 'Unknown'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-success" onclick="smartFixEpisode('${episode.imdb_id}', ${episode.season}, ${episode.episode})">
+                    <button class="btn btn-sm btn-success" onclick="smartFixEpisode('${episode.imdb_id}', ${episode.season}, ${episode.episode}, '${episode.instance || 'sonarr'}')">
                         <i class="fas fa-magic"></i> Smart Fix
                     </button>
                 </td>
@@ -872,36 +741,39 @@ function refreshReport() {
 }
 
 // Smart fix functions
-async function smartFixMovie(imdbId) {
+async function smartFixMovie(imdbId, instance) {
+    instance = instance || 'radarr';
     try {
-        console.log('🔍 SMART FIX: Loading options for movie', imdbId);
-        const options = await apiCall(`/api/movies/${imdbId}/date-options`);
+        console.log('🔍 SMART FIX: Loading options for movie', imdbId, 'instance', instance);
+        const options = await apiCall(`/api/movies/${imdbId}/date-options?instance=${encodeURIComponent(instance)}`);
         console.log('🔍 SMART FIX: Received options:', options);
-        showSmartFixModal('movie', options);
+        showSmartFixModal('movie', options, instance);
     } catch (error) {
         console.error('Failed to load movie options:', error);
         showToast('Failed to load movie options', 'error');
     }
 }
 
-async function smartFixEpisode(imdbId, season, episode) {
+async function smartFixEpisode(imdbId, season, episode, instance) {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('smartFixEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
+    instance = instance || 'sonarr';
     try {
-        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options`);
-        showSmartFixModal('episode', options);
+        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options?instance=${encodeURIComponent(instance)}`);
+        showSmartFixModal('episode', options, instance);
     } catch (error) {
         console.error('Failed to load episode options:', error);
         showToast('Failed to load episode options', 'error');
     }
 }
 
-function showSmartFixModal(mediaType, options) {
+function showSmartFixModal(mediaType, options, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     console.log('🔍 SMART FIX: Showing modal for', mediaType, 'with options:', options);
     
     const modal = document.getElementById('smart-fix-modal');
@@ -953,7 +825,7 @@ function showSmartFixModal(mediaType, options) {
     optionsHtml += `
         <div class="form-actions">
             <button type="button" class="btn btn-secondary" onclick="closeSmartFixModal()">Cancel</button>
-            <button type="button" class="btn btn-success" onclick="applySmartFix('${mediaType}', ${JSON.stringify(options).replace(/'/g, "&apos;")})">
+            <button type="button" class="btn btn-success" onclick="applySmartFix('${mediaType}', ${JSON.stringify(options).replace(/'/g, "&apos;")}, '${instance}')">
                 <i class="fas fa-magic"></i> Apply Fix
             </button>
         </div>
@@ -967,7 +839,8 @@ function closeSmartFixModal() {
     document.getElementById('smart-fix-modal').classList.remove('active');
 }
 
-async function applySmartFix(mediaType, options) {
+async function applySmartFix(mediaType, options, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const selectedRadio = document.querySelector('input[name="date-option"]:checked');
     if (!selectedRadio) {
         showToast('Please select a date option', 'warning');
@@ -1029,9 +902,9 @@ async function applySmartFix(mediaType, options) {
     
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(options.imdb_id, dateadded, source);
+            await updateMovieDate(options.imdb_id, dateadded, source, instance);
         } else {
-            await updateEpisodeDate(options.imdb_id, options.season, options.episode, dateadded, source);
+            await updateEpisodeDate(options.imdb_id, options.season, options.episode, dateadded, source, instance);
         }
         closeSmartFixModal();
     } catch (error) {
@@ -1118,23 +991,25 @@ async function handleBulkUpdate(event) {
 }
 
 // Edit modal functions
-async function editMovie(imdbId, dateadded, source) {
+async function editMovie(imdbId, dateadded, source, instance) {
+    instance = instance || 'radarr';
     try {
         // Load movie options to populate available dates
-        const options = await apiCall(`/api/movies/${imdbId}/date-options`);
-        showEnhancedEditModal('movie', options, dateadded, source);
+        const options = await apiCall(`/api/movies/${imdbId}/date-options?instance=${encodeURIComponent(instance)}`);
+        showEnhancedEditModal('movie', options, dateadded, source, instance);
     } catch (error) {
         console.error('Failed to load movie options for edit:', error);
         // Fallback to basic edit modal
-        showBasicEditModal('movie', imdbId, dateadded, source);
+        showBasicEditModal('movie', imdbId, dateadded, source, null, null, instance);
     }
 }
 
-function showEnhancedEditModal(mediaType, options, currentDateadded, currentSource) {
+function showEnhancedEditModal(mediaType, options, currentDateadded, currentSource, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const modal = document.getElementById('edit-modal');
     const title = document.getElementById('modal-title');
     const modalBody = document.querySelector('#edit-modal .modal-body');
-
+    
     if (mediaType === 'movie') {
         title.textContent = `Edit Movie: ${options.imdb_id}`;
     } else {
@@ -1143,12 +1018,12 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
         const episode = options.episode || 0;
         title.textContent = `Edit Episode: ${options.imdb_id} S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
     }
-
+    
     // Build enhanced edit form with date options
     let formHtml = `
-        <form id="edit-form-enhanced" onsubmit="handleEnhancedEditSubmit(event); return false;">
         <input type="hidden" id="edit-imdb-id" value="${options.imdb_id}">
         <input type="hidden" id="edit-media-type" value="${mediaType}">
+        <input type="hidden" id="edit-instance" value="${instance}">
         ${mediaType === 'episode' ? `
             <input type="hidden" id="edit-season" value="${options.season}">
             <input type="hidden" id="edit-episode" value="${options.episode}">
@@ -1156,21 +1031,21 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
             <input type="hidden" id="edit-season" value="">
             <input type="hidden" id="edit-episode" value="">
         `}
-
+        
         <div class="form-group">
             <label>Choose Date Source:</label>
             <div class="date-options">
     `;
-
+    
     // Add available date options
     options.options.forEach((option, index) => {
         const isSelected = option.source === currentSource ? 'checked' : '';
         const optionId = `date-option-${index}`;
-
+        
         formHtml += `
             <div class="date-option-card">
                 <label class="date-option-label">
-                    <input type="radio" name="edit-date-option" value="${index}" ${isSelected}
+                    <input type="radio" name="edit-date-option" value="${index}" ${isSelected} 
                            onchange="updateEditDateFromOption(${index}, ${JSON.stringify(option).replace(/"/g, '&quot;')})">
                     <div class="date-option-content">
                         <h4>${option.label}</h4>
@@ -1181,17 +1056,17 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
             </div>
         `;
     });
-
+    
     formHtml += `
             </div>
         </div>
-
+        
         <div class="form-group">
             <label for="edit-dateadded">Date Added:</label>
             <input type="datetime-local" id="edit-dateadded" required>
             <small>Adjust the date/time as needed</small>
         </div>
-
+        
         <div class="form-group">
             <label for="edit-source">Source:</label>
             <select id="edit-source" required>
@@ -1203,17 +1078,16 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
                 <option value="no_valid_date_source">No Valid Source</option>
             </select>
         </div>
-
+        
         <div class="form-actions">
             <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button type="submit" class="btn btn-primary">Save Changes</button>
+            <button type="submit" class="btn btn-primary" onclick="handleEnhancedEditSubmit(event)">Save Changes</button>
         </div>
-        </form>
     `;
-
+    
     modalBody.innerHTML = formHtml;
-
-
+    
+    
     // Set current values
     if (currentDateadded && currentDateadded !== '-') {
         try {
@@ -1223,20 +1097,22 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
             document.getElementById('edit-dateadded').value = '';
         }
     }
-
+    
     document.getElementById('edit-source').value = currentSource || 'manual';
-
+    
     // Store options for later use
     modal.dataset.options = JSON.stringify(options);
-
+    
     modal.classList.add('active');
 }
 
-function showBasicEditModal(mediaType, imdbId, dateadded, source) {
+function showBasicEditModal(mediaType, imdbId, dateadded, source, season, episode, instance) {
     // Fallback to original basic edit modal
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     document.getElementById('modal-title').textContent = `Edit ${mediaType}: ${imdbId}`;
     document.getElementById('edit-imdb-id').value = imdbId;
     document.getElementById('edit-media-type').value = mediaType;
+    document.getElementById('edit-instance').value = instance;
     
     if (dateadded && dateadded !== '-') {
         try {
@@ -1291,48 +1167,33 @@ function updateEditDateFromOption(optionIndex, option) {
 async function handleEnhancedEditSubmit(event) {
     event.preventDefault();
 
-    console.log('🔍 Enhanced Edit Submit called');
-
     const modal = document.getElementById('edit-modal');
     const options = JSON.parse(modal.dataset.options);
     const imdbId = options.imdb_id;
     const mediaType = document.getElementById('edit-media-type').value;
+    const instance = document.getElementById('edit-instance')?.value || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const dateadded = document.getElementById('edit-dateadded').value;
     const source = document.getElementById('edit-source').value;
-
-    console.log('🔍 Form values:', {
-        imdbId,
-        mediaType,
-        dateadded,
-        dateaddedType: typeof dateadded,
-        dateaddedLength: dateadded ? dateadded.length : 0,
-        source
-    });
-
+    
     if (!dateadded) {
-        console.log('❌ Date field is empty!');
         showToast('Please enter a date', 'warning');
         return;
     }
-
+    
     // Convert datetime-local to ISO string with error handling
     let isoDateadded = null;
     try {
         isoDateadded = new Date(dateadded).toISOString();
-        console.log('✅ Converted to ISO:', isoDateadded);
     } catch (e) {
-        console.error('❌ Date conversion error:', e);
         showToast('Invalid date format', 'error');
         return;
     }
-
+    
     try {
         if (mediaType === 'movie') {
-            console.log('📤 Calling updateMovieDate with:', { imdbId, isoDateadded, source });
-            await updateMovieDate(imdbId, isoDateadded, source);
+            await updateMovieDate(imdbId, isoDateadded, source, instance);
         } else {
-            console.log('📤 Calling updateEpisodeDate with:', { imdbId, season: options.season, episode: options.episode, isoDateadded, source });
-            await updateEpisodeDate(imdbId, options.season, options.episode, isoDateadded, source);
+            await updateEpisodeDate(imdbId, options.season, options.episode, isoDateadded, source, instance);
         }
 
         closeModal();
@@ -1342,22 +1203,23 @@ async function handleEnhancedEditSubmit(event) {
     }
 }
 
-async function editEpisode(imdbId, season, episode, dateadded, source) {
+async function editEpisode(imdbId, season, episode, dateadded, source, instance) {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('editEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
+    instance = instance || 'sonarr';
     try {
         // Load episode options to populate available dates
-        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options`);
-        showEnhancedEditModal('episode', options, dateadded, source);
+        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options?instance=${encodeURIComponent(instance)}`);
+        showEnhancedEditModal('episode', options, dateadded, source, instance);
     } catch (error) {
         console.error('Failed to load episode options for edit:', error);
         // Fallback to basic edit modal
-        showBasicEditModal('episode', imdbId, dateadded, source, season, episode);
+        showBasicEditModal('episode', imdbId, dateadded, source, season, episode, instance);
     }
 }
 
@@ -1368,36 +1230,22 @@ function closeModal() {
 async function handleEditSubmit(event) {
     event.preventDefault();
 
-    console.log('🔍 Basic Edit Submit called (OLD HANDLER)');
-
     const imdbId = document.getElementById('edit-imdb-id').value;
     const mediaType = document.getElementById('edit-media-type').value;
+    const instance = document.getElementById('edit-instance')?.value || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const season = document.getElementById('edit-season').value;
     const episode = document.getElementById('edit-episode').value;
     const dateadded = document.getElementById('edit-dateadded').value;
     const source = document.getElementById('edit-source').value;
 
-    console.log('🔍 OLD Form values:', {
-        imdbId,
-        mediaType,
-        dateadded,
-        dateaddedType: typeof dateadded,
-        dateaddedLength: dateadded ? dateadded.length : 0,
-        source
-    });
-
     // Convert datetime-local to ISO string
     const isoDateadded = dateadded ? new Date(dateadded).toISOString() : null;
 
-    console.log('🔍 OLD isoDateadded:', isoDateadded);
-
     try {
         if (mediaType === 'movie') {
-            console.log('📤 OLD calling updateMovieDate with:', { imdbId, isoDateadded, source });
-            await updateMovieDate(imdbId, isoDateadded, source);
+            await updateMovieDate(imdbId, isoDateadded, source, instance);
         } else {
-            console.log('📤 OLD calling updateEpisodeDate');
-            await updateEpisodeDate(imdbId, parseInt(season), parseInt(episode), isoDateadded, source);
+            await updateEpisodeDate(imdbId, parseInt(season), parseInt(episode), isoDateadded, source, instance);
         }
 
         closeModal();
@@ -1407,49 +1255,39 @@ async function handleEditSubmit(event) {
 }
 
 // Update functions
-async function updateMovieDate(imdbId, dateadded, source) {
-    console.log('🔍 updateMovieDate called with:', {
-        imdbId,
-        dateadded,
-        dateaddedType: typeof dateadded,
-        dateaddedValue: dateadded,
-        source
-    });
-
+async function updateMovieDate(imdbId, dateadded, source, instance) {
+    instance = instance || 'radarr';
     try {
-        const payload = {
-            dateadded: dateadded,
-            source: source
-        };
-
-        console.log('📤 Sending API request with payload:', JSON.stringify(payload));
-
         const result = await apiCall(`/api/movies/${imdbId}`, {
             method: 'PUT',
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                dateadded: dateadded,
+                source: source,
+                instance: instance
+            })
         });
-
-        console.log('✅ API response:', result);
-
+        
         showToast(result.message, 'success');
-
+        
         // Refresh current view
         if (currentTab === 'movies') loadMovies(currentMoviesPage);
         if (currentTab === 'reports') loadReport();
         if (currentTab === 'dashboard') loadDashboard();
-
+        
     } catch (error) {
         console.error('Movie update failed:', error);
     }
 }
 
-async function updateEpisodeDate(imdbId, season, episode, dateadded, source) {
+async function updateEpisodeDate(imdbId, season, episode, dateadded, source, instance) {
+    instance = instance || 'sonarr';
     try {
         const result = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}`, {
             method: 'PUT',
             body: JSON.stringify({
                 dateadded: dateadded,
-                source: source
+                source: source,
+                instance: instance
             })
         });
         
@@ -1645,89 +1483,30 @@ async function deleteMovie(imdbId) {
     }
 }
 
-async function updateMovieImdbId(oldImdbId) {
-    // Prompt for new IMDb ID
-    const newImdbId = prompt(`Update IMDb ID\n\nCurrent: ${oldImdbId}\n\nEnter the correct IMDb ID (with or without 'tt' prefix):`);
-
-    if (!newImdbId || newImdbId.trim() === '') {
-        return;
-    }
-
-    const cleanImdbId = newImdbId.trim();
-
-    // Confirmation
-    if (!confirm(`Update IMDb ID?\n\nOld: ${oldImdbId}\nNew: ${cleanImdbId}\n\nThis will migrate the movie record to the new IMDb ID. Continue?`)) {
+async function deleteSeries(imdbId, instance, title) {
+    if (!confirm(`⚠️ Delete Series?\n\n"${title}"\n\nThis will permanently remove the series and ALL its episodes from the database.\n\nAre you sure you want to continue?`)) {
         return;
     }
 
     try {
-        const response = await fetch(`/api/movies/${oldImdbId}/migrate-imdb`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ new_imdb_id: cleanImdbId })
+        const response = await fetch(`/api/series/${imdbId}?instance=${encodeURIComponent(instance)}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' }
         });
 
         const result = await response.json();
 
         if (response.ok && result.success) {
-            showToast(`✅ IMDb ID updated successfully to ${result.new_imdb_id}`, 'success');
-
-            // Refresh the movies table
-            loadMovies(currentMoviesPage);
-
-        } else {
-            const errorMsg = result.message || result.detail || 'Unknown error';
-            showToast(`❌ Failed to update IMDb ID: ${errorMsg}`, 'error');
-        }
-
-    } catch (error) {
-        console.error('Update IMDb ID failed:', error);
-        showToast(`❌ Update failed: ${error.message}`, 'error');
-    }
-}
-
-async function updateSeriesImdbId(oldImdbId) {
-    // Prompt for new IMDb ID
-    const newImdbId = prompt(`Update Series IMDb ID\n\nCurrent: ${oldImdbId}\n\nEnter the correct IMDb ID (with or without 'tt' prefix):`);
-
-    if (!newImdbId || newImdbId.trim() === '') {
-        return;
-    }
-
-    const cleanImdbId = newImdbId.trim();
-
-    // Confirmation
-    if (!confirm(`Update Series IMDb ID?\n\nOld: ${oldImdbId}\nNew: ${cleanImdbId}\n\nThis will migrate the series and ALL its episodes to the new IMDb ID. Continue?`)) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/series/${oldImdbId}/migrate-imdb`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ new_imdb_id: cleanImdbId })
-        });
-
-        const result = await response.json();
-
-        if (response.ok && result.success) {
-            showToast(`✅ Series IMDb ID updated successfully to ${result.new_imdb_id}`, 'success');
-
-            // Refresh the series table
+            showToast(`✅ Series deleted (${result.episodes_deleted} episode(s) removed)`, 'success');
             loadSeries(currentSeriesPage);
-
         } else {
-            const errorMsg = result.message || result.detail || 'Unknown error';
-            showToast(`❌ Failed to update IMDb ID: ${errorMsg}`, 'error');
+            const errorMsg = result.message || result.detail || result.error || 'Unknown error';
+            showToast(`❌ Failed to delete series: ${errorMsg}`, 'error');
         }
 
     } catch (error) {
-        console.error('Update series IMDb ID failed:', error);
-        showToast(`❌ Update failed: ${error.message}`, 'error');
+        console.error('Delete series failed:', error);
+        showToast(`❌ Delete failed: ${error.message}`, 'error');
     }
 }
 
@@ -1950,323 +1729,6 @@ function updateScanProgress(status) {
     }
 }
 
-// Manual Cleanup Functions
-async function handleManualCleanup(event) {
-    event.preventDefault();
-
-    const checkMovies = document.getElementById('cleanup-movies').checked;
-    const checkSeries = document.getElementById('cleanup-series').checked;
-    const checkFilesystem = document.getElementById('cleanup-filesystem').checked;
-    const checkDatabase = document.getElementById('cleanup-database').checked;
-    const dryRun = document.getElementById('cleanup-dry-run').checked;
-
-    // Validate at least one media type is selected
-    if (!checkMovies && !checkSeries) {
-        showToast('❌ Please select at least one media type to check', 'error');
-        return;
-    }
-
-    // Validate at least one validation method is selected
-    if (!checkFilesystem && !checkDatabase) {
-        showToast('❌ Please select at least one validation method', 'error');
-        return;
-    }
-
-    try {
-        // Show cleanup status
-        showCleanupStatus();
-
-        // Start the cleanup
-        const mode = dryRun ? 'Preview' : 'Cleanup';
-        showToast(`🧹 Starting ${mode.toLowerCase()}...`, 'info');
-
-        const response = await fetch('/manual/cleanup-orphaned', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-                check_movies: checkMovies,
-                check_series: checkSeries,
-                check_filesystem: checkFilesystem,
-                check_database: checkDatabase,
-                dry_run: dryRun
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const result = await response.json();
-
-        if (result.success) {
-            showToast(`✅ ${mode} completed successfully`, 'success');
-            displayCleanupResults(result.report, dryRun);
-        } else {
-            showToast(`❌ ${mode} failed: ${result.message || 'Unknown error'}`, 'error');
-            hideCleanupStatus();
-        }
-
-    } catch (error) {
-        console.error('Manual cleanup failed:', error);
-        showToast(`❌ Cleanup failed: ${error.message}`, 'error');
-        hideCleanupStatus();
-    }
-}
-
-function showCleanupStatus() {
-    const cleanupStatus = document.getElementById('cleanup-status');
-    const cleanupResults = document.getElementById('cleanup-results');
-
-    // Reset and show
-    cleanupResults.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Running cleanup...</p>';
-    cleanupStatus.style.display = 'block';
-}
-
-function hideCleanupStatus() {
-    document.getElementById('cleanup-status').style.display = 'none';
-}
-
-function displayCleanupResults(report, dryRun) {
-    const cleanupResults = document.getElementById('cleanup-results');
-    const accentColor = dryRun ? 'var(--warning-color,#d69e2e)' : 'var(--danger,#e53e3e)';
-
-    function statRow(label, value, highlight) {
-        const style = highlight ? `font-weight:700;color:${accentColor}` : 'color:var(--text-muted,#718096)';
-        return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-color,#e2e8f0);font-size:0.875em">
-            <span>${label}</span><span style="${style}">${value}</span>
-        </div>`;
-    }
-
-    // titles = removed_titles array from backend
-    function itemList(titles, label) {
-        if (!titles || titles.length === 0) return '';
-        return `<details style="margin-top:8px">
-            <summary style="cursor:pointer;font-size:0.82em;color:var(--accent,#0096c7)">
-                <i class="fas fa-list" style="margin-right:4px"></i>${label} (${titles.length})
-            </summary>
-            <ul style="margin:6px 0 0 16px;max-height:220px;overflow-y:auto;font-size:0.8em;padding-right:4px">
-                ${titles.map(t => `<li style="padding:2px 0">${escapeHtml(t)}</li>`).join('')}
-            </ul>
-        </details>`;
-    }
-
-    const moviesRemoved  = report.movies?.removed || 0;
-    const seriesRemoved  = report.series?.removed || 0;
-    const episodesRemoved = report.series?.removed_episodes || 0;
-
-    let html = `<div style="margin-top:10px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-            <i class="fas fa-${dryRun ? 'eye' : 'check-circle'}" style="color:${accentColor}"></i>
-            <strong>${dryRun ? 'Preview Results' : 'Cleanup Results'}</strong>
-        </div>`;
-
-    if (report.movies) {
-        html += `<div style="margin-bottom:14px">
-            <div style="font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted,#718096);margin-bottom:4px">
-                <i class="fas fa-film"></i> Movies
-            </div>
-            ${statRow('Orphaned found', report.movies.orphaned || 0)}
-            ${statRow(dryRun ? 'Would be removed' : 'Removed', moviesRemoved, moviesRemoved > 0)}
-            ${itemList(report.movies.removed_titles, dryRun ? 'View movies to remove' : 'View removed movies')}
-        </div>`;
-    }
-
-    if (report.series) {
-        html += `<div style="margin-bottom:14px">
-            <div style="font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted,#718096);margin-bottom:4px">
-                <i class="fas fa-tv"></i> TV Series
-            </div>
-            ${statRow('Orphaned found', report.series.orphaned || 0)}
-            ${statRow(dryRun ? 'Series would be removed' : 'Series removed', seriesRemoved, seriesRemoved > 0)}
-            ${episodesRemoved > 0 ? statRow(dryRun ? 'Episodes would be removed' : 'Episodes removed', episodesRemoved, true) : ''}
-            ${itemList(report.series.removed_titles, dryRun ? 'View series to remove' : 'View removed series')}
-        </div>`;
-    }
-
-    const totalItems = moviesRemoved + seriesRemoved;
-    const summaryParts = [];
-    if (moviesRemoved  > 0) summaryParts.push(`${moviesRemoved} movie${moviesRemoved !== 1 ? 's' : ''}`);
-    if (seriesRemoved  > 0) summaryParts.push(`${seriesRemoved} series`);
-    if (episodesRemoved > 0) summaryParts.push(`${episodesRemoved} episode${episodesRemoved !== 1 ? 's' : ''}`);
-    const summaryText = summaryParts.length ? summaryParts.join(', ') : 'nothing';
-
-    html += `<div style="padding:8px 0;border-top:1px solid var(--border-color,#e2e8f0);font-size:0.875em">
-        <strong>${dryRun ? 'Would remove' : 'Removed'}:</strong>
-        <span style="color:${accentColor};font-weight:700;margin-left:4px">${summaryText}</span>
-    </div>`;
-
-    if (dryRun && totalItems > 0) {
-        html += `<div style="margin-top:8px;padding:8px 12px;background:var(--badge-warning-bg,#fefcbf);border-left:3px solid var(--warning-color,#d69e2e);border-radius:4px;font-size:0.82em">
-            <i class="fas fa-info-circle"></i> Dry run — no changes made. Uncheck <strong>Dry Run</strong> to apply.
-        </div>`;
-    } else if (!dryRun && totalItems === 0) {
-        html += `<div style="margin-top:8px;padding:8px 12px;background:var(--badge-success-bg,#c6f6d5);border-left:3px solid var(--success,#38a169);border-radius:4px;font-size:0.82em">
-            <i class="fas fa-check-circle"></i> Nothing to remove — database is clean.
-        </div>`;
-    }
-
-    html += `</div>`;
-    cleanupResults.innerHTML = html;
-}
-
-// ── Library Sync ─────────────────────────────────────────────────────────────
-
-async function handleLibrarySync(event) {
-    event.preventDefault();
-    const mediaType = document.getElementById('sync-media-type').value;
-    const dryRun = document.getElementById('sync-dry-run').checked;
-    const removeImmediately = !dryRun && (document.getElementById('sync-remove-immediately')?.checked || false);
-
-    if (!dryRun && !confirm(
-        removeImmediately
-            ? 'This will permanently delete items from Chronarr that are no longer in Radarr/Sonarr. Continue?'
-            : 'This will mark items missing from Radarr/Sonarr (they will be auto-purged after your configured grace period). Continue?'
-    )) return;
-
-    const statusEl = document.getElementById('sync-status');
-    const resultsEl = document.getElementById('sync-results');
-    statusEl.style.display = 'block';
-    resultsEl.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Running sync check…</p>';
-
-    try {
-        const response = await fetch('/api/cleanup/library-sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ media_type: mediaType, dry_run: dryRun, remove_immediately: removeImmediately })
-        });
-        if (!response.ok) {
-            const err = await response.json().catch(() => ({ detail: response.statusText }));
-            throw new Error(err.detail || 'Request failed');
-        }
-        const data = await response.json();
-        renderSyncResults(data, dryRun);
-    } catch (err) {
-        resultsEl.innerHTML = `<p style="color:var(--danger)"><i class="fas fa-exclamation-triangle"></i> Error: ${err.message}</p>`;
-    }
-}
-
-function renderSyncResults(data, dryRun) {
-    const resultsEl = document.getElementById('sync-results');
-    const movies = data.movies_not_in_radarr || [];
-    const series = data.series_not_in_sonarr || [];
-
-    let html = `<div style="margin-bottom:12px">`;
-
-    if (!data.radarr_available && !data.sonarr_available) {
-        html += `<p style="color:var(--warning-color)"><i class="fas fa-exclamation-triangle"></i> Neither Radarr nor Sonarr DB is available. Check your DB connection settings.</p>`;
-        html += `</div>`;
-        resultsEl.innerHTML = html;
-        return;
-    }
-
-    if (dryRun) {
-        html += `<div style="padding:8px 12px;background:var(--badge-warning-bg);border-left:3px solid var(--warning-color);border-radius:4px;margin-bottom:12px;font-size:0.85em">
-            <i class="fas fa-info-circle"></i> <strong>Dry run</strong> — no changes made. Uncheck "Dry Run" to apply.
-        </div>`;
-    }
-
-    // Movies
-    if (data.radarr_available) {
-        html += `<div style="margin-bottom:12px">
-            <strong>Movies not in Radarr:</strong> <span style="color:${movies.length ? 'var(--danger)' : 'var(--success)'}">${movies.length}</span>`;
-        if (movies.length) {
-            html += `<ul style="margin:6px 0 0 16px;font-size:0.85em">`;
-            movies.forEach(m => {
-                const since = m.missing_since ? ` <span style="color:var(--text-muted);font-size:0.9em">(missing since ${new Date(m.missing_since).toLocaleDateString()})</span>` : '';
-                html += `<li>${escapeHtml(m.title || m.imdb_id)}${since}</li>`;
-            });
-            html += `</ul>`;
-        }
-        html += `</div>`;
-    } else {
-        html += `<p style="color:var(--text-muted);font-size:0.85em"><i class="fas fa-minus-circle"></i> Radarr DB not available — skipped movies.</p>`;
-    }
-
-    // Series
-    if (data.sonarr_available) {
-        html += `<div style="margin-bottom:12px">
-            <strong>Series not in Sonarr:</strong> <span style="color:${series.length ? 'var(--danger)' : 'var(--success)'}">${series.length}</span>`;
-        if (series.length) {
-            html += `<ul style="margin:6px 0 0 16px;font-size:0.85em">`;
-            series.forEach(s => {
-                const since = s.missing_since ? ` <span style="color:var(--text-muted);font-size:0.9em">(missing since ${new Date(s.missing_since).toLocaleDateString()})</span>` : '';
-                html += `<li>${escapeHtml(s.title || s.imdb_id)}${since}</li>`;
-            });
-            html += `</ul>`;
-        }
-        html += `</div>`;
-    } else {
-        html += `<p style="color:var(--text-muted);font-size:0.85em"><i class="fas fa-minus-circle"></i> Sonarr DB not available — skipped series.</p>`;
-    }
-
-    // Deletion summary
-    if (!dryRun) {
-        const deleted = (data.movies_deleted || 0) + (data.series_deleted || 0);
-        if (deleted > 0) {
-            html += `<div style="padding:8px 12px;background:var(--badge-danger-bg);border-left:3px solid var(--danger);border-radius:4px;margin-top:8px;font-size:0.85em">
-                <i class="fas fa-trash"></i> Deleted ${data.movies_deleted || 0} movie(s) and ${data.series_deleted || 0} series from Chronarr.
-            </div>`;
-        } else if (movies.length || series.length) {
-            html += `<div style="padding:8px 12px;background:var(--badge-info-bg);border-left:3px solid var(--accent);border-radius:4px;margin-top:8px;font-size:0.85em">
-                <i class="fas fa-clock"></i> Items marked as missing from source. They will be auto-purged after your configured grace period.
-            </div>`;
-        }
-    }
-
-    if (movies.length === 0 && series.length === 0 && (data.radarr_available || data.sonarr_available)) {
-        html += `<p style="color:var(--success)"><i class="fas fa-check-circle"></i> Chronarr is in sync — no items to remove.</p>`;
-    }
-
-    html += `</div>`;
-    resultsEl.innerHTML = html;
-}
-
-function hideSyncStatus() {
-    document.getElementById('sync-status').style.display = 'none';
-}
-
-async function loadSyncSettings() {
-    try {
-        const res = await fetch('/api/settings/library-sync');
-        if (!res.ok) return;
-        const s = await res.json();
-        const movieEl = document.getElementById('sync-purge-movies-days');
-        const tvEl    = document.getElementById('sync-purge-tv-days');
-        if (movieEl) movieEl.value = s.purge_missing_movies_days ?? 0;
-        if (tvEl)    tvEl.value    = s.purge_missing_tv_days ?? 0;
-    } catch (_) {}
-}
-
-async function saveSyncSettings() {
-    const movieDays = parseInt(document.getElementById('sync-purge-movies-days')?.value || '0', 10);
-    const tvDays    = parseInt(document.getElementById('sync-purge-tv-days')?.value || '0', 10);
-    const statusEl  = document.getElementById('sync-settings-status');
-
-    try {
-        const res = await fetch('/api/settings/library-sync', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ purge_missing_movies_days: movieDays, purge_missing_tv_days: tvDays })
-        });
-        if (!res.ok) throw new Error('Save failed');
-        if (statusEl) {
-            statusEl.style.color = 'var(--success)';
-            statusEl.textContent = movieDays === 0 && tvDays === 0
-                ? '✓ Auto-purge disabled'
-                : `✓ Saved — movies: ${movieDays === 0 ? 'never' : movieDays + 'd'}, TV: ${tvDays === 0 ? 'never' : tvDays + 'd'}`;
-            setTimeout(() => { statusEl.textContent = ''; }, 4000);
-        }
-    } catch (err) {
-        if (statusEl) {
-            statusEl.style.color = 'var(--danger)';
-            statusEl.textContent = '✗ Failed to save settings';
-        }
-    }
-}
-
-// ── End Library Sync ──────────────────────────────────────────────────────────
-
 async function logout() {
     if (!confirm('Are you sure you want to logout?')) {
         return;
@@ -2312,26 +1774,16 @@ function updateBulkDeleteButton() {
     const selectedCheckboxes = document.querySelectorAll('.episode-checkbox:checked');
     const selectedCount = selectedCheckboxes.length;
     const bulkDeleteButton = document.getElementById('bulk-delete-selected');
-    const bulkUpdateButton = document.getElementById('bulk-update-dates');
     const selectedCountSpan = document.getElementById('selected-count');
-    const updateCountSpan = document.getElementById('update-count');
-
+    
     if (selectedCountSpan) {
         selectedCountSpan.textContent = selectedCount;
     }
-
-    if (updateCountSpan) {
-        updateCountSpan.textContent = selectedCount;
-    }
-
+    
     if (bulkDeleteButton) {
         bulkDeleteButton.disabled = selectedCount === 0;
     }
-
-    if (bulkUpdateButton) {
-        bulkUpdateButton.disabled = selectedCount === 0;
-    }
-
+    
     // Update select all checkbox state
     const selectAllCheckbox = document.getElementById('select-all-checkbox');
     const allCheckboxes = document.querySelectorAll('.episode-checkbox');
@@ -2391,11 +1843,11 @@ async function bulkDeleteSelected() {
     // Update UI
     updateEpisodeModalCounts();
     updateBulkDeleteButton();
-
+    
     // Reset button
     bulkDeleteButton.innerHTML = originalText;
     bulkDeleteButton.disabled = true;
-
+    
     // Show results
     if (successCount > 0 && failCount === 0) {
         showToast(`✅ Successfully deleted ${successCount} episode(s)`, 'success');
@@ -2406,439 +1858,185 @@ async function bulkDeleteSelected() {
     }
 }
 
-// Bulk update dates functions
-function showBulkUpdateModal() {
-    const selectedCheckboxes = document.querySelectorAll('.episode-checkbox:checked');
-    const selectedCount = selectedCheckboxes.length;
-
-    if (selectedCount === 0) {
-        showToast('❌ No episodes selected', 'error');
-        return;
-    }
-
-    const modal = document.getElementById('bulk-update-modal');
-    const modalSelectedCount = document.getElementById('modal-selected-count');
-    const dateSourceSelect = document.getElementById('bulk-date-source');
-    const customDateInput = document.getElementById('custom-date-input');
-
-    if (modalSelectedCount) {
-        modalSelectedCount.textContent = selectedCount;
-    }
-
-    // Show/hide custom date input based on selection
-    if (dateSourceSelect) {
-        dateSourceSelect.onchange = function() {
-            if (customDateInput) {
-                customDateInput.style.display = this.value === 'custom' ? 'block' : 'none';
-            }
-        };
-    }
-
-    if (modal) {
-        modal.style.display = 'flex';
-    }
-}
-
-function closeBulkUpdateModal() {
-    const modal = document.getElementById('bulk-update-modal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-
-async function executeBulkUpdate() {
-    const selectedCheckboxes = document.querySelectorAll('.episode-checkbox:checked');
-    const selectedCount = selectedCheckboxes.length;
-    const dateSource = document.getElementById('bulk-date-source').value;
-    const customDate = document.getElementById('bulk-custom-date').value;
-
-    if (selectedCount === 0) {
-        showToast('❌ No episodes selected', 'error');
-        return;
-    }
-
-    if (dateSource === 'custom' && !customDate) {
-        showToast('❌ Please enter a custom date', 'error');
-        return;
-    }
-
-    // Close modal
-    closeBulkUpdateModal();
-
-    // Collect selected episodes
-    const episodes = [];
-    selectedCheckboxes.forEach(checkbox => {
-        const row = checkbox.closest('tr');
-        episodes.push({
-            imdb_id: row.getAttribute('data-imdb'),
-            season: parseInt(row.getAttribute('data-season')),
-            episode: parseInt(row.getAttribute('data-episode'))
-        });
-    });
-
-    // Show progress
-    showToast(`⏳ Updating ${selectedCount} episode(s)...`, 'info');
-
-    try {
-        const response = await apiCall('/api/episodes/bulk-update-dates', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                episodes: episodes,
-                date_source: dateSource,
-                custom_date: customDate || null
-            })
-        });
-
-        if (response.success) {
-            showToast(`✅ Successfully updated ${response.updated || selectedCount} episode(s)`, 'success');
-
-            // Reload the current series to show updated dates
-            const currentImdbId = currentTVSeries;
-            if (currentImdbId) {
-                loadEpisodes(currentImdbId);
-            }
-
-            // Clear selections
-            selectedCheckboxes.forEach(checkbox => checkbox.checked = false);
-            updateBulkDeleteButton();
-        } else {
-            showToast(`❌ ${response.message || 'Failed to update episodes'}`, 'error');
-        }
-    } catch (error) {
-        console.error('Bulk update error:', error);
-        showToast('❌ Error updating episodes', 'error');
-    }
-}
-
-// ==================== Database Population Functions ====================
-
-let populatePollingInterval = null;
+// ---------------------------
+// Database Population Functions
+// ---------------------------
 
 async function handlePopulateDatabase(event) {
     event.preventDefault();
 
     const mediaType = document.getElementById('populate-media-type').value;
-    const submitButton = event.target.querySelector('button[type="submit"]');
-    const originalText = submitButton.innerHTML;
 
-    // Confirm action
-    const confirmMsg = mediaType === 'both'
-        ? 'This will populate the database with ALL movies and TV episodes from Radarr/Sonarr. Continue?'
-        : mediaType === 'movies'
-        ? 'This will populate the database with ALL movies from Radarr. Continue?'
-        : 'This will populate the database with ALL TV episodes from Sonarr. Continue?';
+    // Validate input
+    if (!mediaType) {
+        showToast('❌ Please select media type', 'error');
+        return;
+    }
 
+    // Confirm with user
+    const confirmMsg = `Are you sure you want to populate the database with ${mediaType}? This will query Radarr/Sonarr and may take several minutes.`;
     if (!confirm(confirmMsg)) {
         return;
     }
 
-    // Disable button and show loading
-    submitButton.disabled = true;
-    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
-
     try {
-        const response = await fetch('/admin/populate-database', {
+        // Show populate status
+        showPopulateStatus();
+
+        // Start the population
+        showToast('🚀 Starting database population...', 'info');
+        const response = await fetch(`/admin/populate-database?media_type=${mediaType}`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ media_type: mediaType })
+            credentials: 'include'
         });
 
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        const data = await response.json();
+        const result = await response.json();
 
-        if (data.status === 'started') {
-            showPopulateStatus();
+        if (result.status === 'started') {
+            showToast('✅ Population started successfully', 'success');
+            // Start polling for status
             startPopulatePolling();
         } else {
-            throw new Error('Failed to start population');
+            showToast(`ℹ️ ${result.message || 'Population completed'}`, 'info');
+            hidePopulateStatus();
         }
 
     } catch (error) {
-        console.error('Error starting population:', error);
-        showToast('❌ Failed to start database population', 'error');
-        submitButton.disabled = false;
-        submitButton.innerHTML = originalText;
+        console.error('Database population failed:', error);
+        showToast(`❌ Population failed: ${error.message}`, 'error');
+        hidePopulateStatus();
     }
 }
 
 function showPopulateStatus() {
-    const statusDiv = document.getElementById('populate-status');
-    const resultsDiv = document.getElementById('populate-results');
+    const populateStatus = document.getElementById('populate-status');
     const progressBar = document.getElementById('populate-progress-bar');
+    const operationText = document.getElementById('populate-current-operation');
     const progressText = document.getElementById('populate-progress-text');
+    const resultsDiv = document.getElementById('populate-results');
 
-    if (statusDiv) {
-        statusDiv.style.display = 'block';
-    }
-
-    if (progressBar) {
-        progressBar.style.width = '0%';
-    }
-
-    if (progressText) {
-        progressText.textContent = 'Starting...';
-    }
-
-    if (resultsDiv) {
-        resultsDiv.style.display = 'none';
-    }
+    populateStatus.style.display = 'block';
+    progressBar.style.width = '0%';
+    operationText.textContent = 'Initializing...';
+    progressText.textContent = '0%';
+    resultsDiv.innerHTML = '';
 }
 
 function hidePopulateStatus() {
-    const statusDiv = document.getElementById('populate-status');
-    if (statusDiv) {
-        statusDiv.style.display = 'none';
+    const populateStatus = document.getElementById('populate-status');
+    if (populateStatus) {
+        populateStatus.style.display = 'none';
     }
 }
 
 function startPopulatePolling() {
-    // Clear any existing interval
-    if (populatePollingInterval) {
-        clearInterval(populatePollingInterval);
-    }
-
-    // Poll every 2 seconds
-    populatePollingInterval = setInterval(async () => {
+    // Poll every 2 seconds for populate status
+    window.populatePollingInterval = setInterval(async () => {
         try {
             const response = await fetch('/api/populate/status');
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                throw new Error('Failed to get populate status');
             }
 
             const status = await response.json();
             updatePopulateProgress(status);
 
-            // Stop polling if complete or error (API returns "completed": true/false and "error": string)
-            if (status.completed || status.error) {
+            // Stop polling if population is complete
+            if (!status.running && status.completed) {
                 stopPopulatePolling();
-
-                // Re-enable submit button
-                const submitButton = document.querySelector('#populate-form button[type="submit"]');
-                if (submitButton) {
-                    submitButton.disabled = false;
-                    submitButton.innerHTML = '<i class="fas fa-play"></i> Start Population';
-                }
+                showToast('✅ Database population completed!', 'success');
             }
 
         } catch (error) {
-            console.error('Error polling populate status:', error);
+            console.error('Failed to poll populate status:', error);
+            // Don't show error toast repeatedly, just stop polling
             stopPopulatePolling();
-
-            // Re-enable submit button
-            const submitButton = document.querySelector('#populate-form button[type="submit"]');
-            if (submitButton) {
-                submitButton.disabled = false;
-                submitButton.innerHTML = '<i class="fas fa-play"></i> Start Population';
-            }
         }
     }, 2000);
 }
 
 function stopPopulatePolling() {
-    if (populatePollingInterval) {
-        clearInterval(populatePollingInterval);
-        populatePollingInterval = null;
+    if (window.populatePollingInterval) {
+        clearInterval(window.populatePollingInterval);
+        window.populatePollingInterval = null;
     }
 }
 
 function updatePopulateProgress(status) {
     const progressBar = document.getElementById('populate-progress-bar');
+    const operationText = document.getElementById('populate-current-operation');
     const progressText = document.getElementById('populate-progress-text');
     const resultsDiv = document.getElementById('populate-results');
 
-    // Handle running status (API returns "running": true/false)
-    if (status.running && !status.completed) {
-        if (progressBar) {
-            // Show indeterminate progress
-            progressBar.style.width = '50%';
-        }
-        if (progressText) {
-            progressText.textContent = 'Populating database...';
-        }
-    } else if (status.completed) {
-        if (progressBar) {
-            progressBar.style.width = '100%';
-        }
-        if (progressText) {
-            progressText.textContent = 'Complete!';
-        }
-
-        // Show results (API returns movies/tv with nested stats)
-        if (resultsDiv && (status.movies || status.tv)) {
-            let html = '<h4>Population Results</h4>';
-
-            // Movies
-            if (status.movies && status.movies.stats) {
-                const m = status.movies.stats;
-                html += '<div class="populate-section">';
-                html += '<h5><i class="fas fa-film"></i> Movies</h5>';
-                html += '<ul>';
-                html += `<li>Total found: ${m.total || 0}</li>`;
-                html += `<li>Added: ${m.added || 0}</li>`;
-                html += `<li>Skipped: ${m.skipped || 0}</li>`;
-                html += `<li>Errors: ${m.errors || 0}</li>`;
-                html += `<li>Duration: ${(m.duration || 0).toFixed(2)}s</li>`;
-                html += '</ul>';
-                // Show skipped items if any
-                if (m.skipped_items && m.skipped_items.length > 0) {
-                    html += '<details style="margin-top: 10px;"><summary>Skipped Movies (' + m.skipped_items.length + ')</summary><ul>';
-                    m.skipped_items.forEach(item => {
-                        html += `<li><strong>${item.title || 'Unknown'}</strong> (${item.year || 'N/A'}) [${item.imdb_id || 'No IMDb'}] - ${item.reason}</li>`;
-                    });
-                    html += '</ul></details>';
-                }
-                html += '</div>';
-            }
-
-            // TV Episodes
-            if (status.tv && status.tv.stats) {
-                const tv = status.tv.stats;
-                html += '<div class="populate-section">';
-                html += '<h5><i class="fas fa-tv"></i> TV Shows</h5>';
-                html += '<ul>';
-                html += `<li>Series: ${tv.total_series || 0}</li>`;
-                html += `<li>Episodes: ${tv.total_episodes || 0}</li>`;
-                html += `<li>Added: ${tv.added || 0}</li>`;
-                html += `<li>Skipped: ${tv.skipped || 0}</li>`;
-                html += `<li>Errors: ${tv.errors || 0}</li>`;
-                html += `<li>Duration: ${(tv.duration || 0).toFixed(2)}s</li>`;
-                html += '</ul>';
-                // Show skipped items if any
-                if (tv.skipped_items && tv.skipped_items.length > 0) {
-                    html += '<details style="margin-top: 10px;"><summary>Skipped Episodes (' + tv.skipped_items.length + ')</summary><ul>';
-                    tv.skipped_items.forEach(item => {
-                        html += `<li><strong>${item.title || 'Unknown'}</strong> S${String(item.season).padStart(2,'0')}E${String(item.episode).padStart(2,'0')} - ${item.reason}</li>`;
-                    });
-                    html += '</ul></details>';
-                }
-                html += '</div>';
-            }
-
-            resultsDiv.innerHTML = html;
-            resultsDiv.style.display = 'block';
-        }
-
-        showToast('✅ Database population completed successfully', 'success');
-
-    } else if (status.status === 'error') {
-        if (progressFill && progressText) {
-            progressFill.style.width = '100%';
-            progressFill.style.backgroundColor = '#dc3545';
-            progressText.textContent = 'Error!';
-        }
-
-        const errorMsg = status.error || 'Unknown error occurred';
-        showToast(`❌ Database population failed: ${errorMsg}`, 'error');
-
-        if (resultsDiv) {
-            resultsDiv.innerHTML = `<p class="error">Error: ${errorMsg}</p>`;
-            resultsDiv.style.display = 'block';
-        }
-    }
-}
-
-// ==================== Table Sorting Functions ====================
-
-let sortDirections = {}; // Track sort direction for each table column
-
-function sortTable(tableBodyId, columnIndex, dataType) {
-    const tbody = document.getElementById(tableBodyId);
-    if (!tbody) return;
-
-    const sortKey = `${tableBodyId}-${columnIndex}`;
-
-    // Toggle sort direction
-    if (!sortDirections[sortKey]) {
-        sortDirections[sortKey] = 'asc';
-    } else {
-        sortDirections[sortKey] = sortDirections[sortKey] === 'asc' ? 'desc' : 'asc';
+    if (status.error) {
+        progressBar.style.width = '100%';
+        progressBar.style.backgroundColor = '#e74c3c';
+        operationText.textContent = 'Error occurred';
+        progressText.textContent = 'Failed';
+        resultsDiv.innerHTML = `<p style="color: #e74c3c;">Error: ${status.error}</p>`;
+        return;
     }
 
-    const rows = Array.from(tbody.querySelectorAll('tr'));
+    if (!status.running && status.completed) {
+        progressBar.style.width = '100%';
+        operationText.textContent = 'Population completed';
+        progressText.textContent = '100%';
 
-    rows.sort((a, b) => {
-        const aCell = a.cells[columnIndex];
-        const bCell = b.cells[columnIndex];
+        // Display results
+        let resultsHTML = '<h4>Population Results:</h4>';
 
-        if (!aCell || !bCell) return 0;
-
-        let aValue = aCell.textContent.trim();
-        let bValue = bCell.textContent.trim();
-
-        // Handle MISSING values - always sort to bottom
-        if (aValue === 'MISSING') return 1;
-        if (bValue === 'MISSING') return -1;
-
-        // Handle different data types
-        if (dataType === 'date') {
-            // Parse dates for comparison
-            aValue = aValue === '-' ? '' : aValue;
-            bValue = bValue === '-' ? '' : bValue;
-
-            if (!aValue && !bValue) return 0;
-            if (!aValue) return 1;
-            if (!bValue) return -1;
-
-            const aDate = new Date(aValue);
-            const bDate = new Date(bValue);
-
-            if (sortDirections[sortKey] === 'asc') {
-                return aDate - bDate;
-            } else {
-                return bDate - aDate;
-            }
-        } else if (dataType === 'number') {
-            const aNum = parseFloat(aValue) || 0;
-            const bNum = parseFloat(bValue) || 0;
-
-            if (sortDirections[sortKey] === 'asc') {
-                return aNum - bNum;
-            } else {
-                return bNum - aNum;
-            }
-        } else {
-            // Text comparison
-            if (sortDirections[sortKey] === 'asc') {
-                return aValue.localeCompare(bValue);
-            } else {
-                return bValue.localeCompare(aValue);
-            }
+        if (status.movies && status.movies.stats) {
+            const m = status.movies.stats;
+            resultsHTML += `
+                <div style="margin: 10px 0;">
+                    <strong>Movies:</strong><br>
+                    Total: ${m.total || 0} | Added: ${m.added || 0} | Skipped: ${m.skipped || 0} | Errors: ${m.errors || 0}<br>
+                    Duration: ${m.duration ? m.duration.toFixed(2) : 0}s
+                </div>
+            `;
         }
-    });
 
-    // Re-append sorted rows
-    rows.forEach(row => tbody.appendChild(row));
-
-    // Update sort icons
-    updateSortIcons(tableBodyId, columnIndex, sortDirections[sortKey]);
-}
-
-function updateSortIcons(tableBodyId, activeColumn, direction) {
-    // Find the table and update icons
-    const tbody = document.getElementById(tableBodyId);
-    if (!tbody) return;
-
-    const table = tbody.closest('table');
-    if (!table) return;
-
-    const headers = table.querySelectorAll('th.sortable');
-    headers.forEach((header, index) => {
-        const icon = header.querySelector('i');
-        if (!icon) return;
-
-        // +1 to account for checkbox column
-        if (index + 1 === activeColumn) {
-            icon.className = direction === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
-        } else {
-            icon.className = 'fas fa-sort';
+        if (status.tv && status.tv.stats) {
+            const t = status.tv.stats;
+            resultsHTML += `
+                <div style="margin: 10px 0;">
+                    <strong>TV Shows:</strong><br>
+                    Series: ${t.total_series || 0} | Episodes: ${t.total_episodes || 0}<br>
+                    Added: ${t.added || 0} | Skipped: ${t.skipped || 0} | Errors: ${t.errors || 0}<br>
+                    Duration: ${t.duration ? t.duration.toFixed(2) : 0}s
+                </div>
+            `;
         }
-    });
+
+        resultsDiv.innerHTML = resultsHTML;
+        return;
+    }
+
+    // Update progress based on status
+    let totalProgress = 0;
+    let progressDetails = '';
+
+    if (status.movies && status.movies.status === 'running') {
+        totalProgress = 50;
+        progressDetails = 'Processing movies...';
+    } else if (status.movies && status.movies.status === 'completed') {
+        totalProgress = 50;
+        progressDetails = 'Movies completed, processing TV...';
+    }
+
+    if (status.tv && status.tv.status === 'running') {
+        totalProgress = 75;
+        progressDetails = 'Processing TV shows...';
+    } else if (status.tv && status.tv.status === 'completed') {
+        totalProgress = 100;
+        progressDetails = 'Completed';
+    }
+
+    progressBar.style.width = `${totalProgress}%`;
+    operationText.textContent = progressDetails;
+    progressText.textContent = `${totalProgress}%`;
 }
