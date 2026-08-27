@@ -498,7 +498,7 @@ function updateSeriesTable(data) {
                     <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
                         <i class="fas fa-list"></i> Episodes
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id)})" style="margin-left: 5px;" title="Delete Series">
+                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id).replace(/"/g, '&quot;')})" style="margin-left: 5px;" title="Delete Series">
                         <i class="fas fa-trash"></i> Delete
                     </button>
                 </td>
