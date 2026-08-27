@@ -1669,6 +1669,32 @@ def register_web_routes(app, dependencies):
             print(f"❌ Error migrating series IMDb ID: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to migrate IMDb ID: {str(e)}")
 
+    @app.delete("/api/series/{imdb_id}")
+    async def api_delete_series(imdb_id: str, instance: str = 'sonarr'):
+        """Delete a series and all its episodes from the database"""
+        db = dependencies["db"]
+
+        try:
+            episodes_deleted = db.delete_series_episodes(imdb_id, instance)
+            series_deleted = db.delete_series(imdb_id, instance)
+
+            if series_deleted or episodes_deleted > 0:
+                return {
+                    "success": True,
+                    "status": "success",
+                    "message": f"Deleted series {imdb_id} and {episodes_deleted} episode(s)",
+                    "imdb_id": imdb_id,
+                    "episodes_deleted": episodes_deleted
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Series not found")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Error deleting series: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete series: {str(e)}")
+
     # Episode endpoints
     @app.post("/api/episodes/{imdb_id}/{season}/{episode}/update-date")
     async def api_update_episode_date(imdb_id: str, season: int, episode: int, 

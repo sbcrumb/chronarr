@@ -493,6 +493,9 @@ function updateSeriesTable(data) {
                     <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
                         <i class="fas fa-list"></i> Episodes
                     </button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id)})" style="margin-left: 5px;" title="Delete Series">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
                 </td>
             </tr>
         `;
@@ -1476,6 +1479,33 @@ async function deleteMovie(imdbId) {
         
     } catch (error) {
         console.error('Delete movie failed:', error);
+        showToast(`❌ Delete failed: ${error.message}`, 'error');
+    }
+}
+
+async function deleteSeries(imdbId, instance, title) {
+    if (!confirm(`⚠️ Delete Series?\n\n"${title}"\n\nThis will permanently remove the series and ALL its episodes from the database.\n\nAre you sure you want to continue?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/series/${imdbId}?instance=${encodeURIComponent(instance)}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            showToast(`✅ Series deleted (${result.episodes_deleted} episode(s) removed)`, 'success');
+            loadSeries(currentSeriesPage);
+        } else {
+            const errorMsg = result.message || result.detail || result.error || 'Unknown error';
+            showToast(`❌ Failed to delete series: ${errorMsg}`, 'error');
+        }
+
+    } catch (error) {
+        console.error('Delete series failed:', error);
         showToast(`❌ Delete failed: ${error.message}`, 'error');
     }
 }
