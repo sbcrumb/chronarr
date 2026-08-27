@@ -121,14 +121,14 @@ docker-compose restart
 1. Go to **Settings → Connect**
 2. Add **Webhook** connection:
    - Name: `Chronarr`
-   - URL: `http://chronarr-core:8080/webhook/radarr`
+   - URL: `http://chronarr-core:8080/radarr/webhook`
    - Triggers: On Import, On Upgrade, On Rename
 
 ### Sonarr
 1. Go to **Settings → Connect**
 2. Add **Webhook** connection:
    - Name: `Chronarr`
-   - URL: `http://chronarr-core:8080/webhook/sonarr`
+   - URL: `http://chronarr-core:8080/sonarr/webhook`
    - Triggers: On Import, On Upgrade, On Rename, On Episode File Delete
 
 ## Useful Commands

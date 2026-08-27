@@ -201,10 +201,9 @@ SONARR_DB_PATH=/sonarr-config/sonarr.db
 ```bash
 # Apply configuration changes
 docker-compose restart
-
-# Access web interface
-open http://your-server:8081
 ```
+
+Browse to `http://your-server:8081`
 
 Then in the web interface:
 1. Open the sidebar and click **Tools**
@@ -510,7 +509,7 @@ docker exec -it chronarr-core psql -h radarr-db -U radarr -d radarr-main
 
 ### Missing Dates
 - Check **Dashboard** → **Skipped Items** section
-- Review **Source** column in Movies/TV tabs
+- Review **Source** column in the Movies or TV Shows sections
 - Use **Debug** button to inspect raw database data
 - Verify Radarr/Sonarr have import history data
 
@@ -524,15 +523,16 @@ docker exec -it chronarr-core psql -h radarr-db -U radarr -d radarr-main
 ### Project Structure
 ```
 chronarr/
-├── api/                    # API route handlers
+├── api/                    # Core API route handlers
 ├── clients/                # Radarr/Sonarr API clients
 ├── config/                 # Configuration management
 ├── core/                   # Core database and logic
-├── chronarr-web/          # Web interface container
-│   ├── static/            # HTML, CSS, JavaScript
-│   └── api/               # Web-specific API routes
-├── processors/            # Webhook processors (legacy)
-├── utils/                 # Utility functions
+├── chronarr-web/           # Web interface container
+│   ├── static/             # HTML, CSS, JavaScript (served by web container)
+│   └── api/                # Web-specific API routes (web_routes.py)
+├── static/                 # Shared static assets
+├── processors/             # Webhook processors
+├── utils/                  # Utility functions
 └── docker-compose.yml.example  # Docker Compose configuration template
 ```
 
@@ -545,8 +545,9 @@ cd chronarr
 # Build Docker image
 docker build -t chronarr:dev .
 
-# Run with development settings
-docker-compose -f docker-compose.dev.yml up -d
+# Run with the example compose file
+cp docker-compose.yml.example docker-compose.yml
+docker-compose up -d
 ```
 
 ## FAQ
