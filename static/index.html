@@ -4,18 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chronarr - Database Management</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=manual-scan-ui">
+    <link rel="stylesheet" href="/static/css/styles.css?v=sidebar-nav">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
     <div class="app-container">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="header-content">
-                <h1><i class="fas fa-shield-alt"></i> Chronarr</h1>
-                <p>Database Management & Reporting</p>
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <i class="fas fa-shield-alt"></i>
+                <span>Chronarr</span>
             </div>
-            <div class="auth-status" id="auth-status" style="display: none;">
+
+            <div class="sidebar-auth" id="auth-status" style="display: none;">
                 <span class="auth-user">
                     <i class="fas fa-user"></i> <span id="auth-username">Loading...</span>
                 </span>
@@ -23,27 +24,59 @@
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </button>
             </div>
-            <nav class="nav-tabs">
-                <button class="nav-tab active" data-tab="dashboard">
+
+            <nav class="sidebar-nav">
+                <button class="sidebar-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
                     <i class="fas fa-tachometer-alt"></i> Dashboard
                 </button>
-                <button class="nav-tab" data-tab="movies">
-                    <i class="fas fa-film"></i> Movies
-                </button>
-                <button class="nav-tab" data-tab="tv">
-                    <i class="fas fa-tv"></i> TV Series
-                </button>
-                <button class="nav-tab" data-tab="reports">
+
+                <div class="nav-section-label">LIBRARY</div>
+
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('movies-sub', 'movies')">
+                        <span class="toggle-content">
+                            <i class="fas fa-film"></i> Movies
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
+                    </button>
+                    <div class="sidebar-sub-items expanded" id="movies-sub">
+                        <button class="sidebar-sub-item active" id="sub-movies-all" onclick="selectMovieInstance('')">
+                            All Movies
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('tv-sub', 'tv')">
+                        <span class="toggle-content">
+                            <i class="fas fa-tv"></i> TV Series
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
+                    </button>
+                    <div class="sidebar-sub-items expanded" id="tv-sub">
+                        <button class="sidebar-sub-item active" id="sub-tv-all" onclick="selectTvInstance('')">
+                            All Series
+                        </button>
+                    </div>
+                </div>
+
+                <button class="sidebar-item" data-tab="reports" onclick="switchTab('reports')">
                     <i class="fas fa-chart-bar"></i> Reports
                 </button>
-                <button class="nav-tab" data-tab="tools">
+
+                <div class="nav-section-label">AUTOMATION</div>
+
+                <button class="sidebar-item" data-tab="tools" onclick="switchTab('tools')">
                     <i class="fas fa-tools"></i> Tools
                 </button>
-                <a href="/setup" class="nav-tab" style="text-decoration:none">
+
+                <div class="sidebar-divider"></div>
+
+                <a href="/setup" class="sidebar-item">
                     <i class="fas fa-plug"></i> Setup
                 </a>
             </nav>
-        </header>
+        </aside>
 
         <!-- Main Content -->
         <main class="main-content">
@@ -60,7 +93,7 @@
                             <small id="movies-with-dates">- with dates</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon tv">
                             <i class="fas fa-tv"></i>
@@ -71,7 +104,7 @@
                             <small id="episodes-total">- episodes</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon missing">
                             <i class="fas fa-exclamation-triangle"></i>
@@ -82,7 +115,7 @@
                             <small id="no-valid-source-total">- no valid source</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon activity">
                             <i class="fas fa-history"></i>
@@ -131,16 +164,13 @@
                             <select id="movies-filter-source">
                                 <option value="">All Sources</option>
                             </select>
-                            <select id="movies-filter-instance">
-                                <option value="">All Instances</option>
-                            </select>
                             <button class="btn btn-primary" onclick="refreshMovies()">
                                 <i class="fas fa-sync"></i> Refresh
                             </button>
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="table-container">
                     <table class="data-table" id="movies-table">
                         <thead>
@@ -152,18 +182,18 @@
                                 <th>Source</th>
                                 <th>Date Type</th>
                                 <th>Video File</th>
-                                <th id="movies-instance-col" style="display:none">Instance</th>
+                                <th id="movies-instance-col">Instance</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="movies-tbody">
                             <tr>
-                                <td colspan="8" class="loading">Loading movies...</td>
+                                <td colspan="9" class="loading">Loading movies...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                
+
                 <div class="pagination" id="movies-pagination"></div>
             </div>
 
@@ -192,16 +222,13 @@
                             <select id="series-filter-source">
                                 <option value="">All Sources</option>
                             </select>
-                            <select id="series-filter-instance">
-                                <option value="">All Instances</option>
-                            </select>
                             <button class="btn btn-primary" onclick="refreshSeries()">
                                 <i class="fas fa-sync"></i> Refresh
                             </button>
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="table-container">
                     <table class="data-table" id="series-table">
                         <thead>
@@ -211,18 +238,18 @@
                                 <th>Episodes</th>
                                 <th>With Dates</th>
                                 <th>With Video</th>
-                                <th id="series-instance-col" style="display:none">Instance</th>
+                                <th id="series-instance-col">Instance</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="series-tbody">
                             <tr>
-                                <td colspan="6" class="loading">Loading series...</td>
+                                <td colspan="7" class="loading">Loading series...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                
+
                 <div class="pagination" id="series-pagination"></div>
             </div>
 
@@ -462,13 +489,14 @@
                     <input type="hidden" id="edit-season">
                     <input type="hidden" id="edit-episode">
                     <input type="hidden" id="edit-media-type">
-                    
+                    <input type="hidden" id="edit-instance">
+
                     <div class="form-group">
                         <label for="edit-dateadded">Date Added:</label>
                         <input type="datetime-local" id="edit-dateadded">
                         <small>Leave empty to clear date</small>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="edit-source">Source:</label>
                         <select id="edit-source" required>
@@ -480,7 +508,7 @@
                             <option value="no_valid_date_source">No Valid Source</option>
                         </select>
                     </div>
-                    
+
                     <div class="form-actions">
                         <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                         <button type="submit" class="btn btn-primary">Save Changes</button>
@@ -493,6 +521,6 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=manual-scan-ui"></script>
+    <script src="/static/js/app.js?v=sidebar-nav"></script>
 </body>
 </html>

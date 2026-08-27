@@ -1,4 +1,20 @@
-# Chronarr Plugin Changelog
+# Chronarr Changelog
+
+## Core App
+
+### v3.0.0
+
+- **Multi-instance support** — Configure multiple Radarr and/or Sonarr instances using a `NAME` segment in the env var (e.g., `RADARR_4K_URL`). Each instance is discovered automatically and tracked independently in the database
+- **Sidebar navigation** — Replaced the horizontal tab bar with a collapsible dark sidebar; Movies and TV Shows expand to show per-instance sub-items with colored dots
+- **Instance badges** — Table rows display a colored pill badge identifying which instance the record belongs to; colors are consistent between the sidebar dots and the table badges
+- **Instance-aware edit and smart-fix** — Date edits, smart-fix actions, and skipped-item updates are scoped to the correct instance, preventing cross-instance updates in multi-instance setups
+- **Cold-start populate fix** — Database population triggered at startup now loops all configured Radarr and Sonarr instances instead of only the first
+- **Delete series** — New API endpoint (`DELETE /api/series/{imdb_id}?instance=sonarr`) and UI button to remove an entire TV series and all its episode records in one operation
+- **Series title cleanup** — Series titles sourced from folder paths no longer include media-manager ID suffixes such as `[imdb-tt1234567]`
+
+---
+
+## Emby and Jellyfin Plugin
 
 Full version history for the Emby and Jellyfin plugins. The config page inside each plugin shows the latest 5 entries only.
 

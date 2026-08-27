@@ -158,7 +158,7 @@ networks:
 # 4. Access Web Interface:
 #    http://your-server:8081
 #
-#    Then click Admin → Populate Database
+#    Then open the sidebar → Tools → Populate Database
 #
 # ========================================
 # Configuration Notes

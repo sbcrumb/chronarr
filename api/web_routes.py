@@ -4,6 +4,7 @@ Provides endpoints for the web-based database manipulation interface
 """
 import json
 import os
+import re
 import tempfile
 import multiprocessing
 from datetime import datetime, timezone
@@ -13,6 +14,13 @@ from pathlib import Path
 
 from api.models import *
 from utils.logging import _log
+
+# Strip [imdb-tt...] or [tmdb-...] suffixes that media managers append to folder names
+_FOLDER_ID_SUFFIX = re.compile(r'\s*\[[a-z]+-[^\]]+\]', re.IGNORECASE)
+
+def _clean_folder_title(raw: str) -> str:
+    """Remove media-manager ID suffixes from a folder name used as a display title."""
+    return _FOLDER_ID_SUFFIX.sub('', raw).strip()
 
 
 # Status file for cross-process communication
@@ -275,7 +283,7 @@ async def get_tv_series_list(dependencies: dict,
             series_data = dict(row)
             # Extract title from path
             try:
-                series_data['title'] = Path(series_data['path']).name if series_data['path'] else series_data['imdb_id']
+                series_data['title'] = _clean_folder_title(Path(series_data['path']).name) if series_data['path'] else series_data['imdb_id']
             except:
                 series_data['title'] = series_data['imdb_id']
             series.append(series_data)
@@ -383,14 +391,14 @@ async def get_series_episodes(dependencies: dict, imdb_id: str):
         
         series_info = dict(series_row)
         try:
-            series_info['title'] = Path(series_info['path']).name if series_info['path'] else imdb_id
+            series_info['title'] = _clean_folder_title(Path(series_info['path']).name) if series_info['path'] else imdb_id
         except:
             series_info['title'] = imdb_id
         
         # Get episodes - PostgreSQL
         cursor.execute("""
-            SELECT season, episode, aired, dateadded, source, has_video_file, last_updated
-            FROM episodes 
+            SELECT season, episode, instance, aired, dateadded, source, has_video_file, last_updated
+            FROM episodes
             WHERE imdb_id = %s
             ORDER BY season, episode
         """, (imdb_id,))
@@ -417,8 +425,8 @@ async def get_missing_dates_report(dependencies: dict):
         
         # Movies without dates - PostgreSQL
         cursor.execute("""
-            SELECT imdb_id, path, released, source, last_updated
-            FROM movies 
+            SELECT imdb_id, instance, path, released, source, last_updated
+            FROM movies
             WHERE dateadded IS NULL OR source = 'no_valid_date_source'
             ORDER BY last_updated DESC
         """)
@@ -435,9 +443,9 @@ async def get_missing_dates_report(dependencies: dict):
         
         # Episodes without dates - PostgreSQL
         cursor.execute("""
-            SELECT e.imdb_id, e.season, e.episode, e.aired, e.source, e.last_updated, s.path
+            SELECT e.imdb_id, e.instance, e.season, e.episode, e.aired, e.source, e.last_updated, s.path
             FROM episodes e
-            JOIN series s ON e.imdb_id = s.imdb_id
+            JOIN series s ON e.imdb_id = s.imdb_id AND s.instance = e.instance
             WHERE e.dateadded IS NULL OR e.source = 'no_valid_date_source'
             ORDER BY e.last_updated DESC
         """)
@@ -445,7 +453,7 @@ async def get_missing_dates_report(dependencies: dict):
         for row in cursor.fetchall():
             episode = dict(row)
             try:
-                episode['series_title'] = Path(episode['path']).name if episode['path'] else episode['imdb_id']
+                episode['series_title'] = _clean_folder_title(Path(episode['path']).name) if episode['path'] else episode['imdb_id']
             except:
                 episode['series_title'] = episode['imdb_id']
             # Map source to user-friendly description
@@ -572,7 +580,7 @@ async def get_dashboard_stats(dependencies: dict):
 # Database Modification Endpoints
 # ---------------------------
 
-async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optional[str], source: str):
+async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optional[str], source: str, instance: str = 'radarr'):
     """Update dateadded for a specific movie"""
     db = dependencies["db"]
     
@@ -600,26 +608,27 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
             raise HTTPException(status_code=422, detail=f"Invalid date format: {dateadded}")
     
     # Validate movie exists
-    movie = db.get_movie_dates(imdb_id)
+    movie = db.get_movie_dates(imdb_id, instance)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
-    
+
     # Update the date
     db.upsert_movie_dates(
         imdb_id=imdb_id,
         released=movie.get('released'),
         dateadded=dateadded,
         source=source,
-        has_video_file=movie.get('has_video_file', False)
+        has_video_file=movie.get('has_video_file', False),
+        instance=instance
     )
-    
+
     # Add to processing history
     try:
         db.add_processing_history(
             imdb_id=imdb_id,
             media_type="movie",
             event_type="manual_date_update",
-            details={"old_source": movie.get('source'), "new_source": source, "dateadded": dateadded}
+            details={"old_source": movie.get('source'), "new_source": source, "dateadded": dateadded, "instance": instance}
         )
     except Exception as e:
         print(f"⚠️ Failed to add processing history: {e}")
@@ -629,15 +638,15 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
     return {"status": "success", "message": f"Updated movie {imdb_id}"}
 
 
-async def update_episode_date(dependencies: dict, imdb_id: str, season: int, episode: int, 
-                            dateadded: Optional[str], source: str):
+async def update_episode_date(dependencies: dict, imdb_id: str, season: int, episode: int,
+                            dateadded: Optional[str], source: str, instance: str = 'sonarr'):
     """Update dateadded for a specific episode"""
     db = dependencies["db"]
     
     _log("DEBUG", f"update_episode_date called with dateadded={repr(dateadded)}, source={repr(source)}")
     
     # Get existing episode
-    episode_data = db.get_episode_date(imdb_id, season, episode)
+    episode_data = db.get_episode_date(imdb_id, season, episode, instance)
     if not episode_data:
         raise HTTPException(status_code=404, detail="Episode not found")
     
@@ -661,7 +670,8 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
         aired=episode_data.get('aired'),
         dateadded=dateadded,
         source=source,
-        has_video_file=episode_data.get('has_video_file', False)
+        has_video_file=episode_data.get('has_video_file', False),
+        instance=instance
     )
     
     # Trigger NFO file update via core container
@@ -772,12 +782,12 @@ async def bulk_update_source(dependencies: dict, media_type: str, old_source: st
     }
 
 
-async def get_movie_date_options(dependencies: dict, imdb_id: str):
+async def get_movie_date_options(dependencies: dict, imdb_id: str, instance: str = 'radarr'):
     """Get available date options for a movie (Radarr import, digital release, etc.)"""
     db = dependencies["db"]
 
     # Get current movie data
-    movie = db.get_movie_dates(imdb_id)
+    movie = db.get_movie_dates(imdb_id, instance)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
     
@@ -948,9 +958,9 @@ async def get_movie_date_options(dependencies: dict, imdb_id: str):
     }
 
 
-async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int):
+async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
     """Get available date options for an episode"""
-    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}")
+    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}, instance={instance}")
     db = dependencies["db"]
     
     # Validate parameters with enhanced checking
@@ -975,7 +985,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
         raise HTTPException(status_code=422, detail=f"Invalid parameter types: {e}")
     
     # Get current episode data
-    episode_data = db.get_episode_date(imdb_id, season, episode)
+    episode_data = db.get_episode_date(imdb_id, season, episode, instance)
     _log("DEBUG", f"Episode data from DB: {episode_data}")
     if not episode_data:
         print(f"❌ Episode not found in database: {imdb_id} S{season:02d}E{episode:02d}")
@@ -1323,47 +1333,72 @@ def _populate_worker_process(media_type: str, status_file: str):
         # Import here (inside process) to avoid pickling issues
         from core.database import ChronarrDatabase
         from core.database_populator import DatabasePopulator
-        from clients.radarr_client import RadarrClient
-        from clients.sonarr_client import SonarrClient
         from config.settings import config
 
-        # Initialize components
         db = ChronarrDatabase(config)
-        radarr_client = RadarrClient(
-            os.environ.get("RADARR_URL", ""),
-            os.environ.get("RADARR_API_KEY", "")
-        )
-        sonarr_client = SonarrClient(
-            os.environ.get("SONARR_URL", ""),
-            os.environ.get("SONARR_API_KEY", "")
-        )
 
-        populator = DatabasePopulator(db, radarr_client, sonarr_client)
+        def _merge_movie_stats(all_stats):
+            merged = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
+                      'duration': 0.0, 'skipped_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+            return merged
+
+        def _merge_tv_stats(all_stats):
+            merged = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                      'skipped': 0, 'errors': 0, 'duration': 0.0, 'skipped_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total_series', 'total_episodes', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+            return merged
 
         print(f"INFO: [Worker Process] Starting database population: {media_type}")
+        radarr_instances = config.radarr_instances
+        sonarr_instances = config.sonarr_instances
+        print(f"INFO: [Worker Process] Radarr instances: {[i.name for i in radarr_instances]}")
+        print(f"INFO: [Worker Process] Sonarr instances: {[i.name for i in sonarr_instances]}")
 
         # Run population based on media type
         if media_type in ["movies", "both"]:
-            status["movies"]["status"] = "running"
-            update_status(status)
+            all_movie_stats = []
+            for inst in radarr_instances:
+                status["movies"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating movies for instance '{inst.name}'")
 
-            movie_stats = populator.populate_movies()
+                pop = DatabasePopulator.from_radarr_instance(inst, db)
+                inst_stats = pop.populate_movies(instance=inst.name)
+                all_movie_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] Movies done for '{inst.name}': {inst_stats}")
 
+            movie_stats = _merge_movie_stats(all_movie_stats)
             status["movies"]["status"] = "completed"
             status["movies"]["stats"] = movie_stats
             update_status(status)
-            print(f"INFO: [Worker Process] Movie population completed: {movie_stats}")
+            print(f"INFO: [Worker Process] All movie population complete: {movie_stats}")
 
         if media_type in ["tv", "both"]:
-            status["tv"]["status"] = "running"
-            update_status(status)
+            all_tv_stats = []
+            for inst in sonarr_instances:
+                status["tv"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating TV for instance '{inst.name}'")
 
-            tv_stats = populator.populate_tv_episodes()
+                pop = DatabasePopulator.from_sonarr_instance(inst, db)
+                inst_stats = pop.populate_tv_episodes(instance=inst.name)
+                all_tv_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] TV done for '{inst.name}': {inst_stats}")
 
+            tv_stats = _merge_tv_stats(all_tv_stats)
             status["tv"]["status"] = "completed"
             status["tv"]["stats"] = tv_stats
             update_status(status)
-            print(f"INFO: [Worker Process] TV population completed: {tv_stats}")
+            print(f"INFO: [Worker Process] All TV population complete: {tv_stats}")
 
         # Mark as completed
         status["completed"] = True
@@ -1506,20 +1541,22 @@ def register_web_routes(app, dependencies):
             data = await request.json()
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
+            instance = data.get('instance', 'radarr')
 
             _log("DEBUG", f"API PUT /api/movies/{imdb_id} - Received JSON:")
             print(f"   - Raw data: {data}")
             print(f"   - dateadded: {dateadded}")
             print(f"   - source: {source}")
+            print(f"   - instance: {instance}")
 
-            return await update_movie_date(dependencies, imdb_id, dateadded, source)
+            return await update_movie_date(dependencies, imdb_id, dateadded, source, instance)
         except Exception as e:
             print(f"❌ Error parsing request body: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
     
     @app.get("/api/movies/{imdb_id}/date-options")
-    async def api_movie_date_options(imdb_id: str):
-        return await get_movie_date_options(dependencies, imdb_id)
+    async def api_movie_date_options(imdb_id: str, instance: str = 'radarr'):
+        return await get_movie_date_options(dependencies, imdb_id, instance)
 
     @app.get("/api/debug/movie/{imdb_id}/raw")
     async def api_debug_movie_raw(imdb_id: str):
@@ -1657,6 +1694,32 @@ def register_web_routes(app, dependencies):
             print(f"❌ Error migrating series IMDb ID: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to migrate IMDb ID: {str(e)}")
 
+    @app.delete("/api/series/{imdb_id}")
+    async def api_delete_series(imdb_id: str, instance: str = 'sonarr'):
+        """Delete a series and all its episodes from the database"""
+        db = dependencies["db"]
+
+        try:
+            episodes_deleted = db.delete_series_episodes(imdb_id, instance)
+            series_deleted = db.delete_series(imdb_id, instance)
+
+            if series_deleted or episodes_deleted > 0:
+                return {
+                    "success": True,
+                    "status": "success",
+                    "message": f"Deleted series {imdb_id} and {episodes_deleted} episode(s)",
+                    "imdb_id": imdb_id,
+                    "episodes_deleted": episodes_deleted
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Series not found")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Error deleting series: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete series: {str(e)}")
+
     # Episode endpoints
     @app.post("/api/episodes/{imdb_id}/{season}/{episode}/update-date")
     async def api_update_episode_date(imdb_id: str, season: int, episode: int, 
@@ -1670,14 +1733,15 @@ def register_web_routes(app, dependencies):
             data = await request.json()
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
-            return await update_episode_date(dependencies, imdb_id, season, episode, dateadded, source)
+            instance = data.get('instance', 'sonarr')
+            return await update_episode_date(dependencies, imdb_id, season, episode, dateadded, source, instance)
         except Exception as e:
             print(f"❌ Error parsing episode update request: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
     
     @app.get("/api/episodes/{imdb_id}/{season}/{episode}/date-options")
-    async def api_episode_date_options(imdb_id: str, season: int, episode: int):
-        return await get_episode_date_options(dependencies, imdb_id, season, episode)
+    async def api_episode_date_options(imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
+        return await get_episode_date_options(dependencies, imdb_id, season, episode, instance)
     
     @app.delete("/api/episodes/{imdb_id}/{season}/{episode}")
     async def api_delete_episode(imdb_id: str, season: int, episode: int):

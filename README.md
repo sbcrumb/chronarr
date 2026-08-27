@@ -44,7 +44,8 @@ Chronarr tracks and manages "dateadded" timestamps for all your movies and TV ep
 - **Direct Database Access** - Required for Radarr, optional for Sonarr (PostgreSQL & SQLite support)
 - **API Integration** - Sonarr API support for metadata and series lookups
 - **Webhook Support** - Real-time updates on import, upgrade, and rename events
-- **Bulk Import** - One-click population of entire Radarr/Sonarr libraries
+- **Multi-Instance Support** - Run multiple Radarr instances (e.g., standard + 4K) and/or multiple Sonarr instances, each tracked independently with per-instance badges and filtering
+- **Bulk Import** - One-click population of entire Radarr/Sonarr libraries across all instances
 - **Path Mapping** - Intelligent path translation for Docker/remote setups
 
 ### **Jellyfin Plugin**
@@ -200,13 +201,12 @@ SONARR_DB_PATH=/sonarr-config/sonarr.db
 ```bash
 # Apply configuration changes
 docker-compose restart
-
-# Access web interface
-open http://your-server:8081
 ```
 
+Browse to `http://your-server:8081`
+
 Then in the web interface:
-1. Click **Admin** tab
+1. Open the sidebar and click **Tools**
 2. Click **Populate Database**
 3. Select **Movies** and/or **TV Shows**
 4. Click **Start Population**
@@ -335,11 +335,39 @@ SONARR_DB_PASSWORD=sonarr_pass       # Sonarr database password (.env.secrets)
 # See docker-compose.yml.example for volume mount configuration
 ```
 
+**Multi-Instance Configuration (v3.0+):**
+
+Add additional Radarr or Sonarr instances using a `NAME` segment between the prefix and the variable suffix. The name becomes the instance identifier in Chronarr's UI and database.
+
+```bash
+# Second Radarr instance (e.g., 4K library)
+RADARR_4K_URL=http://radarr-4k:7878
+RADARR_4K_API_KEY=your_4k_api_key   # (.env.secrets)
+RADARR_4K_DB_TYPE=postgresql
+RADARR_4K_DB_HOST=radarr-4k-db
+RADARR_4K_DB_NAME=radarr-main
+RADARR_4K_DB_USER=radarr
+RADARR_4K_DB_PASSWORD=radarr_4k_pass  # (.env.secrets)
+
+# Second Sonarr instance (e.g., anime library)
+SONARR_ANIME_URL=http://sonarr-anime:8989
+SONARR_ANIME_API_KEY=your_anime_key  # (.env.secrets)
+SONARR_ANIME_DB_TYPE=postgresql
+SONARR_ANIME_DB_HOST=sonarr-anime-db
+SONARR_ANIME_DB_NAME=sonarr-main
+SONARR_ANIME_DB_USER=sonarr
+SONARR_ANIME_DB_PASSWORD=sonarr_anime_pass  # (.env.secrets)
+```
+
+Each named instance gets its own webhook endpoint (`/radarr_4k/webhook`, `/sonarr_anime/webhook`) and appears as a separate entry in the sidebar. An "All" view aggregates across all instances with colored instance badges on each row.
+
 **SQLite Docker Configuration:**
 
 When using SQLite databases with Docker, you must mount the database directories as read-only volumes. See the Quick Start guide (step 3) or check `docker-compose.yml.example` for detailed examples.
 
 ## Web Interface
+
+The web interface uses a dark sidebar for navigation. Sections expand to show per-instance sub-items; clicking an instance filters the view to that instance only. An "All" sub-item shows the full library with colored instance badges on each row.
 
 ### Dashboard
 - **Statistics** - Total movies, episodes, dates populated, missing dates
@@ -347,23 +375,25 @@ When using SQLite databases with Docker, you must mount the database directories
 - **Recent Activity** - Last 7 days of processing history
 - **Skipped Items** - Items without valid dates
 
-### Movies Tab
+### Movies
 - **Search & Filter** - By title, path, IMDb ID, date status, source
+- **Instance Filter** - Click an instance in the sidebar or view all with badges
 - **Bulk Actions** - Delete, edit dates, update IMDb IDs
 - **Smart Sorting** - By date added, release date, title
 - **Debug Tools** - Raw database inspection for troubleshooting
 
-### TV Shows Tab
+### TV Shows
 - **Series Management** - View all series with episode counts and progress
 - **Episode Browsing** - Detailed episode lists with dates and sources
 - **Season Filtering** - Filter episodes by season
+- **Delete Series** - Remove an entire series and all its episode records
+- **Instance Filter** - Click an instance in the sidebar or view all with badges
 - **Batch Updates** - Update multiple episodes at once
 
-### Admin Tab
-- **Database Population** - One-click import from Radarr/Sonarr
+### Tools
+- **Database Population** - One-click import from Radarr/Sonarr across all instances
 - **Progress Tracking** - Real-time progress bars and statistics
 - **Validation** - Pre-population checks for connectivity and permissions
-- **Manual Scans** - Trigger ad-hoc scans (future feature)
 
 ## API Endpoints
 
@@ -376,7 +406,8 @@ When using SQLite databases with Docker, you must mount the database directories
 - `POST /api/movies/{imdb_id}/migrate-imdb` - Migrate placeholder IMDb ID to real ID
 
 ### TV Shows
-- `GET /api/series` - List all series with episode counts
+- `GET /api/series` - List all series with episode counts (`?instance=sonarr` to filter)
+- `DELETE /api/series/{imdb_id}` - Delete an entire series and all its episodes (`?instance=sonarr`)
 - `GET /api/series/{imdb_id}/episodes` - Get episodes for series
 - `GET /api/episodes/{imdb_id}/{season}/{episode}` - Get specific episode
 - `PUT /api/episodes/{imdb_id}/{season}/{episode}` - Update episode date
@@ -384,29 +415,35 @@ When using SQLite databases with Docker, you must mount the database directories
 - `POST /api/series/{imdb_id}/migrate-imdb` - Migrate series IMDb ID
 
 ### Administration
-- `POST /admin/populate-database` - Trigger database population
+- `POST /admin/populate-database` - Trigger database population across all configured instances
 - `GET /api/dashboard` - Get dashboard statistics
 - `GET /health` - Health check endpoint
 
 ## Webhook Configuration
+
+Each Radarr/Sonarr instance gets its own webhook endpoint. The URL path matches the instance name derived from the environment variable: `RADARR_URL` → `/radarr/webhook`, `RADARR_4K_URL` → `/radarr_4k/webhook`.
 
 ### Radarr
 1. Go to **Settings → Connect**
 2. Add **Webhook** connection
 3. Configure:
    - **Name**: Chronarr
-   - **URL**: `http://chronarr-core:8080/webhook/radarr`
+   - **URL**: `http://chronarr-core:8080/radarr/webhook` (default instance)
    - **Triggers**: On Import, On Upgrade, On Rename
    - **Tags**: (optional, leave blank for all movies)
+
+For a second instance (e.g., `RADARR_4K_URL`), use `http://chronarr-core:8080/radarr_4k/webhook`.
 
 ### Sonarr
 1. Go to **Settings → Connect**
 2. Add **Webhook** connection
 3. Configure:
    - **Name**: Chronarr
-   - **URL**: `http://chronarr-core:8080/webhook/sonarr`
+   - **URL**: `http://chronarr-core:8080/sonarr/webhook` (default instance)
    - **Triggers**: On Import, On Upgrade, On Rename, On Episode File Delete
    - **Tags**: (optional, leave blank for all series)
+
+For a second instance (e.g., `SONARR_ANIME_URL`), use `http://chronarr-core:8080/sonarr_anime/webhook`.
 
 ## Jellyfin Integration
 
@@ -472,7 +509,7 @@ docker exec -it chronarr-core psql -h radarr-db -U radarr -d radarr-main
 
 ### Missing Dates
 - Check **Dashboard** → **Skipped Items** section
-- Review **Source** column in Movies/TV tabs
+- Review **Source** column in the Movies or TV Shows sections
 - Use **Debug** button to inspect raw database data
 - Verify Radarr/Sonarr have import history data
 
@@ -486,15 +523,16 @@ docker exec -it chronarr-core psql -h radarr-db -U radarr -d radarr-main
 ### Project Structure
 ```
 chronarr/
-├── api/                    # API route handlers
+├── api/                    # Core API route handlers
 ├── clients/                # Radarr/Sonarr API clients
 ├── config/                 # Configuration management
 ├── core/                   # Core database and logic
-├── chronarr-web/          # Web interface container
-│   ├── static/            # HTML, CSS, JavaScript
-│   └── api/               # Web-specific API routes
-├── processors/            # Webhook processors (legacy)
-├── utils/                 # Utility functions
+├── chronarr-web/           # Web interface container
+│   ├── static/             # HTML, CSS, JavaScript (served by web container)
+│   └── api/                # Web-specific API routes (web_routes.py)
+├── static/                 # Shared static assets
+├── processors/             # Webhook processors
+├── utils/                  # Utility functions
 └── docker-compose.yml.example  # Docker Compose configuration template
 ```
 
@@ -507,8 +545,9 @@ cd chronarr
 # Build Docker image
 docker build -t chronarr:dev .
 
-# Run with development settings
-docker-compose -f docker-compose.dev.yml up -d
+# Run with the example compose file
+cp docker-compose.yml.example docker-compose.yml
+docker-compose up -d
 ```
 
 ## FAQ
@@ -529,11 +568,11 @@ A: Yes, Chronarr can read from both SQLite and PostgreSQL databases for both Rad
 
 Chronarr's core application does not collect personal data. It reads only from your local Radarr and Sonarr databases and stores date information in your own PostgreSQL instance.
 
-The **Emby plugin** collects the following information during license registration:
+The **Emby and Jellyfin plugins** collect the following information during license registration:
 
 - **Name** — used to identify your license
 - **Email address** — used to deliver your license key and send license status notifications
-- **Server name** — used to associate a license with a specific Emby installation
+- **Server name** — used to associate a license with a specific media server installation
 
 This data is transmitted to the Chronarr license server and is used solely for license management. It is never sold, shared with third parties, or used for any purpose other than validating and managing your license.
 
@@ -554,7 +593,32 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - **GitHub Issues**: [https://github.com/sbcrumb/chronarr/issues](https://github.com/sbcrumb/chronarr/issues)
 
+## Upgrading from v2 to v3
+
+v3 is a drop-in upgrade for single-instance setups. Pull the new image and restart — no config changes are required.
+
+**What you'll notice immediately:**
+- The horizontal tab bar is replaced by a collapsible sidebar. Dashboard, Movies, TV Shows, Reports, and Tools are all still there.
+- The "Admin" tab is now **Tools** in the sidebar.
+
+**Webhooks:** The old `/webhook/radarr` and `/webhook/sonarr` URLs still work — they're kept as aliases. The new canonical format is `/radarr/webhook` and `/sonarr/webhook`, and you can update your Radarr/Sonarr connections at any time, but there's no urgency.
+
+**Database:** Schema migrations run automatically on startup. Existing movie and episode records are preserved and tagged with the default instance name (`radarr` / `sonarr`).
+
+**Multi-instance (optional):** If you run a second Radarr (e.g., 4K) or second Sonarr, see the [Multi-Instance Configuration](#multi-instance-configuration-v30) block in the Configuration section. Each extra instance just needs a `RADARR_{NAME}_URL` block in your `.env` and its own webhook connection in Radarr/Sonarr.
+
+---
+
 ## Changelog
+
+### v3.0.0
+- 🏠 **Sidebar navigation** - Replaced horizontal tab bar with a collapsible dark sidebar; instance sub-items expand under Movies and TV Shows
+- 🔀 **Multi-instance support** - Configure multiple Radarr and/or Sonarr instances; each is tracked separately and shown with colored badges in the UI
+- 🏷️ **Instance badges** - Every row in the Movies and TV tables shows a colored badge identifying its instance; badge colors are consistent between the sidebar and the table
+- 🚀 **Cold-start populate fix** - Database population on startup now iterates all configured instances, not just the first
+- 🗑️ **Delete series** - Remove an entire TV series and all its episode records from the database in one click
+- 🔧 **Instance-aware edit** - Date edits, smart fixes, and skipped-item updates are now scoped to the correct instance
+- 🧹 **Series title cleanup** - Series titles derived from folder paths no longer include media-manager ID suffixes (e.g., `[imdb-tt1234567]`)
 
 ### v2.0.0 (2025-11-05)
 - 🎉 **Initial release** - Comprehensive date and chronology management for Radarr and Sonarr
