@@ -389,8 +389,8 @@ async def get_series_episodes(dependencies: dict, imdb_id: str):
         
         # Get episodes - PostgreSQL
         cursor.execute("""
-            SELECT season, episode, aired, dateadded, source, has_video_file, last_updated
-            FROM episodes 
+            SELECT season, episode, instance, aired, dateadded, source, has_video_file, last_updated
+            FROM episodes
             WHERE imdb_id = %s
             ORDER BY season, episode
         """, (imdb_id,))
@@ -417,8 +417,8 @@ async def get_missing_dates_report(dependencies: dict):
         
         # Movies without dates - PostgreSQL
         cursor.execute("""
-            SELECT imdb_id, path, released, source, last_updated
-            FROM movies 
+            SELECT imdb_id, instance, path, released, source, last_updated
+            FROM movies
             WHERE dateadded IS NULL OR source = 'no_valid_date_source'
             ORDER BY last_updated DESC
         """)
@@ -435,9 +435,9 @@ async def get_missing_dates_report(dependencies: dict):
         
         # Episodes without dates - PostgreSQL
         cursor.execute("""
-            SELECT e.imdb_id, e.season, e.episode, e.aired, e.source, e.last_updated, s.path
+            SELECT e.imdb_id, e.instance, e.season, e.episode, e.aired, e.source, e.last_updated, s.path
             FROM episodes e
-            JOIN series s ON e.imdb_id = s.imdb_id
+            JOIN series s ON e.imdb_id = s.imdb_id AND s.instance = e.instance
             WHERE e.dateadded IS NULL OR e.source = 'no_valid_date_source'
             ORDER BY e.last_updated DESC
         """)
@@ -572,7 +572,7 @@ async def get_dashboard_stats(dependencies: dict):
 # Database Modification Endpoints
 # ---------------------------
 
-async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optional[str], source: str):
+async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optional[str], source: str, instance: str = 'radarr'):
     """Update dateadded for a specific movie"""
     db = dependencies["db"]
     
@@ -600,26 +600,27 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
             raise HTTPException(status_code=422, detail=f"Invalid date format: {dateadded}")
     
     # Validate movie exists
-    movie = db.get_movie_dates(imdb_id)
+    movie = db.get_movie_dates(imdb_id, instance)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
-    
+
     # Update the date
     db.upsert_movie_dates(
         imdb_id=imdb_id,
         released=movie.get('released'),
         dateadded=dateadded,
         source=source,
-        has_video_file=movie.get('has_video_file', False)
+        has_video_file=movie.get('has_video_file', False),
+        instance=instance
     )
-    
+
     # Add to processing history
     try:
         db.add_processing_history(
             imdb_id=imdb_id,
             media_type="movie",
             event_type="manual_date_update",
-            details={"old_source": movie.get('source'), "new_source": source, "dateadded": dateadded}
+            details={"old_source": movie.get('source'), "new_source": source, "dateadded": dateadded, "instance": instance}
         )
     except Exception as e:
         print(f"⚠️ Failed to add processing history: {e}")
@@ -629,15 +630,15 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
     return {"status": "success", "message": f"Updated movie {imdb_id}"}
 
 
-async def update_episode_date(dependencies: dict, imdb_id: str, season: int, episode: int, 
-                            dateadded: Optional[str], source: str):
+async def update_episode_date(dependencies: dict, imdb_id: str, season: int, episode: int,
+                            dateadded: Optional[str], source: str, instance: str = 'sonarr'):
     """Update dateadded for a specific episode"""
     db = dependencies["db"]
     
     _log("DEBUG", f"update_episode_date called with dateadded={repr(dateadded)}, source={repr(source)}")
     
     # Get existing episode
-    episode_data = db.get_episode_date(imdb_id, season, episode)
+    episode_data = db.get_episode_date(imdb_id, season, episode, instance)
     if not episode_data:
         raise HTTPException(status_code=404, detail="Episode not found")
     
@@ -661,7 +662,8 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
         aired=episode_data.get('aired'),
         dateadded=dateadded,
         source=source,
-        has_video_file=episode_data.get('has_video_file', False)
+        has_video_file=episode_data.get('has_video_file', False),
+        instance=instance
     )
     
     # Trigger NFO file update via core container
@@ -772,12 +774,12 @@ async def bulk_update_source(dependencies: dict, media_type: str, old_source: st
     }
 
 
-async def get_movie_date_options(dependencies: dict, imdb_id: str):
+async def get_movie_date_options(dependencies: dict, imdb_id: str, instance: str = 'radarr'):
     """Get available date options for a movie (Radarr import, digital release, etc.)"""
     db = dependencies["db"]
 
     # Get current movie data
-    movie = db.get_movie_dates(imdb_id)
+    movie = db.get_movie_dates(imdb_id, instance)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
     
@@ -948,9 +950,9 @@ async def get_movie_date_options(dependencies: dict, imdb_id: str):
     }
 
 
-async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int):
+async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
     """Get available date options for an episode"""
-    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}")
+    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}, instance={instance}")
     db = dependencies["db"]
     
     # Validate parameters with enhanced checking
@@ -975,7 +977,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
         raise HTTPException(status_code=422, detail=f"Invalid parameter types: {e}")
     
     # Get current episode data
-    episode_data = db.get_episode_date(imdb_id, season, episode)
+    episode_data = db.get_episode_date(imdb_id, season, episode, instance)
     _log("DEBUG", f"Episode data from DB: {episode_data}")
     if not episode_data:
         print(f"❌ Episode not found in database: {imdb_id} S{season:02d}E{episode:02d}")
@@ -1506,20 +1508,22 @@ def register_web_routes(app, dependencies):
             data = await request.json()
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
+            instance = data.get('instance', 'radarr')
 
             _log("DEBUG", f"API PUT /api/movies/{imdb_id} - Received JSON:")
             print(f"   - Raw data: {data}")
             print(f"   - dateadded: {dateadded}")
             print(f"   - source: {source}")
+            print(f"   - instance: {instance}")
 
-            return await update_movie_date(dependencies, imdb_id, dateadded, source)
+            return await update_movie_date(dependencies, imdb_id, dateadded, source, instance)
         except Exception as e:
             print(f"❌ Error parsing request body: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
     
     @app.get("/api/movies/{imdb_id}/date-options")
-    async def api_movie_date_options(imdb_id: str):
-        return await get_movie_date_options(dependencies, imdb_id)
+    async def api_movie_date_options(imdb_id: str, instance: str = 'radarr'):
+        return await get_movie_date_options(dependencies, imdb_id, instance)
 
     @app.get("/api/debug/movie/{imdb_id}/raw")
     async def api_debug_movie_raw(imdb_id: str):
@@ -1670,14 +1674,15 @@ def register_web_routes(app, dependencies):
             data = await request.json()
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
-            return await update_episode_date(dependencies, imdb_id, season, episode, dateadded, source)
+            instance = data.get('instance', 'sonarr')
+            return await update_episode_date(dependencies, imdb_id, season, episode, dateadded, source, instance)
         except Exception as e:
             print(f"❌ Error parsing episode update request: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
     
     @app.get("/api/episodes/{imdb_id}/{season}/{episode}/date-options")
-    async def api_episode_date_options(imdb_id: str, season: int, episode: int):
-        return await get_episode_date_options(dependencies, imdb_id, season, episode)
+    async def api_episode_date_options(imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
+        return await get_episode_date_options(dependencies, imdb_id, season, episode, instance)
     
     @app.delete("/api/episodes/{imdb_id}/{season}/{episode}")
     async def api_delete_episode(imdb_id: str, season: int, episode: int):

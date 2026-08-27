@@ -295,7 +295,7 @@ function updateMoviesTable(data) {
                 <td>${hasVideoBadge}</td>
                 <td style="${instanceColStyle}"><code>${movie.instance || '-'}</code></td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}')">
+                    <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-edit"></i> Edit
                     </button>
                     <button class="btn btn-sm btn-secondary" onclick="debugMovie('${movie.imdb_id}')" title="Debug Data">
@@ -601,7 +601,7 @@ function showEpisodesModal(data) {
                                             <td><span class="badge badge-secondary">${episode.source_description || episode.source || 'Unknown'}</span></td>
                                             <td>${hasVideoBadge}</td>
                                             <td>
-                                                <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}')">
+                                                <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}', '${episode.instance || 'sonarr'}')">
                                                     <i class="fas fa-edit"></i> Edit
                                                 </button>
                                                 <button class="btn btn-sm btn-danger" onclick="deleteEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode})" style="margin-left: 5px;">
@@ -684,7 +684,7 @@ function updateReportTables(data) {
                 <td>${movie.released || '-'}</td>
                 <td><span class="badge badge-warning">${movie.source_description || movie.source || 'Unknown'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-success" onclick="smartFixMovie('${movie.imdb_id}')">
+                    <button class="btn btn-sm btn-success" onclick="smartFixMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-magic"></i> Smart Fix
                     </button>
                 </td>
@@ -705,7 +705,7 @@ function updateReportTables(data) {
                 <td>${episode.aired || '-'}</td>
                 <td><span class="badge badge-warning">${episode.source_description || episode.source || 'Unknown'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-success" onclick="smartFixEpisode('${episode.imdb_id}', ${episode.season}, ${episode.episode})">
+                    <button class="btn btn-sm btn-success" onclick="smartFixEpisode('${episode.imdb_id}', ${episode.season}, ${episode.episode}, '${episode.instance || 'sonarr'}')">
                         <i class="fas fa-magic"></i> Smart Fix
                     </button>
                 </td>
@@ -719,36 +719,39 @@ function refreshReport() {
 }
 
 // Smart fix functions
-async function smartFixMovie(imdbId) {
+async function smartFixMovie(imdbId, instance) {
+    instance = instance || 'radarr';
     try {
-        console.log('🔍 SMART FIX: Loading options for movie', imdbId);
-        const options = await apiCall(`/api/movies/${imdbId}/date-options`);
+        console.log('🔍 SMART FIX: Loading options for movie', imdbId, 'instance', instance);
+        const options = await apiCall(`/api/movies/${imdbId}/date-options?instance=${encodeURIComponent(instance)}`);
         console.log('🔍 SMART FIX: Received options:', options);
-        showSmartFixModal('movie', options);
+        showSmartFixModal('movie', options, instance);
     } catch (error) {
         console.error('Failed to load movie options:', error);
         showToast('Failed to load movie options', 'error');
     }
 }
 
-async function smartFixEpisode(imdbId, season, episode) {
+async function smartFixEpisode(imdbId, season, episode, instance) {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('smartFixEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
+    instance = instance || 'sonarr';
     try {
-        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options`);
-        showSmartFixModal('episode', options);
+        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options?instance=${encodeURIComponent(instance)}`);
+        showSmartFixModal('episode', options, instance);
     } catch (error) {
         console.error('Failed to load episode options:', error);
         showToast('Failed to load episode options', 'error');
     }
 }
 
-function showSmartFixModal(mediaType, options) {
+function showSmartFixModal(mediaType, options, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     console.log('🔍 SMART FIX: Showing modal for', mediaType, 'with options:', options);
     
     const modal = document.getElementById('smart-fix-modal');
@@ -800,7 +803,7 @@ function showSmartFixModal(mediaType, options) {
     optionsHtml += `
         <div class="form-actions">
             <button type="button" class="btn btn-secondary" onclick="closeSmartFixModal()">Cancel</button>
-            <button type="button" class="btn btn-success" onclick="applySmartFix('${mediaType}', ${JSON.stringify(options).replace(/'/g, "&apos;")})">
+            <button type="button" class="btn btn-success" onclick="applySmartFix('${mediaType}', ${JSON.stringify(options).replace(/'/g, "&apos;")}, '${instance}')">
                 <i class="fas fa-magic"></i> Apply Fix
             </button>
         </div>
@@ -814,7 +817,8 @@ function closeSmartFixModal() {
     document.getElementById('smart-fix-modal').classList.remove('active');
 }
 
-async function applySmartFix(mediaType, options) {
+async function applySmartFix(mediaType, options, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const selectedRadio = document.querySelector('input[name="date-option"]:checked');
     if (!selectedRadio) {
         showToast('Please select a date option', 'warning');
@@ -876,9 +880,9 @@ async function applySmartFix(mediaType, options) {
     
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(options.imdb_id, dateadded, source);
+            await updateMovieDate(options.imdb_id, dateadded, source, instance);
         } else {
-            await updateEpisodeDate(options.imdb_id, options.season, options.episode, dateadded, source);
+            await updateEpisodeDate(options.imdb_id, options.season, options.episode, dateadded, source, instance);
         }
         closeSmartFixModal();
     } catch (error) {
@@ -965,19 +969,21 @@ async function handleBulkUpdate(event) {
 }
 
 // Edit modal functions
-async function editMovie(imdbId, dateadded, source) {
+async function editMovie(imdbId, dateadded, source, instance) {
+    instance = instance || 'radarr';
     try {
         // Load movie options to populate available dates
-        const options = await apiCall(`/api/movies/${imdbId}/date-options`);
-        showEnhancedEditModal('movie', options, dateadded, source);
+        const options = await apiCall(`/api/movies/${imdbId}/date-options?instance=${encodeURIComponent(instance)}`);
+        showEnhancedEditModal('movie', options, dateadded, source, instance);
     } catch (error) {
         console.error('Failed to load movie options for edit:', error);
         // Fallback to basic edit modal
-        showBasicEditModal('movie', imdbId, dateadded, source);
+        showBasicEditModal('movie', imdbId, dateadded, source, null, null, instance);
     }
 }
 
-function showEnhancedEditModal(mediaType, options, currentDateadded, currentSource) {
+function showEnhancedEditModal(mediaType, options, currentDateadded, currentSource, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const modal = document.getElementById('edit-modal');
     const title = document.getElementById('modal-title');
     const modalBody = document.querySelector('#edit-modal .modal-body');
@@ -995,6 +1001,7 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
     let formHtml = `
         <input type="hidden" id="edit-imdb-id" value="${options.imdb_id}">
         <input type="hidden" id="edit-media-type" value="${mediaType}">
+        <input type="hidden" id="edit-instance" value="${instance}">
         ${mediaType === 'episode' ? `
             <input type="hidden" id="edit-season" value="${options.season}">
             <input type="hidden" id="edit-episode" value="${options.episode}">
@@ -1077,11 +1084,13 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
     modal.classList.add('active');
 }
 
-function showBasicEditModal(mediaType, imdbId, dateadded, source) {
+function showBasicEditModal(mediaType, imdbId, dateadded, source, season, episode, instance) {
     // Fallback to original basic edit modal
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     document.getElementById('modal-title').textContent = `Edit ${mediaType}: ${imdbId}`;
     document.getElementById('edit-imdb-id').value = imdbId;
     document.getElementById('edit-media-type').value = mediaType;
+    document.getElementById('edit-instance').value = instance;
     
     if (dateadded && dateadded !== '-') {
         try {
@@ -1135,11 +1144,12 @@ function updateEditDateFromOption(optionIndex, option) {
 
 async function handleEnhancedEditSubmit(event) {
     event.preventDefault();
-    
+
     const modal = document.getElementById('edit-modal');
     const options = JSON.parse(modal.dataset.options);
     const imdbId = options.imdb_id;
     const mediaType = document.getElementById('edit-media-type').value;
+    const instance = document.getElementById('edit-instance')?.value || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const dateadded = document.getElementById('edit-dateadded').value;
     const source = document.getElementById('edit-source').value;
     
@@ -1159,11 +1169,11 @@ async function handleEnhancedEditSubmit(event) {
     
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(imdbId, isoDateadded, source);
+            await updateMovieDate(imdbId, isoDateadded, source, instance);
         } else {
-            await updateEpisodeDate(imdbId, options.season, options.episode, isoDateadded, source);
+            await updateEpisodeDate(imdbId, options.season, options.episode, isoDateadded, source, instance);
         }
-        
+
         closeModal();
     } catch (error) {
         console.error('Enhanced edit failed:', error);
@@ -1171,22 +1181,23 @@ async function handleEnhancedEditSubmit(event) {
     }
 }
 
-async function editEpisode(imdbId, season, episode, dateadded, source) {
+async function editEpisode(imdbId, season, episode, dateadded, source, instance) {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('editEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
+    instance = instance || 'sonarr';
     try {
         // Load episode options to populate available dates
-        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options`);
-        showEnhancedEditModal('episode', options, dateadded, source);
+        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options?instance=${encodeURIComponent(instance)}`);
+        showEnhancedEditModal('episode', options, dateadded, source, instance);
     } catch (error) {
         console.error('Failed to load episode options for edit:', error);
         // Fallback to basic edit modal
-        showBasicEditModal('episode', imdbId, dateadded, source, season, episode);
+        showBasicEditModal('episode', imdbId, dateadded, source, season, episode, instance);
     }
 }
 
@@ -1196,24 +1207,25 @@ function closeModal() {
 
 async function handleEditSubmit(event) {
     event.preventDefault();
-    
+
     const imdbId = document.getElementById('edit-imdb-id').value;
     const mediaType = document.getElementById('edit-media-type').value;
+    const instance = document.getElementById('edit-instance')?.value || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const season = document.getElementById('edit-season').value;
     const episode = document.getElementById('edit-episode').value;
     const dateadded = document.getElementById('edit-dateadded').value;
     const source = document.getElementById('edit-source').value;
-    
+
     // Convert datetime-local to ISO string
     const isoDateadded = dateadded ? new Date(dateadded).toISOString() : null;
-    
+
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(imdbId, isoDateadded, source);
+            await updateMovieDate(imdbId, isoDateadded, source, instance);
         } else {
-            await updateEpisodeDate(imdbId, parseInt(season), parseInt(episode), isoDateadded, source);
+            await updateEpisodeDate(imdbId, parseInt(season), parseInt(episode), isoDateadded, source, instance);
         }
-        
+
         closeModal();
     } catch (error) {
         console.error('Update failed:', error);
@@ -1221,13 +1233,15 @@ async function handleEditSubmit(event) {
 }
 
 // Update functions
-async function updateMovieDate(imdbId, dateadded, source) {
+async function updateMovieDate(imdbId, dateadded, source, instance) {
+    instance = instance || 'radarr';
     try {
         const result = await apiCall(`/api/movies/${imdbId}`, {
             method: 'PUT',
             body: JSON.stringify({
                 dateadded: dateadded,
-                source: source
+                source: source,
+                instance: instance
             })
         });
         
@@ -1243,13 +1257,15 @@ async function updateMovieDate(imdbId, dateadded, source) {
     }
 }
 
-async function updateEpisodeDate(imdbId, season, episode, dateadded, source) {
+async function updateEpisodeDate(imdbId, season, episode, dateadded, source, instance) {
+    instance = instance || 'sonarr';
     try {
         const result = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}`, {
             method: 'PUT',
             body: JSON.stringify({
                 dateadded: dateadded,
-                source: source
+                source: source,
+                instance: instance
             })
         });
         
