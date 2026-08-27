@@ -89,7 +89,7 @@ docker-compose restart
 ### 4. Populate Database
 
 1. Open web interface: `http://your-server:8081`
-2. Click **Admin** tab
+2. Click **Tools** in the sidebar
 3. Click **Populate Database**
 4. Select **Movies** and/or **TV Shows**
 5. Click **Start Population**
