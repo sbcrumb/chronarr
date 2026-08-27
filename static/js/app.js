@@ -202,6 +202,11 @@ function updateDashboardStats() {
     document.getElementById('no-valid-source-total').textContent = `${moviesWithoutDates} movies, ${episodesWithoutDates} episodes without dates`;
     
     document.getElementById('recent-activity').textContent = dashboardData.recent_activity_count || 0;
+
+    const moviesSkipped = dashboardData.movies_skipped || 0;
+    const episodesSkipped = dashboardData.episodes_skipped || 0;
+    document.getElementById('skipped-total').textContent = dashboardData.total_skipped || (moviesSkipped + episodesSkipped);
+    document.getElementById('skipped-breakdown').textContent = `${moviesSkipped} movies, ${episodesSkipped} episodes`;
 }
 
 function updateDashboardCharts() {
