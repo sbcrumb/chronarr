@@ -4,93 +4,82 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chronarr - Database Management</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=2.0.15-library-sync">
+    <link rel="stylesheet" href="/static/css/styles.css?v=sidebar-nav">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
-    <div class="app-layout">
-
+    <div class="app-container">
         <!-- Sidebar -->
-        <aside class="sidebar" id="sidebar">
+        <aside class="sidebar">
             <div class="sidebar-brand">
-                <img src="/static/chronarr.jpg" alt="Chronarr">
-                <div class="sidebar-brand-text">
-                    <h1>Chronarr</h1>
-                    <small id="app-version">…</small>
-                </div>
+                <i class="fas fa-shield-alt"></i>
+                <span>Chronarr</span>
+            </div>
+
+            <div class="sidebar-auth" id="auth-status" style="display: none;">
+                <span class="auth-user">
+                    <i class="fas fa-user"></i> <span id="auth-username">Loading...</span>
+                </span>
+                <button class="auth-logout" id="logout-btn" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
             </div>
 
             <nav class="sidebar-nav">
-                <div class="nav-section">
-                    <button class="nav-item active" data-tab="dashboard">
-                        <i class="fas fa-tachometer-alt"></i> <span>Dashboard</span>
-                    </button>
-                </div>
+                <button class="sidebar-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
+                    <i class="fas fa-tachometer-alt"></i> Dashboard
+                </button>
 
-                <div class="nav-divider"></div>
+                <div class="nav-section-label">LIBRARY</div>
 
-                <div class="nav-section">
-                    <div class="nav-section-label">Library</div>
-                    <button class="nav-item" data-tab="movies">
-                        <i class="fas fa-film"></i> <span>Movies</span>
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('movies-sub', 'movies')">
+                        <span class="toggle-content">
+                            <i class="fas fa-film"></i> Movies
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
                     </button>
-                    <button class="nav-item" data-tab="tv">
-                        <i class="fas fa-tv"></i> <span>TV Series</span>
-                    </button>
-                    <button class="nav-item" data-tab="reports">
-                        <i class="fas fa-chart-bar"></i> <span>Reports</span>
-                    </button>
-                </div>
-
-                <div class="nav-divider"></div>
-
-                <div class="nav-section">
-                    <div class="nav-section-label">Automation</div>
-                    <button class="nav-item" data-tab="scheduled-scans">
-                        <i class="fas fa-clock"></i> <span>Scheduled Scans</span>
-                    </button>
-                    <button class="nav-item" data-tab="scheduled-cleanups">
-                        <i class="fas fa-broom"></i> <span>Scheduled Cleanups</span>
-                    </button>
-                </div>
-
-                <div class="nav-divider"></div>
-
-                <div class="nav-section">
-                    <button class="nav-item" data-tab="tools">
-                        <i class="fas fa-tools"></i> <span>Tools</span>
-                    </button>
-                </div>
-            </nav>
-
-            <div class="sidebar-footer">
-                <div class="auth-status" id="auth-status" style="display: none;">
-                    <div class="auth-user">
-                        <i class="fas fa-user"></i>
-                        <span id="auth-username">Loading...</span>
+                    <div class="sidebar-sub-items expanded" id="movies-sub">
+                        <button class="sidebar-sub-item active" id="sub-movies-all" onclick="selectMovieInstance('')">
+                            All Movies
+                        </button>
                     </div>
-                    <button class="auth-logout" id="logout-btn" onclick="logout()">
-                        <i class="fas fa-sign-out-alt"></i> Logout
-                    </button>
                 </div>
-            </div>
+
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('tv-sub', 'tv')">
+                        <span class="toggle-content">
+                            <i class="fas fa-tv"></i> TV Series
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
+                    </button>
+                    <div class="sidebar-sub-items expanded" id="tv-sub">
+                        <button class="sidebar-sub-item active" id="sub-tv-all" onclick="selectTvInstance('')">
+                            All Series
+                        </button>
+                    </div>
+                </div>
+
+                <button class="sidebar-item" data-tab="reports" onclick="switchTab('reports')">
+                    <i class="fas fa-chart-bar"></i> Reports
+                </button>
+
+                <div class="nav-section-label">AUTOMATION</div>
+
+                <button class="sidebar-item" data-tab="tools" onclick="switchTab('tools')">
+                    <i class="fas fa-tools"></i> Tools
+                </button>
+
+                <div class="sidebar-divider"></div>
+
+                <a href="/setup" class="sidebar-item">
+                    <i class="fas fa-plug"></i> Setup
+                </a>
+            </nav>
         </aside>
 
-        <!-- Mobile overlay -->
-        <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
-
-        <div class="main-wrapper">
-            <!-- Mobile header -->
-            <div class="mobile-header" id="mobile-header" style="display:none;">
-                <button class="mobile-menu-btn" onclick="openSidebar()">
-                    <i class="fas fa-bars"></i>
-                </button>
-                <span class="mobile-title">Chronarr</span>
-            </div>
-
-            <!-- Main Content -->
-            <main class="main-content">
+        <!-- Main Content -->
+        <main class="main-content">
             <!-- Dashboard Tab -->
             <div class="tab-content active" id="dashboard">
                 <div class="dashboard-grid">
@@ -104,7 +93,7 @@
                             <small id="movies-with-dates">- with dates</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon tv">
                             <i class="fas fa-tv"></i>
@@ -115,7 +104,7 @@
                             <small id="episodes-total">- episodes</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon missing">
                             <i class="fas fa-exclamation-triangle"></i>
@@ -126,7 +115,7 @@
                             <small id="no-valid-source-total">- no valid source</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon activity">
                             <i class="fas fa-history"></i>
@@ -135,17 +124,6 @@
                             <h3 id="recent-activity">-</h3>
                             <p>Recent Activity</p>
                             <small>Last 7 days</small>
-                        </div>
-                    </div>
-
-                    <div class="stat-card">
-                        <div class="stat-icon" style="background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);">
-                            <i class="fas fa-ban"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3 id="skipped-total">-</h3>
-                            <p>Skipped Items</p>
-                            <small id="skipped-breakdown">- movies, - episodes</small>
                         </div>
                     </div>
                 </div>
@@ -182,7 +160,6 @@
                                 <option value="">All Movies</option>
                                 <option value="true">With Dates</option>
                                 <option value="false">Missing Dates</option>
-                                <option value="skipped">Skipped</option>
                             </select>
                             <select id="movies-filter-source">
                                 <option value="">All Sources</option>
@@ -193,43 +170,30 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="table-container">
-                    <table class="data-table sortable-table" id="movies-table">
+                    <table class="data-table" id="movies-table">
                         <thead>
                             <tr>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 0, 'text')" style="cursor: pointer;">
-                                    Title <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 1, 'text')" style="cursor: pointer;">
-                                    IMDb ID <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 2, 'date')" style="cursor: pointer;">
-                                    Movie Released <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 3, 'date')" style="cursor: pointer;">
-                                    Date Added to Library <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 4, 'text')" style="cursor: pointer;">
-                                    Source <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 5, 'text')" style="cursor: pointer;">
-                                    Date Type <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('movies-tbody', 6, 'text')" style="cursor: pointer;">
-                                    Video File <i class="fas fa-sort"></i>
-                                </th>
+                                <th>Title</th>
+                                <th>IMDb ID</th>
+                                <th>Movie Released</th>
+                                <th>Date Added to Library</th>
+                                <th>Source</th>
+                                <th>Date Type</th>
+                                <th>Video File</th>
+                                <th id="movies-instance-col">Instance</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="movies-tbody">
                             <tr>
-                                <td colspan="8" class="loading">Loading movies...</td>
+                                <td colspan="9" class="loading">Loading movies...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                
+
                 <div class="pagination" id="movies-pagination"></div>
             </div>
 
@@ -254,7 +218,6 @@
                                 <option value="complete">Fully Dated</option>
                                 <option value="incomplete">Missing Dates</option>
                                 <option value="none">No Dates</option>
-                                <option value="skipped">Skipped</option>
                             </select>
                             <select id="series-filter-source">
                                 <option value="">All Sources</option>
@@ -265,40 +228,28 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="table-container">
-                    <table class="data-table sortable-table" id="series-table">
+                    <table class="data-table" id="series-table">
                         <thead>
                             <tr>
-                                <th class="sortable" onclick="sortTable('series-tbody', 0, 'text')" style="cursor: pointer;">
-                                    Series Title <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('series-tbody', 1, 'text')" style="cursor: pointer;">
-                                    IMDb ID <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('series-tbody', 2, 'number')" style="cursor: pointer;">
-                                    Episodes <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('series-tbody', 3, 'number')" style="cursor: pointer;">
-                                    With Dates <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('series-tbody', 4, 'number')" style="cursor: pointer;">
-                                    With Video <i class="fas fa-sort"></i>
-                                </th>
-                                <th class="sortable" onclick="sortTable('series-tbody', 5, 'number')" style="cursor: pointer;">
-                                    Skipped <i class="fas fa-sort"></i>
-                                </th>
+                                <th>Series Title</th>
+                                <th>IMDb ID</th>
+                                <th>Episodes</th>
+                                <th>With Dates</th>
+                                <th>With Video</th>
+                                <th id="series-instance-col">Instance</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="series-tbody">
                             <tr>
-                                <td colspan="6" class="loading">Loading series...</td>
+                                <td colspan="7" class="loading">Loading series...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                
+
                 <div class="pagination" id="series-pagination"></div>
             </div>
 
@@ -370,122 +321,6 @@
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Scheduled Scans Tab -->
-            <div class="tab-content" id="scheduled-scans">
-                <div class="content-header">
-                    <h2><i class="fas fa-clock"></i> Scheduled Scans</h2>
-                    <button class="btn btn-primary" id="add-schedule-btn">
-                        <i class="fas fa-plus"></i> Add Schedule
-                    </button>
-                </div>
-
-                <!-- Active Schedules Section -->
-                <div class="section-card">
-                    <h3><i class="fas fa-list"></i> Active Schedules</h3>
-                    <div class="table-container">
-                        <table class="data-table" id="schedules-table">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Mode</th>
-                                    <th>Schedule</th>
-                                    <th>Last Run</th>
-                                    <th>Next Run</th>
-                                    <th>Status</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="schedules-table-body">
-                                <!-- Schedules will be loaded here -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Execution History Section -->
-                <div class="section-card">
-                    <h3><i class="fas fa-history"></i> Recent Executions</h3>
-                    <div class="table-container">
-                        <table class="data-table" id="executions-table">
-                            <thead>
-                                <tr>
-                                    <th>Schedule</th>
-                                    <th>Started</th>
-                                    <th>Duration</th>
-                                    <th>Status</th>
-                                    <th>Items Processed</th>
-                                    <th>Items Skipped</th>
-                                    <th>Items Failed</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="executions-table-body">
-                                <!-- Executions will be loaded here -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Scheduled Cleanups Tab -->
-            <div class="tab-content" id="scheduled-cleanups">
-                <div class="content-header">
-                    <h2><i class="fas fa-broom"></i> Scheduled Cleanups</h2>
-                    <button class="btn btn-primary" id="add-cleanup-btn">
-                        <i class="fas fa-plus"></i> Add Cleanup Schedule
-                    </button>
-                </div>
-
-                <!-- Active Cleanup Schedules Section -->
-                <div class="section-card">
-                    <h3><i class="fas fa-list"></i> Active Cleanup Schedules</h3>
-                    <div class="table-container">
-                        <table class="data-table" id="cleanups-table">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Validation</th>
-                                    <th>Schedule</th>
-                                    <th>Last Run</th>
-                                    <th>Next Run</th>
-                                    <th>Items Removed</th>
-                                    <th>Status</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="cleanups-table-body">
-                                <!-- Cleanup schedules will be loaded here -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Cleanup Execution History Section -->
-                <div class="section-card">
-                    <h3><i class="fas fa-history"></i> Recent Cleanup Executions</h3>
-                    <div class="table-container">
-                        <table class="data-table" id="cleanup-executions-table">
-                            <thead>
-                                <tr>
-                                    <th>Schedule</th>
-                                    <th>Started</th>
-                                    <th>Duration</th>
-                                    <th>Status</th>
-                                    <th>Movies Removed</th>
-                                    <th>Series Removed</th>
-                                    <th>Episodes Removed</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="cleanup-executions-table-body">
-                                <!-- Cleanup executions will be loaded here -->
-                            </tbody>
-                        </table>
                     </div>
                 </div>
             </div>
@@ -576,113 +411,6 @@
                     </div>
 
                     <div class="tool-card">
-                        <h3><i class="fas fa-broom"></i> Orphaned Record Cleanup</h3>
-                        <p>Remove database entries for media deleted from Radarr/Sonarr</p>
-                        <form id="manual-cleanup-form">
-                            <div class="form-group">
-                                <label>Media Types:</label>
-                                <div class="checkbox-group">
-                                    <label>
-                                        <input type="checkbox" id="cleanup-movies" checked>
-                                        <span>Check Movies</span>
-                                    </label>
-                                    <label>
-                                        <input type="checkbox" id="cleanup-series" checked>
-                                        <span>Check TV Series</span>
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="form-group">
-                                <label>Validation Methods:</label>
-                                <div class="checkbox-group">
-                                    <label>
-                                        <input type="checkbox" id="cleanup-filesystem" checked>
-                                        <span>Verify Filesystem</span>
-                                    </label>
-                                    <label>
-                                        <input type="checkbox" id="cleanup-database" checked>
-                                        <span>Verify Radarr/Sonarr DB</span>
-                                    </label>
-                                </div>
-                                <small><i class="fas fa-info-circle"></i> Records removed only if missing from BOTH</small>
-                            </div>
-                            <div class="form-group">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="cleanup-dry-run" checked>
-                                    <span><strong>Dry Run</strong> (Preview only, no changes)</span>
-                                </label>
-                            </div>
-                            <button type="submit" class="btn btn-warning">
-                                <i class="fas fa-broom"></i> Run Cleanup
-                            </button>
-                        </form>
-                        <div id="cleanup-status" class="scan-status" style="display: none;">
-                            <div class="cleanup-results" id="cleanup-results">
-                                <p>Running cleanup...</p>
-                            </div>
-                            <button class="btn btn-secondary btn-sm" onclick="hideCleanupStatus()">
-                                <i class="fas fa-times"></i> Hide Results
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="tool-card">
-                        <h3><i class="fas fa-sync-alt"></i> Radarr/Sonarr Library Sync</h3>
-                        <p>Find movies and series in Chronarr that were removed from Radarr/Sonarr.</p>
-                        <form id="library-sync-form">
-                            <div class="form-group">
-                                <label>Media Type:</label>
-                                <select id="sync-media-type">
-                                    <option value="both">Movies &amp; TV</option>
-                                    <option value="movies">Movies only</option>
-                                    <option value="tv">TV only</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="sync-dry-run" checked>
-                                    <span><strong>Dry Run</strong> (preview only, no changes)</span>
-                                </label>
-                            </div>
-                            <div class="form-group" id="sync-immediate-group" style="display:none">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="sync-remove-immediately">
-                                    <span>Remove immediately (skip grace period)</span>
-                                </label>
-                            </div>
-                            <button type="submit" class="btn btn-warning">
-                                <i class="fas fa-sync-alt"></i> Run Sync Check
-                            </button>
-                        </form>
-                        <div id="sync-status" class="scan-status" style="display:none">
-                            <div id="sync-results"></div>
-                            <button class="btn btn-secondary btn-sm" onclick="hideSyncStatus()">
-                                <i class="fas fa-times"></i> Hide Results
-                            </button>
-                        </div>
-
-                        <hr style="margin:1.25rem 0;border:none;border-top:1px solid var(--border-color,#e2e8f0)">
-                        <h4 style="margin-bottom:0.5rem"><i class="fas fa-clock"></i> Auto-Purge Settings</h4>
-                        <p style="font-size:0.85em;color:var(--text-muted,#718096);margin-bottom:0.75rem">
-                            Items missing from Radarr/Sonarr for longer than the configured days will be automatically removed. Set to <strong>0</strong> to disable.
-                        </p>
-                        <div class="form-group" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
-                            <label style="flex:1;min-width:160px">
-                                <span style="font-size:0.85em;display:block;margin-bottom:0.25rem">Movies — purge after (days)</span>
-                                <input type="number" id="sync-purge-movies-days" min="0" max="3650" value="0" style="width:100%">
-                            </label>
-                            <label style="flex:1;min-width:160px">
-                                <span style="font-size:0.85em;display:block;margin-bottom:0.25rem">TV Series — purge after (days)</span>
-                                <input type="number" id="sync-purge-tv-days" min="0" max="3650" value="0" style="width:100%">
-                            </label>
-                            <button type="button" class="btn btn-secondary" onclick="saveSyncSettings()" style="flex-shrink:0">
-                                <i class="fas fa-save"></i> Save
-                            </button>
-                        </div>
-                        <p id="sync-settings-status" style="font-size:0.8em;margin-top:0.4rem;min-height:1.2em"></p>
-                    </div>
-
-                    <div class="tool-card">
                         <h3><i class="fas fa-database"></i> Database Statistics</h3>
                         <p>View detailed database information</p>
                         <div class="stats-display" id="detailed-stats">
@@ -727,9 +455,8 @@
                     </div>
                 </div>
             </div>
-            </main>
-        </div><!-- /.main-wrapper -->
-    </div><!-- /.app-layout -->
+        </main>
+    </div>
 
     <!-- Smart Fix Modal -->
     <div class="modal" id="smart-fix-modal">
@@ -762,13 +489,14 @@
                     <input type="hidden" id="edit-season">
                     <input type="hidden" id="edit-episode">
                     <input type="hidden" id="edit-media-type">
-                    
+                    <input type="hidden" id="edit-instance">
+
                     <div class="form-group">
                         <label for="edit-dateadded">Date Added:</label>
                         <input type="datetime-local" id="edit-dateadded">
                         <small>Leave empty to clear date</small>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="edit-source">Source:</label>
                         <select id="edit-source" required>
@@ -780,7 +508,7 @@
                             <option value="no_valid_date_source">No Valid Source</option>
                         </select>
                     </div>
-                    
+
                     <div class="form-actions">
                         <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                         <button type="submit" class="btn btn-primary">Save Changes</button>
@@ -790,252 +518,9 @@
         </div>
     </div>
 
-    <!-- Schedule Modal -->
-    <div class="modal" id="schedule-modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="schedule-modal-title">Add New Schedule</h3>
-                <button class="modal-close" onclick="closeScheduleModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <form id="schedule-form">
-                    <input type="hidden" id="schedule-id">
-                    
-                    <div class="form-group">
-                        <label for="schedule-name">Schedule Name:</label>
-                        <input type="text" id="schedule-name" required placeholder="e.g., Daily TV Incomplete Scan">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="schedule-description">Description:</label>
-                        <textarea id="schedule-description" placeholder="Optional description of what this schedule does"></textarea>
-                    </div>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="schedule-media-type">Media Type:</label>
-                            <select id="schedule-media-type" required>
-                                <option value="both">Both TV Shows & Movies</option>
-                                <option value="tv">TV Shows Only</option>
-                                <option value="movies">Movies Only</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="schedule-scan-mode">Scan Mode:</label>
-                            <select id="schedule-scan-mode" required>
-                                <option value="smart">Smart (Recommended)</option>
-                                <option value="incomplete">Incomplete Only</option>
-                                <option value="full">Full Scan</option>
-                                <option value="populate">Populate Database (from Radarr/Sonarr)</option>
-                            </select>
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="schedule-cron">Schedule (Cron Expression):</label>
-                        <div class="cron-input-container">
-                            <input type="text" id="schedule-cron" required placeholder="0 2 * * *" pattern="^(\*|[0-5]?\d|\*\/[0-9]+)(\s+(\*|[0-5]?\d|\*\/[0-9]+)){4}$">
-                            <button type="button" class="btn btn-secondary btn-sm" id="cron-builder-btn">
-                                <i class="fas fa-magic"></i> Builder
-                            </button>
-                        </div>
-                        <small class="help-text">
-                            Examples: "0 2 * * *" (daily at 2 AM), "0 2 * * 0" (weekly on Sunday at 2 AM)
-                        </small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="schedule-paths">Specific Paths (Optional):</label>
-                        <textarea id="schedule-paths" placeholder="Leave empty to scan entire library, or specify paths separated by commas"></textarea>
-                        <small class="help-text">
-                            Example: /media/TV/Series Name, /media/Movies/Movie Name
-                        </small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="schedule-enabled" checked>
-                            <span class="checkmark"></span>
-                            Enable this schedule
-                        </label>
-                    </div>
-                    
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-secondary" onclick="closeScheduleModal()">Cancel</button>
-                        <button type="submit" class="btn btn-primary">
-                            <span id="schedule-submit-text">Create Schedule</span>
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- Cleanup Schedule Modal -->
-    <div class="modal" id="cleanup-modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="cleanup-modal-title">Add New Cleanup Schedule</h3>
-                <button class="modal-close" onclick="closeCleanupModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <form id="cleanup-form">
-                    <input type="hidden" id="cleanup-id">
-
-                    <div class="form-group">
-                        <label for="cleanup-name">Schedule Name:</label>
-                        <input type="text" id="cleanup-name" required placeholder="e.g., Daily Orphaned Record Cleanup">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="cleanup-description">Description:</label>
-                        <textarea id="cleanup-description" placeholder="Optional description of what this cleanup does"></textarea>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Validation Methods:</label>
-                        <div style="margin-top: 10px;">
-                            <label style="display: block; margin-bottom: 8px;">
-                                <input type="checkbox" id="cleanup-check-movies" checked>
-                                <span style="margin-left: 8px;">Check Movies</span>
-                            </label>
-                            <label style="display: block; margin-bottom: 8px;">
-                                <input type="checkbox" id="cleanup-check-series" checked>
-                                <span style="margin-left: 8px;">Check TV Series</span>
-                            </label>
-                            <label style="display: block; margin-bottom: 8px;">
-                                <input type="checkbox" id="cleanup-check-filesystem" checked>
-                                <span style="margin-left: 8px;">Verify Filesystem (files/folders exist)</span>
-                            </label>
-                            <label style="display: block; margin-bottom: 8px;">
-                                <input type="checkbox" id="cleanup-check-database" checked>
-                                <span style="margin-left: 8px;">Verify Database (exists in Radarr/Sonarr)</span>
-                            </label>
-                        </div>
-                        <small style="color: #888; display: block; margin-top: 8px;">
-                            <i class="fas fa-info-circle"></i> Records are only removed if they fail BOTH filesystem and database checks (hybrid approach)
-                        </small>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="cleanup-cron">Cron Expression:</label>
-                        <div style="display: flex; gap: 10px;">
-                            <input type="text" id="cleanup-cron" required placeholder="0 3 * * *" style="flex: 1;">
-                            <button type="button" class="btn btn-secondary" onclick="openCleanupCronBuilder()">
-                                <i class="fas fa-calendar-alt"></i> Builder
-                            </button>
-                        </div>
-                        <small style="color: #888; display: block; margin-top: 5px;">
-                            Examples: <code>0 3 * * *</code> (Daily 3 AM), <code>0 */6 * * *</code> (Every 6 hours)
-                        </small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="cleanup-enabled" checked>
-                            <span style="margin-left: 8px;">Enabled</span>
-                        </label>
-                    </div>
-
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-secondary" onclick="closeCleanupModal()">Cancel</button>
-                        <button type="submit" class="btn btn-primary">
-                            <span id="cleanup-submit-text">Create Cleanup Schedule</span>
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- Cron Builder Modal -->
-    <div class="modal" id="cron-builder-modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Cron Expression Builder</h3>
-                <button class="modal-close" onclick="closeCronBuilder()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="cron-builder">
-                    <div class="cron-presets">
-                        <h4>Quick Presets:</h4>
-                        <div class="preset-buttons">
-                            <button type="button" class="btn btn-outline" onclick="setCronPreset('0 2 * * *')">Daily at 2 AM</button>
-                            <button type="button" class="btn btn-outline" onclick="setCronPreset('0 2 * * 0')">Weekly (Sunday 2 AM)</button>
-                            <button type="button" class="btn btn-outline" onclick="setCronPreset('0 2 1 * *')">Monthly (1st at 2 AM)</button>
-                            <button type="button" class="btn btn-outline" onclick="setCronPreset('0 */6 * * *')">Every 6 Hours</button>
-                            <button type="button" class="btn btn-outline" onclick="setCronPreset('0 */12 * * *')">Every 12 Hours</button>
-                        </div>
-                    </div>
-                    
-                    <div class="cron-fields">
-                        <h4>Custom Schedule:</h4>
-                        <div class="field-group">
-                            <label>Minute (0-59):</label>
-                            <input type="text" id="cron-minute" value="0" placeholder="0">
-                        </div>
-                        <div class="field-group">
-                            <label>Hour (0-23):</label>
-                            <input type="text" id="cron-hour" value="2" placeholder="2">
-                        </div>
-                        <div class="field-group">
-                            <label>Day of Month (1-31):</label>
-                            <input type="text" id="cron-day" value="*" placeholder="*">
-                        </div>
-                        <div class="field-group">
-                            <label>Month (1-12):</label>
-                            <input type="text" id="cron-month" value="*" placeholder="*">
-                        </div>
-                        <div class="field-group">
-                            <label>Day of Week (0-6):</label>
-                            <input type="text" id="cron-dow" value="*" placeholder="*">
-                        </div>
-                    </div>
-                    
-                    <div class="cron-preview">
-                        <h4>Preview:</h4>
-                        <div class="cron-expression">
-                            <code id="cron-preview-text">0 2 * * *</code>
-                        </div>
-                        <div class="cron-description" id="cron-description">
-                            Runs daily at 2:00 AM
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="form-actions">
-                    <button type="button" class="btn btn-secondary" onclick="closeCronBuilder()">Cancel</button>
-                    <button type="button" class="btn btn-primary" onclick="applyCronExpression()">Use This Schedule</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=2.0.15-library-sync"></script>
-    <script src="/static/js/cleanup-schedule.js?v=2.0.15-library-sync"></script>
-    <script>
-        // Mobile sidebar toggle
-        function openSidebar() {
-            document.getElementById('sidebar').classList.add('open');
-            document.getElementById('sidebar-overlay').classList.add('active');
-        }
-        function closeSidebar() {
-            document.getElementById('sidebar').classList.remove('open');
-            document.getElementById('sidebar-overlay').classList.remove('active');
-        }
-        // Show mobile header on small screens
-        if (window.innerWidth <= 768) {
-            document.getElementById('mobile-header').style.display = 'flex';
-        }
-        window.addEventListener('resize', () => {
-            const mh = document.getElementById('mobile-header');
-            mh.style.display = window.innerWidth <= 768 ? 'flex' : 'none';
-            if (window.innerWidth > 768) closeSidebar();
-        });
-    </script>
+    <script src="/static/js/app.js?v=sidebar-nav"></script>
 </body>
 </html>
