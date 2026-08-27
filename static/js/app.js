@@ -5,58 +5,118 @@ let currentTab = 'dashboard';
 let currentMoviesPage = 1;
 let currentSeriesPage = 1;
 let dashboardData = null;
+let currentMovieInstance = '';
+let currentTvInstance = '';
+
+// Instance badge color palette — assigned in order as instances are discovered
+const instanceColorMap = {};
+const instanceColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
+let instanceColorIndex = 0;
+
+function getInstanceColor(name) {
+    if (!name) return '#6b7280';
+    if (!instanceColorMap[name]) {
+        instanceColorMap[name] = instanceColors[instanceColorIndex++ % instanceColors.length];
+    }
+    return instanceColorMap[name];
+}
+
+function instanceBadge(name) {
+    if (!name) return '<span class="text-muted">-</span>';
+    const c = getInstanceColor(name);
+    return `<span class="instance-badge" style="background:${c}1a;color:${c};border-color:${c}40">${escapeHtml(name)}</span>`;
+}
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
-    initializeTabs();
     initializeEventListeners();
-    checkAuthStatus();  // Check authentication status on page load
+    checkAuthStatus();
     loadDashboard();
     loadSeriesSources();
-    loadInstanceDropdowns();
+    buildSidebarInstances();
 });
 
 // Tab management
-function initializeTabs() {
-    const tabButtons = document.querySelectorAll('.nav-tab');
-    const tabContents = document.querySelectorAll('.tab-content');
-    
-    tabButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            const tabName = this.dataset.tab;
-            switchTab(tabName);
-        });
-    });
-}
-
 function switchTab(tabName) {
-    // Update button states
-    document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-    
+    // Update sidebar item active states
+    document.querySelectorAll('.sidebar-item[data-tab]').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = document.querySelector(`.sidebar-item[data-tab="${tabName}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+
     // Update content
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     document.getElementById(tabName).classList.add('active');
-    
+
     currentTab = tabName;
-    
-    // Load tab-specific data
+
     switch(tabName) {
-        case 'dashboard':
-            loadDashboard();
-            break;
-        case 'movies':
-            loadMovies();
-            break;
-        case 'tv':
-            loadSeries();
-            break;
-        case 'reports':
-            loadReport();
-            break;
-        case 'tools':
-            loadDetailedStats();
-            break;
+        case 'dashboard': loadDashboard(); break;
+        case 'movies': loadMovies(); break;
+        case 'tv': loadSeries(); break;
+        case 'reports': loadReport(); break;
+        case 'tools': loadDetailedStats(); break;
+    }
+}
+
+// Sidebar instance navigation
+function toggleSidebarGroup(subId, tabName) {
+    const sub = document.getElementById(subId);
+    const isExpanded = sub.classList.toggle('expanded');
+    const toggle = sub.closest('.sidebar-group').querySelector('.sidebar-group-toggle');
+    toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+    if (tabName) switchTab(tabName);
+}
+
+function selectMovieInstance(name) {
+    currentMovieInstance = name;
+    currentMoviesPage = 1;
+    document.querySelectorAll('#movies-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(name ? `sub-movies-${name}` : 'sub-movies-all');
+    if (target) target.classList.add('active');
+    switchTab('movies');
+}
+
+function selectTvInstance(name) {
+    currentTvInstance = name;
+    currentSeriesPage = 1;
+    document.querySelectorAll('#tv-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(name ? `sub-tv-${name}` : 'sub-tv-all');
+    if (target) target.classList.add('active');
+    switchTab('tv');
+}
+
+async function buildSidebarInstances() {
+    try {
+        const data = await apiCall('/api/instances');
+        const radarrNames = (data.radarr || []).map(i => i.name);
+        const sonarrNames = (data.sonarr || []).map(i => i.name);
+
+        // Pre-assign colors so badges match sidebar dots
+        [...radarrNames, ...sonarrNames].forEach(n => getInstanceColor(n));
+
+        const moviesSub = document.getElementById('movies-sub');
+        radarrNames.forEach(name => {
+            const color = getInstanceColor(name);
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-sub-item';
+            btn.id = `sub-movies-${name}`;
+            btn.onclick = () => selectMovieInstance(name);
+            btn.innerHTML = `<span class="instance-dot" style="background:${color}"></span>${escapeHtml(name)}`;
+            moviesSub.appendChild(btn);
+        });
+
+        const tvSub = document.getElementById('tv-sub');
+        sonarrNames.forEach(name => {
+            const color = getInstanceColor(name);
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-sub-item';
+            btn.id = `sub-tv-${name}`;
+            btn.onclick = () => selectTvInstance(name);
+            btn.innerHTML = `<span class="instance-dot" style="background:${color}"></span>${escapeHtml(name)}`;
+            tvSub.appendChild(btn);
+        });
+    } catch (error) {
+        console.error('Failed to build sidebar instances:', error);
     }
 }
 
@@ -71,10 +131,8 @@ function initializeEventListeners() {
     // Filter dropdowns
     document.getElementById('movies-filter-date').addEventListener('change', loadMovies);
     document.getElementById('movies-filter-source').addEventListener('change', loadMovies);
-    document.getElementById('movies-filter-instance').addEventListener('change', loadMovies);
     document.getElementById('series-filter-date').addEventListener('change', loadSeries);
     document.getElementById('series-filter-source').addEventListener('change', loadSeries);
-    document.getElementById('series-filter-instance').addEventListener('change', loadSeries);
     
     // Forms
     document.getElementById('edit-form').addEventListener('submit', handleEditSubmit);
@@ -201,7 +259,7 @@ async function loadMovies(page = 1) {
     const imdbSearch = document.getElementById('movies-imdb-search').value;
     const hasDate = document.getElementById('movies-filter-date').value;
     const sourceFilter = document.getElementById('movies-filter-source').value;
-    const instanceFilter = document.getElementById('movies-filter-instance').value;
+    const instanceFilter = currentMovieInstance;
 
     const skip = (page - 1) * 100;
     console.log(`DEBUG: loadMovies called with page=${page}, calculated skip=${skip}`);
@@ -232,7 +290,7 @@ function updateMoviesTable(data) {
     const tbody = document.getElementById('movies-tbody');
     
     if (!data.movies || data.movies.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center">No movies found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center">No movies found</td></tr>';
         return;
     }
     
@@ -281,9 +339,6 @@ function updateMoviesTable(data) {
             dateTypeBadge = 'badge-warning';
         }
         
-        const instanceColStyle = document.getElementById('movies-instance-col') &&
-            document.getElementById('movies-instance-col').style.display !== 'none'
-            ? '' : 'display:none';
         return `
             <tr>
                 <td>${escapeHtml(movie.title)}</td>
@@ -293,7 +348,7 @@ function updateMoviesTable(data) {
                 <td><span class="badge badge-secondary">${movie.source_description || movie.source || 'Unknown'}</span></td>
                 <td><span class="badge ${dateTypeBadge}">${dateType}</span></td>
                 <td>${hasVideoBadge}</td>
-                <td style="${instanceColStyle}"><code>${movie.instance || '-'}</code></td>
+                <td>${instanceBadge(movie.instance)}</td>
                 <td>
                     <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-edit"></i> Edit
@@ -369,37 +424,6 @@ async function loadSeriesSources() {
     }
 }
 
-async function loadInstanceDropdowns() {
-    try {
-        const data = await apiCall('/api/instances');
-        const instances = [...(data.radarr || []), ...(data.sonarr || [])];
-        if (instances.length <= 1) return; // no dropdown needed when only one instance
-
-        const movieSel = document.getElementById('movies-filter-instance');
-        const seriesSel = document.getElementById('series-filter-instance');
-
-        const radarrNames = (data.radarr || []).map(i => i.name);
-        const sonarrNames = (data.sonarr || []).map(i => i.name);
-
-        movieSel.innerHTML = '<option value="">All Instances</option>';
-        radarrNames.forEach(n => {
-            movieSel.innerHTML += `<option value="${n}">${n}</option>`;
-        });
-
-        seriesSel.innerHTML = '<option value="">All Instances</option>';
-        sonarrNames.forEach(n => {
-            seriesSel.innerHTML += `<option value="${n}">${n}</option>`;
-        });
-
-        // Show Instance column header when multiple instances are available
-        const moviesColHeader = document.getElementById('movies-instance-col');
-        const seriesColHeader = document.getElementById('series-instance-col');
-        if (moviesColHeader) moviesColHeader.style.display = '';
-        if (seriesColHeader) seriesColHeader.style.display = '';
-    } catch (error) {
-        console.error('Failed to load instance list:', error);
-    }
-}
 
 function refreshMovies() {
     loadMovies(isNaN(currentMoviesPage) ? 1 : currentMoviesPage);
@@ -416,7 +440,7 @@ async function loadSeries(page = 1) {
     const imdbSearch = document.getElementById('series-imdb-search').value;
     const dateFilter = document.getElementById('series-filter-date').value;
     const sourceFilter = document.getElementById('series-filter-source').value;
-    const instanceFilter = document.getElementById('series-filter-instance').value;
+    const instanceFilter = currentTvInstance;
 
     const skip = (page - 1) * 50;
     console.log(`DEBUG: loadSeries called with page=${page}, calculated skip=${skip}`);
@@ -446,18 +470,13 @@ function updateSeriesTable(data) {
     const tbody = document.getElementById('series-tbody');
     
     if (!data.series || data.series.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center">No series found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center">No series found</td></tr>';
         return;
     }
-    
-    const showSeriesInstance = document.getElementById('series-instance-col') &&
-        document.getElementById('series-instance-col').style.display !== 'none';
 
     tbody.innerHTML = data.series.map(series => {
         const progressPercent = series.total_episodes > 0 ?
             ((series.episodes_with_dates / series.total_episodes) * 100).toFixed(1) : 0;
-        const instanceCell = showSeriesInstance
-            ? `<td><code>${series.instance || '-'}</code></td>` : '<td style="display:none"></td>';
 
         return `
             <tr>
@@ -469,7 +488,7 @@ function updateSeriesTable(data) {
                     <small class="text-muted">(${progressPercent}%)</small>
                 </td>
                 <td>${series.episodes_with_video}</td>
-                ${instanceCell}
+                <td>${instanceBadge(series.instance)}</td>
                 <td>
                     <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
                         <i class="fas fa-list"></i> Episodes
