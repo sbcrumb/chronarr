@@ -119,7 +119,10 @@ class ChronarrConfig:
         
         # External connections
         self._load_external_connections()
-        
+
+        # Warn if any discovered instance has no paths at all
+        self._warn_missing_instance_paths()
+
         # Movie processing
         self._load_movie_settings()
         
@@ -130,39 +133,21 @@ class ChronarrConfig:
         self._load_auth_settings()
     
     def _load_paths(self) -> None:
-        """Load and validate path configuration"""
-        tv_paths_env = os.environ.get("TV_PATHS", "")
+        """Load global path fallbacks.
+
+        MOVIE_PATHS and TV_PATHS are optional global fallbacks used when an
+        instance does not define its own per-instance paths variable
+        (RADARR_{NAME}_MOVIE_PATHS / SONARR_{NAME}_TV_PATHS).
+
+        For single-instance setups these remain the simplest approach.
+        For multi-instance setups, define paths per-instance so each block
+        is fully self-contained and there is no risk of one definition
+        silently overriding another (Docker env_file last-definition-wins).
+        """
         movie_paths_env = os.environ.get("MOVIE_PATHS", "")
-        
-        if not tv_paths_env:
-            raise ConfigurationError(
-                setting="TV_PATHS",
-                reason="TV_PATHS environment variable is required but not set"
-            )
-        
-        if not movie_paths_env:
-            raise ConfigurationError(
-                setting="MOVIE_PATHS", 
-                reason="MOVIE_PATHS environment variable is required but not set"
-            )
-            
-        # Parse paths
-        self.tv_paths = [Path(p.strip()) for p in tv_paths_env.split(",") if p.strip()]
+        tv_paths_env = os.environ.get("TV_PATHS", "")
         self.movie_paths = [Path(p.strip()) for p in movie_paths_env.split(",") if p.strip()]
-        
-        if not self.tv_paths:
-            raise ConfigurationError(
-                setting="TV_PATHS",
-                reason="No valid TV paths found after parsing",
-                current_value=tv_paths_env
-            )
-        
-        if not self.movie_paths:
-            raise ConfigurationError(
-                setting="MOVIE_PATHS",
-                reason="No valid movie paths found after parsing", 
-                current_value=movie_paths_env
-            )
+        self.tv_paths = [Path(p.strip()) for p in tv_paths_env.split(",") if p.strip()]
     
     def _load_server_settings(self) -> None:
         """Load server configuration"""
@@ -334,6 +319,39 @@ class ChronarrConfig:
                 instances.append(self._load_sonarr_instance(name_segment, url))
 
         return instances
+
+    def _warn_missing_instance_paths(self) -> None:
+        """Warn at startup if any configured instance has no paths.
+
+        An instance with empty movie_paths / tv_paths cannot match file
+        paths to media items — date assignment from the DB will still work,
+        but any path-based lookup will silently find nothing.
+
+        Each instance should define its own paths variable:
+          RADARR_{NAME}_MOVIE_PATHS  (or RADARR_MOVIE_PATHS for the default)
+          SONARR_{NAME}_TV_PATHS     (or SONARR_TV_PATHS for the default)
+
+        MOVIE_PATHS / TV_PATHS act as a global fallback when no per-instance
+        variable is set.
+        """
+        for inst in self.radarr_instances:
+            if not inst.movie_paths:
+                logger.warning(
+                    "Radarr instance '%s' has no movie paths configured. "
+                    "Set %s_MOVIE_PATHS in your .env (or MOVIE_PATHS as a "
+                    "global fallback). Path matching will not work for this instance.",
+                    inst.name,
+                    inst.name.upper(),
+                )
+        for inst in self.sonarr_instances:
+            if not inst.tv_paths:
+                logger.warning(
+                    "Sonarr instance '%s' has no TV paths configured. "
+                    "Set %s_TV_PATHS in your .env (or TV_PATHS as a "
+                    "global fallback). Path matching will not work for this instance.",
+                    inst.name,
+                    inst.name.upper(),
+                )
 
     def _load_movie_settings(self) -> None:
         """Load movie processing settings"""

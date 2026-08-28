@@ -67,12 +67,28 @@ services:
       - chronarr_logs:/app/data/logs
       # Optional: Radarr SQLite database (read-only access)
       # Required if using RADARR_DB_TYPE=sqlite in config
-      # - /path/to/radarr/config:/radarr-config:ro
-      # Then set RADARR_DB_PATH=/radarr-config/radarr.db in .env
+      # - /path/to/radarr/config:/radarr-data:ro
+      # Then set RADARR_DB_PATH=/radarr-data/radarr.db in .env
+      #
+      # Additional Radarr instances — one mount per instance:
+      # - /path/to/radarr-4k/config:/radarr-4k-data:ro
+      # Then set RADARR_4K_DB_PATH=/radarr-4k-data/radarr.db in .env
+      #
+      # Media paths — one mount per instance if libraries differ:
+      # - /path/to/movies:/media/movies:ro
+      # - /path/to/movies-4k:/media/movies-4k:ro
+      # Then set RADARR_MOVIE_PATHS=/media/movies and
+      #          RADARR_4K_MOVIE_PATHS=/media/movies-4k in .env
+      #
       # Optional: Sonarr SQLite database (read-only access)
       # Required if using SONARR_DB_TYPE=sqlite in config
-      # - /path/to/sonarr/config:/sonarr-config:ro
-      # Then set SONARR_DB_PATH=/sonarr-config/sonarr.db in .env
+      # - /path/to/sonarr/config:/sonarr-data:ro
+      # Then set SONARR_DB_PATH=/sonarr-data/sonarr.db in .env
+      #
+      # Additional Sonarr instances:
+      # - /path/to/sonarr-anime/config:/sonarr-anime-data:ro
+      # Then set SONARR_ANIME_DB_PATH=/sonarr-anime-data/sonarr.db in .env
+      #
       # Optional: Emby plugin deployment
       # - /path/to/emby/plugins:/emby-plugins
     ports:
@@ -176,20 +192,25 @@ networks:
 #
 # SQLite Database Access (for Radarr/Sonarr):
 # - If using SQLite databases, you MUST mount them read-only
-# - Radarr example:
-#   1. Uncomment: - /path/to/radarr/config:/radarr-config:ro
-#   2. Update path to your Radarr config directory
-#   3. In ./config/.env set: RADARR_DB_TYPE=sqlite
-#   4. In ./config/.env set: RADARR_DB_PATH=/radarr-config/radarr.db
+# - Each instance needs its own volume mount and its own DB_PATH variable
+# - Radarr (default instance) example:
+#   1. Add volume: - /path/to/radarr/config:/radarr-data:ro
+#   2. In ./config/.env set: RADARR_DB_TYPE=sqlite
+#   3. In ./config/.env set: RADARR_DB_PATH=/radarr-data/radarr.db
+# - Radarr 4K instance example:
+#   1. Add volume: - /path/to/radarr-4k/config:/radarr-4k-data:ro
+#   2. In ./config/.env set: RADARR_4K_DB_TYPE=sqlite
+#   3. In ./config/.env set: RADARR_4K_DB_PATH=/radarr-4k-data/radarr.db
 # - Sonarr example:
-#   1. Uncomment: - /path/to/sonarr/config:/sonarr-config:ro
-#   2. Update path to your Sonarr config directory
-#   3. In ./config/.env set: SONARR_DB_TYPE=sqlite
-#   4. In ./config/.env set: SONARR_DB_PATH=/sonarr-config/sonarr.db
-# - Common paths:
-#   - Docker: /path/to/radarr/config (where radarr.db lives)
-#   - Windows: C:/ProgramData/Radarr or C:/ProgramData/Sonarr
-#   - Linux: /home/user/.config/Radarr or /var/lib/radarr
+#   1. Add volume: - /path/to/sonarr/config:/sonarr-data:ro
+#   2. In ./config/.env set: SONARR_DB_TYPE=sqlite
+#   3. In ./config/.env set: SONARR_DB_PATH=/sonarr-data/sonarr.db
+# - The radarr.db file is usually directly inside the Radarr config folder.
+#   If not, browse the folder on your host and find it, then adjust DB_PATH.
+# - Common config locations:
+#   - Docker (LSIO/Hotio): the config directory you mapped to /config in Radarr
+#   - Windows (bare metal): C:/ProgramData/Radarr
+#   - Linux (bare metal): /home/user/.config/Radarr or /var/lib/radarr
 #
 # Emby Plugin Deployment:
 # - Uncomment the emby-plugins volume mount
