@@ -339,31 +339,56 @@ SONARR_DB_PASSWORD=sonarr_pass       # Sonarr database password (.env.secrets)
 
 Add additional Radarr or Sonarr instances using a `NAME` segment between the prefix and the variable suffix. The name becomes the instance identifier in Chronarr's UI and database.
 
+Each instance block is fully self-contained — define all settings including paths directly within it. **Do not use the global `MOVIE_PATHS` or `TV_PATHS` keys in additional instance blocks.** If those keys appear more than once in your env file, Docker only keeps the last value and silently drops the rest, corrupting path matching for every instance.
+
 ```bash
+# Main Radarr instance — use RADARR_MOVIE_PATHS, not MOVIE_PATHS
+RADARR_URL=http://radarr:7878
+RADARR_API_KEY=your_api_key         # (.env.secrets)
+RADARR_ROOT_FOLDERS=/mnt/nas/Movies
+RADARR_MOVIE_PATHS=/media/movies
+RADARR_DB_TYPE=sqlite
+RADARR_DB_PATH=/radarr-data/radarr.db
+
 # Second Radarr instance (e.g., 4K library)
 RADARR_4K_URL=http://radarr-4k:7878
 RADARR_4K_API_KEY=your_4k_api_key   # (.env.secrets)
-RADARR_4K_DB_TYPE=postgresql
-RADARR_4K_DB_HOST=radarr-4k-db
-RADARR_4K_DB_NAME=radarr-main
-RADARR_4K_DB_USER=radarr
-RADARR_4K_DB_PASSWORD=radarr_4k_pass  # (.env.secrets)
+RADARR_4K_ROOT_FOLDERS=/mnt/nas/Movies-4K
+RADARR_4K_MOVIE_PATHS=/media/movies-4k   # ← per-instance, NOT MOVIE_PATHS
+RADARR_4K_DB_TYPE=sqlite
+RADARR_4K_DB_PATH=/radarr-4k-data/radarr.db
+
+# Main Sonarr instance — use SONARR_TV_PATHS, not TV_PATHS
+SONARR_URL=http://sonarr:8989
+SONARR_API_KEY=your_sonarr_key      # (.env.secrets)
+SONARR_ROOT_FOLDERS=/mnt/nas/TV
+SONARR_TV_PATHS=/media/tv
+SONARR_DB_TYPE=sqlite
+SONARR_DB_PATH=/sonarr-data/sonarr.db
 
 # Second Sonarr instance (e.g., anime library)
 SONARR_ANIME_URL=http://sonarr-anime:8989
 SONARR_ANIME_API_KEY=your_anime_key  # (.env.secrets)
-SONARR_ANIME_DB_TYPE=postgresql
-SONARR_ANIME_DB_HOST=sonarr-anime-db
-SONARR_ANIME_DB_NAME=sonarr-main
-SONARR_ANIME_DB_USER=sonarr
-SONARR_ANIME_DB_PASSWORD=sonarr_anime_pass  # (.env.secrets)
+SONARR_ANIME_ROOT_FOLDERS=/mnt/nas/Anime
+SONARR_ANIME_TV_PATHS=/media/anime   # ← per-instance, NOT TV_PATHS
+SONARR_ANIME_DB_TYPE=sqlite
+SONARR_ANIME_DB_PATH=/sonarr-anime-data/sonarr.db
 ```
 
 Each named instance gets its own webhook endpoint (`/radarr_4k/webhook`, `/sonarr_anime/webhook`) and appears as a separate entry in the sidebar. An "All" view aggregates across all instances with colored instance badges on each row.
 
-**SQLite Docker Configuration:**
+**SQLite Docker Configuration (multi-instance):**
 
-When using SQLite databases with Docker, you must mount the database directories as read-only volumes. See the Quick Start guide (step 3) or check `docker-compose.yml.example` for detailed examples.
+Each SQLite database needs its own volume mount in `docker-compose.yml`. The container path you choose must match the `_DB_PATH` value in your `.env`:
+
+```yaml
+# In docker-compose.yml, under chronarr-core volumes:
+- /host/path/to/radarr/config:/radarr-data:ro          # → RADARR_DB_PATH=/radarr-data/radarr.db
+- /host/path/to/radarr-4k/config:/radarr-4k-data:ro    # → RADARR_4K_DB_PATH=/radarr-4k-data/radarr.db
+- /host/path/to/sonarr/config:/sonarr-data:ro           # → SONARR_DB_PATH=/sonarr-data/sonarr.db
+```
+
+The `radarr.db` file is usually at the top level of Radarr's config directory. If the database fails to open, browse that directory on your host to find the actual filename and depth, then adjust `DB_PATH` accordingly. See `docker-compose.yml.example` for a complete annotated example.
 
 ## Web Interface
 
