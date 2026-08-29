@@ -1371,8 +1371,14 @@ def _populate_worker_process(media_type: str, status_file: str):
                 update_status(status)
                 print(f"INFO: [Worker Process] Populating movies for instance '{inst.name}'")
 
-                pop = DatabasePopulator.from_radarr_instance(inst, db)
-                inst_stats = pop.populate_movies(instance=inst.name)
+                try:
+                    pop = DatabasePopulator.from_radarr_instance(inst, db)
+                    inst_stats = pop.populate_movies(instance=inst.name)
+                except Exception as e:
+                    print(f"ERROR: [Worker Process] Movies failed for instance '{inst.name}': {e}")
+                    inst_stats = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 1,
+                                  'duration': 0.0,
+                                  'skipped_items': [f"Instance '{inst.name}' failed: {e}"]}
                 all_movie_stats.append((inst.name, inst_stats))
                 print(f"INFO: [Worker Process] Movies done for '{inst.name}': {inst_stats}")
 
@@ -1389,8 +1395,14 @@ def _populate_worker_process(media_type: str, status_file: str):
                 update_status(status)
                 print(f"INFO: [Worker Process] Populating TV for instance '{inst.name}'")
 
-                pop = DatabasePopulator.from_sonarr_instance(inst, db)
-                inst_stats = pop.populate_tv_episodes(instance=inst.name)
+                try:
+                    pop = DatabasePopulator.from_sonarr_instance(inst, db)
+                    inst_stats = pop.populate_tv_episodes(instance=inst.name)
+                except Exception as e:
+                    print(f"ERROR: [Worker Process] TV failed for instance '{inst.name}': {e}")
+                    inst_stats = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                                  'skipped': 0, 'errors': 1, 'duration': 0.0,
+                                  'skipped_items': [f"Instance '{inst.name}' failed: {e}"]}
                 all_tv_stats.append((inst.name, inst_stats))
                 print(f"INFO: [Worker Process] TV done for '{inst.name}': {inst_stats}")
 

@@ -106,6 +106,13 @@ class RadarrDbClient:
     def _get_connection(self) -> Union[sqlite3.Connection, psycopg2.extensions.connection]:
         """Get database connection"""
         if self.db_type == "sqlite":
+            # sqlite3.connect() silently creates an empty file at db_path if it
+            # doesn't exist — a missing/wrong volume mount would otherwise look
+            # like a successful connection to an empty database instead of failing.
+            if not self.db_path or not Path(self.db_path).exists():
+                raise FileNotFoundError(
+                    f"Radarr SQLite database not found at '{self.db_path}' — check volume mounts"
+                )
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             return conn

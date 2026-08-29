@@ -105,48 +105,46 @@ class DatabasePopulator:
     def from_radarr_instance(cls, inst, db: ChronarrDatabase) -> 'DatabasePopulator':
         """Build a populator wired to one specific RadarrInstance.
 
-        Tries direct DB access using the instance's db_type/db_path/host config;
-        falls back to the HTTP API client if DB access isn't configured or fails.
+        If db_type is explicitly configured, DB access is required — a broken
+        connection (e.g. a misconfigured or unmounted SQLite path) raises here
+        instead of silently falling back to the API client. Falling back would
+        degrade every date to a digital_fallback with no indication anything
+        was wrong. Only instances with no db_type at all use the API client.
         """
-        client = None
         if inst.db_type:
-            try:
-                client = RadarrDbClient(
-                    db_type=inst.db_type,
-                    db_path=inst.db_path or None,
-                    db_host=inst.db_host or None,
-                    db_port=inst.db_port or None,
-                    db_name=inst.db_name or None,
-                    db_user=inst.db_user or None,
-                    db_password=inst.db_password or None,
-                )
-                _log("INFO", f"DatabasePopulator: DB access configured for Radarr instance '{inst.name}'")
-            except Exception as e:
-                _log("WARNING", f"DatabasePopulator: DB access failed for Radarr '{inst.name}', falling back to API: {e}")
-        if client is None:
-            client = RadarrClient(inst.url, inst.api_key)
+            client = RadarrDbClient(
+                db_type=inst.db_type,
+                db_path=inst.db_path or None,
+                db_host=inst.db_host or None,
+                db_port=inst.db_port or None,
+                db_name=inst.db_name or None,
+                db_user=inst.db_user or None,
+                db_password=inst.db_password or None,
+            )
+            _log("INFO", f"DatabasePopulator: DB access configured for Radarr instance '{inst.name}'")
+            return cls(db, _radarr_db_override=client)
+        client = RadarrClient(inst.url, inst.api_key)
         return cls(db, _radarr_db_override=client)
 
     @classmethod
     def from_sonarr_instance(cls, inst, db: ChronarrDatabase) -> 'DatabasePopulator':
-        """Build a populator wired to one specific SonarrInstance."""
-        client = None
+        """Build a populator wired to one specific SonarrInstance.
+
+        Same DB-required contract as from_radarr_instance — see its docstring.
+        """
         if inst.db_type:
-            try:
-                client = SonarrDbClient(
-                    db_type=inst.db_type,
-                    db_path=inst.db_path or None,
-                    db_host=inst.db_host or None,
-                    db_port=inst.db_port or None,
-                    db_name=inst.db_name or None,
-                    db_user=inst.db_user or None,
-                    db_password=inst.db_password or None,
-                )
-                _log("INFO", f"DatabasePopulator: DB access configured for Sonarr instance '{inst.name}'")
-            except Exception as e:
-                _log("WARNING", f"DatabasePopulator: DB access failed for Sonarr '{inst.name}', falling back to API: {e}")
-        if client is None:
-            client = SonarrClient(inst.url, inst.api_key)
+            client = SonarrDbClient(
+                db_type=inst.db_type,
+                db_path=inst.db_path or None,
+                db_host=inst.db_host or None,
+                db_port=inst.db_port or None,
+                db_name=inst.db_name or None,
+                db_user=inst.db_user or None,
+                db_password=inst.db_password or None,
+            )
+            _log("INFO", f"DatabasePopulator: DB access configured for Sonarr instance '{inst.name}'")
+            return cls(db, _sonarr_db_override=client)
+        client = SonarrClient(inst.url, inst.api_key)
         return cls(db, _sonarr_db_override=client)
 
     def get_episode_import_history(self, episode_id: int) -> Optional[str]:
@@ -202,11 +200,11 @@ class DatabasePopulator:
                 # Legacy API client with db_client attribute
                 movies = self.radarr.db_client.get_all_movies()
             else:
-                _log("ERROR", "Radarr database/API client not available - cannot populate movies")
+                _log("ERROR", f"Radarr database/API client not available - cannot populate movies")
                 stats['errors'] += 1
                 return stats
             if not movies:
-                _log("WARNING", "No movies found in Radarr database")
+                _log("WARNING", f"No movies found in Radarr database")
                 return stats
 
             stats['total'] = len(movies)
@@ -420,7 +418,7 @@ class DatabasePopulator:
                 'duration': float
             }
         """
-        _log("INFO", "Starting TV episode population from Sonarr")
+        _log("INFO", f"Starting TV episode population from Sonarr")
         start_time = time.time()
 
         stats = {
@@ -438,7 +436,7 @@ class DatabasePopulator:
             # Get all series from Sonarr
             all_series = self.sonarr.get_all_series()
             if not all_series:
-                _log("WARNING", "No series found in Sonarr")
+                _log("WARNING", f"No series found in Sonarr")
                 return stats
 
             stats['total_series'] = len(all_series)
