@@ -200,15 +200,15 @@ class DatabasePopulator:
                 # Legacy API client with db_client attribute
                 movies = self.radarr.db_client.get_all_movies()
             else:
-                _log("ERROR", f"Radarr database/API client not available - cannot populate movies")
+                _log("ERROR", f"[{instance}] Radarr database/API client not available - cannot populate movies")
                 stats['errors'] += 1
                 return stats
             if not movies:
-                _log("WARNING", f"No movies found in Radarr database")
+                _log("WARNING", f"[{instance}] No movies found in Radarr database")
                 return stats
 
             stats['total'] = len(movies)
-            _log("INFO", f"Found {stats['total']} movies in Radarr")
+            _log("INFO", f"[{instance}] Found {stats['total']} movies in Radarr")
 
             # Process each movie
             for movie in movies:
@@ -223,7 +223,7 @@ class DatabasePopulator:
                     if not imdb_id and path:
                         imdb_id = parse_imdb_from_path(Path(path))
                         if imdb_id:
-                            _log("DEBUG", f"Extracted IMDb ID {imdb_id} from path for: {movie.get('title')}")
+                            _log("DEBUG", f"[{instance}] Extracted IMDb ID {imdb_id} from path for: {movie.get('title')}")
 
                     if not imdb_id:
                         # Generate placeholder IMDb ID using hash of path
@@ -238,7 +238,7 @@ class DatabasePopulator:
                             'reason': skip_reason
                         }
                         stats['skipped_items'].append(skip_info)
-                        _log("DEBUG", f"Movie without IMDb ID: {movie.get('title')} (path: {path}), using placeholder {imdb_id}")
+                        _log("DEBUG", f"[{instance}] Movie without IMDb ID: {movie.get('title')} (path: {path}), using placeholder {imdb_id}")
 
                         # Mark as skipped in database with placeholder IMDb ID
                         self.db.mark_movie_skipped(
@@ -258,7 +258,7 @@ class DatabasePopulator:
                         # Already in database - update file path and video status if needed
                         existing_path = existing.get('path')
                         if not existing_path or existing_path == 'unknown' or existing_path != path:
-                            _log("INFO", f"Movie {imdb_id} exists but updating file info: {path}")
+                            _log("INFO", f"[{instance}] Movie {imdb_id} exists but updating file info: {path}")
                             self.db.update_movie_file_info(imdb_id, path, has_video_file=True)
 
                             # Add to processing history
@@ -270,11 +270,11 @@ class DatabasePopulator:
                                     details={'path': path}
                                 )
                             except Exception as e:
-                                _log("WARNING", f"Failed to add processing history for {imdb_id}: {e}")
+                                _log("WARNING", f"[{instance}] Failed to add processing history for {imdb_id}: {e}")
 
                             stats['updated'] += 1
                         else:
-                            _log("DEBUG", f"Movie {imdb_id} already in database with correct path, skipping")
+                            _log("DEBUG", f"[{instance}] Movie {imdb_id} already in database with correct path, skipping")
                         continue
 
                     # Get release date
@@ -317,7 +317,7 @@ class DatabasePopulator:
                                 'reason': skip_reason
                             }
                             stats['skipped_items'].append(skip_info)
-                            _log("DEBUG", f"No date available for movie {imdb_id}, skipping")
+                            _log("DEBUG", f"[{instance}] No date available for movie {imdb_id}, skipping")
 
                             # Mark as skipped in database for troubleshooting
                             self.db.mark_movie_skipped(
@@ -343,7 +343,7 @@ class DatabasePopulator:
                             'reason': skip_reason
                         }
                         stats['skipped_items'].append(skip_info)
-                        _log("DEBUG", f"No date available for movie {imdb_id}, skipping")
+                        _log("DEBUG", f"[{instance}] No date available for movie {imdb_id}, skipping")
 
                         # Mark as skipped in database for troubleshooting
                         self.db.mark_movie_skipped(
@@ -375,28 +375,28 @@ class DatabasePopulator:
                             details={'source': source, 'title': title}
                         )
                     except Exception as e:
-                        _log("WARNING", f"Failed to add processing history for {imdb_id}: {e}")
+                        _log("WARNING", f"[{instance}] Failed to add processing history for {imdb_id}: {e}")
 
                     stats['added'] += 1
-                    _log("DEBUG", f"Added movie {imdb_id}: {title} ({year}) (source: {source})")
+                    _log("DEBUG", f"[{instance}] Added movie {imdb_id}: {title} ({year}) (source: {source})")
 
                 except Exception as e:
-                    _log("ERROR", f"Error processing movie {movie.get('title', 'unknown')}: {e}")
+                    _log("ERROR", f"[{instance}] Error processing movie {movie.get('title', 'unknown')}: {e}")
                     stats['errors'] += 1
                     continue
 
         except Exception as e:
-            _log("ERROR", f"Error during movie population: {e}")
+            _log("ERROR", f"[{instance}] Error during movie population: {e}")
             stats['errors'] += 1
 
         stats['duration'] = time.time() - start_time
-        _log("INFO", f"Movie population complete: {stats['added']} added, {stats['skipped']} skipped, {stats['errors']} errors in {stats['duration']:.2f}s")
+        _log("INFO", f"[{instance}] Movie population complete: {stats['added']} added, {stats['skipped']} skipped, {stats['errors']} errors in {stats['duration']:.2f}s")
 
         # Log details of skipped items
         if stats['skipped_items']:
-            _log("INFO", f"Skipped items details ({len(stats['skipped_items'])} total):")
+            _log("INFO", f"[{instance}] Skipped items details ({len(stats['skipped_items'])} total):")
             for item in stats['skipped_items']:
-                _log("INFO", f"  - {item['title']} ({item.get('year', 'N/A')}) [{item.get('imdb_id', 'No IMDb')}]: {item['reason']}")
+                _log("INFO", f"[{instance}]   - {item['title']} ({item.get('year', 'N/A')}) [{item.get('imdb_id', 'No IMDb')}]: {item['reason']}")
 
         return stats
 
@@ -418,7 +418,7 @@ class DatabasePopulator:
                 'duration': float
             }
         """
-        _log("INFO", f"Starting TV episode population from Sonarr")
+        _log("INFO", f"[{instance}] Starting TV episode population from Sonarr")
         start_time = time.time()
 
         stats = {
@@ -436,11 +436,11 @@ class DatabasePopulator:
             # Get all series from Sonarr
             all_series = self.sonarr.get_all_series()
             if not all_series:
-                _log("WARNING", f"No series found in Sonarr")
+                _log("WARNING", f"[{instance}] No series found in Sonarr")
                 return stats
 
             stats['total_series'] = len(all_series)
-            _log("INFO", f"Found {stats['total_series']} series in Sonarr")
+            _log("INFO", f"[{instance}] Found {stats['total_series']} series in Sonarr")
 
             # Process each series
             for series in all_series:
@@ -455,13 +455,13 @@ class DatabasePopulator:
                         # Try to extract from path first
                         imdb_id = parse_imdb_from_path(Path(series_path))
                         if imdb_id:
-                            _log("DEBUG", f"Extracted IMDb ID {imdb_id} from path for {series_title}")
+                            _log("DEBUG", f"[{instance}] Extracted IMDb ID {imdb_id} from path for {series_title}")
 
                     if not imdb_id:
                         # Generate placeholder IMDb ID using hash of path
                         path_hash = hashlib.md5(series_path.encode()).hexdigest()[:12]
                         imdb_id = f"missing-{path_hash}"
-                        _log("DEBUG", f"Series without IMDb ID: {series_title} (path: {series_path}), using placeholder {imdb_id}")
+                        _log("DEBUG", f"[{instance}] Series without IMDb ID: {series_title} (path: {series_path}), using placeholder {imdb_id}")
 
                     # Update series record
                     self.db.upsert_series(imdb_id, series_path, instance=instance)
@@ -471,11 +471,11 @@ class DatabasePopulator:
 
                     if self.using_sonarr_db and self.sonarr_db:
                         try:
-                            _log("DEBUG", f"Using DB bulk query for {series_title}")
+                            _log("DEBUG", f"[{instance}] Using DB bulk query for {series_title}")
                             bulk_import_dates = self.sonarr_db.bulk_import_dates_for_series(series_id)
-                            _log("DEBUG", f"✅ Got {len(bulk_import_dates)} import dates from DB for {series_title}")
+                            _log("DEBUG", f"[{instance}] ✅ Got {len(bulk_import_dates)} import dates from DB for {series_title}")
                         except Exception as e:
-                            _log("WARNING", f"DB bulk query failed for {series_title}, falling back to API: {e}")
+                            _log("WARNING", f"[{instance}] DB bulk query failed for {series_title}, falling back to API: {e}")
 
                     # Get all episodes for this series
                     if self.using_sonarr_db and self.sonarr_db:
@@ -485,7 +485,7 @@ class DatabasePopulator:
                     if not episodes:
                         continue
 
-                    _log("DEBUG", f"Processing {len(episodes)} episodes for {series_title}")
+                    _log("DEBUG", f"[{instance}] Processing {len(episodes)} episodes for {series_title}")
 
                     # Process each episode
                     for episode in episodes:
@@ -507,7 +507,7 @@ class DatabasePopulator:
                                 existing_path = existing.get('path')
                                 episode_path = episode.get('path', 'unknown')
                                 if not existing_path or existing_path == 'unknown' or existing_path != episode_path:
-                                    _log("INFO", f"Episode {imdb_id} S{season_num:02d}E{episode_num:02d} exists but updating file info: {episode_path}")
+                                    _log("INFO", f"[{instance}] Episode {imdb_id} S{season_num:02d}E{episode_num:02d} exists but updating file info: {episode_path}")
                                     self.db.update_episode_file_info(imdb_id, season_num, episode_num, episode_path, has_video_file=True)
 
                                     # Add to processing history
@@ -519,7 +519,7 @@ class DatabasePopulator:
                                             details={'season': season_num, 'episode': episode_num, 'path': episode_path}
                                         )
                                     except Exception as e:
-                                        _log("WARNING", f"Failed to add processing history for {imdb_id} S{season_num:02d}E{episode_num:02d}: {e}")
+                                        _log("WARNING", f"[{instance}] Failed to add processing history for {imdb_id} S{season_num:02d}E{episode_num:02d}: {e}")
 
                                     stats['updated'] += 1
                                 continue
@@ -565,7 +565,7 @@ class DatabasePopulator:
                                     if file_date:
                                         dateadded = file_date
                                         source = 'sonarr:db.file.dateAdded'
-                                        _log("INFO", f"Using file date for {series_title} S{season_num:02d}E{episode_num:02d}: {file_date}")
+                                        _log("INFO", f"[{instance}] Using file date for {series_title} S{season_num:02d}E{episode_num:02d}: {file_date}")
 
                             if not dateadded:
                                 # No date available
@@ -602,34 +602,34 @@ class DatabasePopulator:
                                     details={'season': season_num, 'episode': episode_num, 'source': source, 'title': episode_title}
                                 )
                             except Exception as e:
-                                _log("WARNING", f"Failed to add processing history for {imdb_id} S{season_num:02d}E{episode_num:02d}: {e}")
+                                _log("WARNING", f"[{instance}] Failed to add processing history for {imdb_id} S{season_num:02d}E{episode_num:02d}: {e}")
 
                             stats['added'] += 1
 
                         except Exception as e:
-                            _log("ERROR", f"Error processing episode S{season_num:02d}E{episode_num:02d} of {series_title}: {e}")
+                            _log("ERROR", f"[{instance}] Error processing episode S{season_num:02d}E{episode_num:02d} of {series_title}: {e}")
                             stats['errors'] += 1
                             continue
 
                 except Exception as e:
-                    _log("ERROR", f"Error processing series {series.get('title', 'unknown')}: {e}")
+                    _log("ERROR", f"[{instance}] Error processing series {series.get('title', 'unknown')}: {e}")
                     stats['errors'] += 1
                     continue
 
         except Exception as e:
-            _log("ERROR", f"Error during TV episode population: {e}")
+            _log("ERROR", f"[{instance}] Error during TV episode population: {e}")
             stats['errors'] += 1
 
         stats['duration'] = time.time() - start_time
-        _log("INFO", f"TV episode population complete: {stats['added']} added, {stats['skipped']} skipped, {stats['errors']} errors in {stats['duration']:.2f}s")
+        _log("INFO", f"[{instance}] TV episode population complete: {stats['added']} added, {stats['skipped']} skipped, {stats['errors']} errors in {stats['duration']:.2f}s")
 
         # Log details of skipped items
         if stats['skipped_items']:
-            _log("INFO", f"Skipped episodes details ({len(stats['skipped_items'])} total):")
+            _log("INFO", f"[{instance}] Skipped episodes details ({len(stats['skipped_items'])} total):")
             for item in stats['skipped_items'][:20]:  # Only log first 20 to avoid spam
-                _log("INFO", f"  - {item['title']} S{str(item['season']).zfill(2)}E{str(item['episode']).zfill(2)} ({item.get('episode_title', 'Unknown')}): {item['reason']}")
+                _log("INFO", f"[{instance}]   - {item['title']} S{str(item['season']).zfill(2)}E{str(item['episode']).zfill(2)} ({item.get('episode_title', 'Unknown')}): {item['reason']}")
             if len(stats['skipped_items']) > 20:
-                _log("INFO", f"  ... and {len(stats['skipped_items']) - 20} more (see web interface for full list)")
+                _log("INFO", f"[{instance}]   ... and {len(stats['skipped_items']) - 20} more (see web interface for full list)")
 
         return stats
 
