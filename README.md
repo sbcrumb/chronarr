@@ -339,6 +339,8 @@ SONARR_DB_PASSWORD=sonarr_pass       # Sonarr database password (.env.secrets)
 
 Add additional Radarr or Sonarr instances using a `NAME` segment between the prefix and the variable suffix. The name becomes the instance identifier in Chronarr's UI and database.
 
+The `NAME` segment must be letters, digits, and underscores only — no hyphens (`RADARR_4K` works, `RADARR-4K` doesn't; this is a shell/env-var limitation, not a Chronarr restriction). The *value* you assign to the URL variable has no such restriction and can freely contain hyphens or a full domain name, e.g. `SONARR_STRM_URL=http://sonarr-strm.yourdomain.com:8989`.
+
 Each instance block is fully self-contained — define all settings including paths directly within it. **Do not use the global `MOVIE_PATHS` or `TV_PATHS` keys in additional instance blocks.** If those keys appear more than once in your env file, Docker only keeps the last value and silently drops the rest, corrupting path matching for every instance.
 
 ```bash
