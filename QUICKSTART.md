@@ -210,6 +210,40 @@ SONARR_DB_PASSWORD=sonarr_password  # Add to .env.secrets
 **Why does Radarr require database access?**
 The Radarr API doesn't expose all import history data needed for accurate date tracking. Direct database access allows Chronarr to query import timestamps, detect upgrades vs new imports, and handle complex scenarios.
 
+### Multi-Instance Setup (Multiple Radarr/Sonarr)
+
+Running a standard + 4K library split (or any other multi-instance setup)? Add a
+`NAME` segment between the prefix and variable suffix — e.g. `RADARR_4K_URL`. Each
+named instance is fully self-contained: it needs its own `_URL`, `_API_KEY`,
+`_ROOT_FOLDERS`, its own paths variable (`RADARR_4K_MOVIE_PATHS`, not the global
+`MOVIE_PATHS`), and — if using SQLite — its own `_DB_TYPE`/`_DB_PATH` **and its own
+volume mount**, distinct from the main instance's:
+
+```yaml
+# docker-compose.yml — one mount per SQLite instance
+chronarr:
+  volumes:
+    - /path/to/radarr/config:/radarr-data:ro          # RADARR_DB_PATH=/radarr-data/radarr.db
+    - /path/to/radarr-4k/config:/radarr-4k-data:ro     # RADARR_4K_DB_PATH=/radarr-4k-data/radarr.db
+```
+
+```bash
+# ./config/.env
+RADARR_4K_URL=http://radarr-4k:7878
+RADARR_4K_API_KEY=your_4k_api_key           # → set in .env.secrets
+RADARR_4K_ROOT_FOLDERS=/mnt/unionfs/Media/Movies/movies4k
+RADARR_4K_MOVIE_PATHS=/media/movies4k
+RADARR_4K_DB_TYPE=sqlite
+RADARR_4K_DB_PATH=/radarr-4k-data/radarr.db
+```
+
+Reusing the main instance's mount point or `_DB_PATH` for a second instance is the
+most common cause of a "connected but returns no data" instance — each one needs
+its own distinct container path. See the README's Multi-Instance Configuration
+section and `docker-compose.yml.example` for the full annotated reference, and
+visit `/setup` after restarting to confirm each instance's webhook URL and
+connection status.
+
 ### Emby Plugin Deployment
 
 To auto-deploy the Chronarr Emby plugin:
