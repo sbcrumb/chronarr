@@ -239,7 +239,9 @@ class SonarrDbClient:
                 rows = cursor.fetchall()
 
                 if self.db_type == "sqlite":
-                    return [dict(row) for row in rows]
+                    # SQLite has no boolean type — the CASE WHEN above comes back as 1/0,
+                    # which Postgres refuses to insert into the boolean has_video_file column
+                    return [dict(row, hasFile=bool(row["hasFile"])) for row in rows]
                 else:
                     return rows
 
