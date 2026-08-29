@@ -89,6 +89,12 @@ services:
       # - /path/to/sonarr-anime/config:/sonarr-anime-data:ro
       # Then set SONARR_ANIME_DB_PATH=/sonarr-anime-data/sonarr.db in .env
       #
+      # Media paths — one mount per instance if libraries differ:
+      # - /path/to/tv:/media/tv:ro
+      # - /path/to/anime:/media/anime:ro
+      # Then set SONARR_TV_PATHS=/media/tv and
+      #          SONARR_ANIME_TV_PATHS=/media/anime in .env
+      #
       # Optional: Emby plugin deployment
       # - /path/to/emby/plugins:/emby-plugins
     ports:
