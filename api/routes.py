@@ -16,7 +16,8 @@ from typing import Optional
 from api.models import (
     SonarrWebhook, RadarrWebhook, MaintainarrWebhook, HealthResponse, TVSeasonRequest, TVEpisodeRequest,
     MovieUpdateRequest, EpisodeUpdateRequest, BulkUpdateRequest, OrphanedCleanupRequest,
-    CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse
+    CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse,
+    WizardConnectionTestRequest, WizardSaveInstanceRequest, WizardEnvRestoreRequest, WizardDeleteInstanceRequest
 )
 # Import logging utility
 from utils.logging import _log
@@ -94,7 +95,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             raise HTTPException(status_code=422, detail="Empty Sonarr payload")
         
         webhook = SonarrWebhook(**payload)
-        _log("INFO", f"Received Sonarr webhook: {webhook.eventType}")
+        _log("INFO", f"[{instance}] Received Sonarr webhook: {webhook.eventType}")
         
         if webhook.eventType not in ["Download", "Upgrade", "Rename"]:
             return {"status": "ignored", "reason": f"Event type {webhook.eventType} not processed"}
@@ -110,24 +111,25 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         sonarr_path = series_info.get("path", "")
         
         if not imdb_id:
-            _log("ERROR", f"No IMDb ID for series: {series_title}")
+            _log("ERROR", f"[{instance}] No IMDb ID for series: {series_title}")
             return {"status": "error", "reason": "No IMDb ID"}
-        
-        # Find series path
-        series_path = tv_processor.find_series_path(series_title, imdb_id, sonarr_path)
+
+        # Find series path — instance-aware so a named instance's own root
+        # folder mapping is used, not always the default instance's.
+        series_path = tv_processor.find_series_path(series_title, imdb_id, sonarr_path, instance=instance)
         if not series_path:
-            print(f"ERROR: Could not find series directory: {series_title} ({imdb_id})")
+            _log("ERROR", f"[{instance}] Could not find series directory: {series_title} ({imdb_id})")
             return {"status": "error", "reason": "Series directory not found"}
-        
+
         # Extract episode data for targeted processing
         episodes_data = webhook.episodes or []
-        _log("DEBUG", f"Initial episodes_data from webhook.episodes: {len(episodes_data)} episodes")
+        _log("DEBUG", f"[{instance}] Initial episodes_data from webhook.episodes: {len(episodes_data)} episodes")
         
         # For all webhook events, if no episodes in webhook.episodes, try to extract from episodeFile
         # This ensures targeted processing for single episode operations (Download, Rename, Upgrade)
-        _log("DEBUG", f"webhook.episodeFile present: {webhook.episodeFile is not None}")
+        _log("DEBUG", f"[{instance}] webhook.episodeFile present: {webhook.episodeFile is not None}")
         if webhook.episodeFile:
-            _log("DEBUG", f"episodeFile content: {webhook.episodeFile}")
+            _log("DEBUG", f"[{instance}] episodeFile content: {webhook.episodeFile}")
         
         if not episodes_data and webhook.episodeFile:
             episode_file = webhook.episodeFile
@@ -141,17 +143,17 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                 
                 # Try relativePath first, then path
                 file_path = episode_file.get("relativePath") or episode_file.get("path", "")
-                _log("DEBUG", f"Parsing episode info from path: {file_path}")
+                _log("DEBUG", f"[{instance}] Parsing episode info from path: {file_path}")
                 
                 episode_info = extract_episode_info_from_filename(file_path)
                 if episode_info:
                     season_num = episode_info["season"]
                     episode_num = episode_info["episode"]
-                    _log("DEBUG", f"Extracted from filename - Season: {season_num}, Episode: {episode_num}")
+                    _log("DEBUG", f"[{instance}] Extracted from filename - Season: {season_num}, Episode: {episode_num}")
                 else:
-                    _log("DEBUG", f"Could not extract season/episode from filename: {file_path}")
+                    _log("DEBUG", f"[{instance}] Could not extract season/episode from filename: {file_path}")
             
-            _log("DEBUG", f"episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
+            _log("DEBUG", f"[{instance}] episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
             if season_num and episode_num:
                 # Create episode data structure that matches what process_webhook_episodes expects
                 episodes_data = [{
@@ -161,37 +163,37 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                     "title": episode_file.get("title")
                     # Note: Not including dateAdded - we use database-first approach with Sonarr fallback
                 }]
-                _log("INFO", f"Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
+                _log("INFO", f"[{instance}] Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
             else:
-                _log("DEBUG", f"Missing season/episode numbers in episodeFile for {webhook.eventType}")
+                _log("DEBUG", f"[{instance}] Missing season/episode numbers in episodeFile for {webhook.eventType}")
         
         # Special handling for Rename events - Sonarr doesn't include episodeFile for renames
         # Try to find recently renamed episodes using Sonarr history API
         if not episodes_data and webhook.eventType == "Rename":
-            _log("DEBUG", f"Attempting to find recently renamed episode for series {imdb_id}")
+            _log("DEBUG", f"[{instance}] Attempting to find recently renamed episode for series {imdb_id}")
             try:
                 # Get series info from Sonarr to find series ID
                 series_lookup_url = f"{config.sonarr_url}/api/v3/series/lookup?term=imdbid:{imdb_id}"
-                _log("DEBUG", f"Sonarr lookup for rename: {series_lookup_url}")
+                _log("DEBUG", f"[{instance}] Sonarr lookup for rename: {series_lookup_url}")
                 
                 response = requests.get(series_lookup_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                 if response.status_code == 200:
                     series_results = response.json()
                     if series_results:
                         series_id = series_results[0].get("id")
-                        _log("DEBUG", f"Found series ID {series_id} for rename lookup")
+                        _log("DEBUG", f"[{instance}] Found series ID {series_id} for rename lookup")
                         
                         # Get recent history for the series and filter for rename events
                         from datetime import datetime, timedelta
                         since_date = (datetime.utcnow() - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
                         history_url = f"{config.sonarr_url}/api/v3/history?seriesId={series_id}&sortKey=date&sortDir=desc&page=1&pageSize=50"
-                        _log("DEBUG", f"Checking recent rename history: {history_url}")
+                        _log("DEBUG", f"[{instance}] Checking recent rename history: {history_url}")
                         
                         history_response = requests.get(history_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                         if history_response.status_code == 200:
                             history_data = history_response.json()
                             all_records = history_data.get("records", [])
-                            _log("DEBUG", f"Got {len(all_records)} total history records")
+                            _log("DEBUG", f"[{instance}] Got {len(all_records)} total history records")
                             
                             # Filter for recent rename events
                             since_timestamp = datetime.utcnow() - timedelta(hours=1)
@@ -211,16 +213,16 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         # If datetime parsing fails, include it anyway
                                         recent_renames.append(record)
                             
-                            _log("DEBUG", f"Found {len(recent_renames)} recent rename events")
+                            _log("DEBUG", f"[{instance}] Found {len(recent_renames)} recent rename events")
                             
                             if recent_renames:
                                 # Take the most recent rename event
                                 latest_rename = recent_renames[0]
-                                _log("DEBUG", f"Processing latest rename event")
+                                _log("DEBUG", f"[{instance}] Processing latest rename event")
                                 
                                 # Extract episodeId directly from the rename event
                                 episode_id = latest_rename.get("episodeId")
-                                _log("DEBUG", f"Found episodeId {episode_id} in rename event")
+                                _log("DEBUG", f"[{instance}] Found episodeId {episode_id} in rename event")
                                 
                                 if episode_id:
                                     # Fetch episode details using the episodeId
@@ -233,7 +235,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         episode_num = episode_detail.get("episodeNumber")
                                         episode_title = episode_detail.get("title")
                                         
-                                        _log("DEBUG", f"Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
+                                        _log("DEBUG", f"[{instance}] Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
                                         
                                         if season_num is not None and episode_num is not None:
                                             episodes_data = [{
@@ -242,30 +244,30 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                                 "id": episode_id,
                                                 "title": episode_title
                                             }]
-                                            print(f"INFO: Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
+                                            _log("INFO", f"[{instance}] Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
                                         else:
-                                            _log("DEBUG", f"Episode details missing season/episode numbers")
+                                            _log("DEBUG", f"[{instance}] Episode details missing season/episode numbers")
                                     else:
-                                        _log("DEBUG", f"Failed to fetch episode details: {episode_response.status_code}")
+                                        _log("DEBUG", f"[{instance}] Failed to fetch episode details: {episode_response.status_code}")
                                 else:
-                                    _log("DEBUG", f"No episodeId found in rename event")
+                                    _log("DEBUG", f"[{instance}] No episodeId found in rename event")
                             else:
-                                _log("DEBUG", f"No recent rename events found in last hour")
+                                _log("DEBUG", f"[{instance}] No recent rename events found in last hour")
                         else:
-                            _log("DEBUG", f"Failed to get rename history: {history_response.status_code}")
+                            _log("DEBUG", f"[{instance}] Failed to get rename history: {history_response.status_code}")
                     else:
-                        _log("DEBUG", f"No series found for IMDb {imdb_id}")
+                        _log("DEBUG", f"[{instance}] No series found for IMDb {imdb_id}")
                 else:
-                    _log("DEBUG", f"Series lookup failed: {response.status_code}")
+                    _log("DEBUG", f"[{instance}] Series lookup failed: {response.status_code}")
             except Exception as e:
-                _log("DEBUG", f"Error finding renamed episode: {e}")
+                _log("DEBUG", f"[{instance}] Error finding renamed episode: {e}")
                 # Continue with series processing as fallback
         
         # Force targeted mode for single-episode webhooks to prevent full series processing
         processing_mode = config.tv_webhook_processing_mode
         if episodes_data and len(episodes_data) <= 3:  # Single episode or small batch
             processing_mode = "targeted"
-            _log("INFO", f"Forcing targeted mode for {len(episodes_data)} episode(s)")
+            _log("INFO", f"[{instance}] Forcing targeted mode for {len(episodes_data)} episode(s)")
         
         tv_batch_key = f"tv:{imdb_id}"
         webhook_dict = {
@@ -279,9 +281,9 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         batcher.add_webhook(tv_batch_key, webhook_dict, 'tv')
         
         return {"status": "accepted", "message": f"Sonarr webhook queued for {tv_batch_key}"}
-        
+
     except Exception as e:
-        _log("ERROR", f"Sonarr webhook error: {e}")
+        _log("ERROR", f"[{instance}] Sonarr webhook error: {e}")
         raise HTTPException(status_code=422, detail=f"Invalid webhook: {e}")
 
 
@@ -296,8 +298,8 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         body = await request.body()
         await _verify_webhook_signature(request, body, config.radarr_webhook_secret, "X-Radarr-Signature")
         payload = await _read_payload(request)
-        _log("INFO", f"Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
-        _log("DEBUG", f"Full Radarr webhook payload: {payload}")
+        _log("INFO", f"[{instance}] Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
+        _log("DEBUG", f"[{instance}] Full Radarr webhook payload: {payload}")
         
         # Filter supported event types (same as Sonarr: Download, Upgrade, Rename)
         event_type = payload.get('eventType', '')
@@ -307,29 +309,29 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         # Extract movie info
         movie_data = payload.get("movie", {})
         if not movie_data:
-            _log("WARNING", "No movie data in Radarr webhook")
+            _log("WARNING", f"[{instance}] No movie data in Radarr webhook")
             return {"status": "error", "message": "No movie data"}
         
         # Get IMDb ID for batching key
         imdb_id = movie_data.get("imdbId", "").lower()
         if not imdb_id:
-            _log("WARNING", "No IMDb ID in Radarr webhook movie data")
+            _log("WARNING", f"[{instance}] No IMDb ID in Radarr webhook movie data")
             return {"status": "error", "message": "No IMDb ID"}
         
         # Get movie path and map it
         movie_path = movie_data.get("folderPath") or movie_data.get("path", "")
         if not movie_path:
-            _log("ERROR", "No movie path in Radarr webhook")
+            _log("ERROR", f"[{instance}] No movie path in Radarr webhook")
             return {"status": "error", "message": "No movie path provided"}
         
         # Map the path to container path
         container_path = path_mapper.radarr_path_to_container_path(movie_path)
-        _log("DEBUG", f"Mapped Radarr path {movie_path} -> {container_path}")
+        _log("DEBUG", f"[{instance}] Mapped Radarr path {movie_path} -> {container_path}")
         
         # CRITICAL: Verify the mapped path actually exists
         if not Path(container_path).exists():
-            _log("ERROR", f"RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
-            _log("ERROR", "This prevents processing wrong movies due to path mapping issues")
+            _log("ERROR", f"[{instance}] RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
+            _log("ERROR", f"[{instance}] This prevents processing wrong movies due to path mapping issues")
             return {"status": "error", "message": f"Mapped movie path does not exist: {container_path}"}
         
         # IMDb ID won't be in the path for standard Radarr folder naming — omit the check
@@ -343,13 +345,13 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         }
 
         movie_batch_key = f"movie:{imdb_id}"
-        _log("DEBUG", f"Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}, instance={instance}")
+        _log("DEBUG", f"[{instance}] Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}, instance={instance}")
         batcher.add_webhook(movie_batch_key, movie_webhook_data, "movie")
         
         return {"status": "success", "message": f"Radarr webhook queued for {movie_batch_key}"}
         
     except Exception as e:
-        _log("ERROR", f"Radarr webhook error: {e}")
+        _log("ERROR", f"[{instance}] Radarr webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -568,13 +570,27 @@ async def health(dependencies: dict) -> HealthResponse:
     except Exception as e:
         # If movie processor isn't available, skip database health check
         _log("DEBUG", f"Skipping Radarr database health check: {e}")
-    
+
+    # Per-instance status for every configured Radarr/Sonarr — not just the
+    # default instance the block above checks. This is what /setup already
+    # shows as connected/disconnected badges; /health was never updated to
+    # report the same thing when multi-instance landed, so a dual-instance
+    # user had no way to see a second instance's connection state from here.
+    registry = dependencies.get("registry")
+    instances = None
+    if registry:
+        instances = {
+            "radarr": registry.all_radarr_statuses(),
+            "sonarr": registry.all_sonarr_statuses(),
+        }
+
     return HealthResponse(
         status=overall_status,
         version=version,
         uptime=str(uptime),
         database_status=db_status,
-        radarr_database=radarr_db_health
+        radarr_database=radarr_db_health,
+        instances=instances,
     )
 
 
@@ -818,7 +834,7 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
         sonarr_path_index = {}
 
         def _unc_basename(p):
-            """Return the last path component of p, handling both POSIX and
+            r"""Return the last path component of p, handling both POSIX and
             Windows/UNC paths (pathlib on Linux treats backslash as a literal
             character, so Path(r'\\NAS\share\Movie (2013)').name returns the
             whole string rather than 'Movie (2013)')."""
@@ -2988,6 +3004,79 @@ async def get_populate_status():
 # Initialize global populate status
 _populate_status = {"running": False, "completed": False}
 
+# Instance names the wizard has written to .env this process, but that aren't
+# live yet because chronarr-core hasn't been restarted to pick them up. The
+# InstanceRegistry alone can't catch "save the same new instance twice" —
+# from its point of view neither save happened. This resets naturally on the
+# next real restart, which is exactly when it should, since by then the
+# registry knows about them for real.
+_pending_wizard_instances: set = set()
+
+
+def _wizard_test_api(url: str, api_key: str) -> dict:
+    """Hit Radarr/Sonarr's system status endpoint to check the URL+key work.
+
+    Both apps expose the same path, so one function covers either. Returns
+    {"success": True} or {"success": False, "error": "..."} — never raises,
+    the wizard endpoints turn a failure into an HTTP error themselves.
+    """
+    try:
+        base = url.rstrip("/")
+        resp = requests.get(f"{base}/api/v3/system/status", headers={"X-Api-Key": api_key}, timeout=10)
+        resp.raise_for_status()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _wizard_fetch_root_folders(url: str, api_key: str) -> list:
+    """Ask Radarr/Sonarr for its configured root folders.
+
+    Both apps expose the same path. Only called once the API test above has
+    already passed, so a failure here is worth logging but not worth
+    failing the whole test over — the user typed a working URL+key, root
+    folders are a convenience on top of that, not a requirement.
+    """
+    try:
+        base = url.rstrip("/")
+        resp = requests.get(f"{base}/api/v3/rootfolder", headers={"X-Api-Key": api_key}, timeout=10)
+        resp.raise_for_status()
+        return [rf["path"] for rf in resp.json() if rf.get("path")]
+    except Exception as e:
+        _log("WARNING", f"Setup wizard: could not fetch root folders from {url}: {e}")
+        return []
+
+
+def _wizard_test_db(media_type, db_type, db_host, db_port, db_name, db_user, db_password, db_path, label="") -> dict:
+    """Try building a direct DB client — its constructor tests the connection itself.
+
+    Same {"success": ...} shape as _wizard_test_api(). The client is thrown
+    away either way; this only exists to find out if it *would* connect.
+    `label` (e.g. "sonarr_strm (testing)") is just for the log lines this
+    produces — the instance doesn't exist yet, so there's nothing to look up.
+    """
+    try:
+        if media_type == "radarr":
+            from clients.radarr_db_client import RadarrDbClient as DbClient
+        else:
+            from clients.sonarr_db_client import SonarrDbClient as DbClient
+
+        if db_type == "sqlite":
+            DbClient(db_type="sqlite", db_path=db_path, instance_name=label)
+        else:
+            DbClient(
+                db_type=db_type,
+                db_host=db_host,
+                db_port=db_port or 5432,
+                db_name=db_name,
+                db_user=db_user,
+                db_password=db_password,
+                instance_name=label,
+            )
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 def register_routes(app, dependencies: dict):
     """Register all routes. Webhook routes are registered per-instance dynamically."""
@@ -3063,6 +3152,298 @@ def register_routes(app, dependencies: dict):
             for inst in cfg.sonarr_instances
         ]
         return {"radarr": radarr_list, "sonarr": sonarr_list}
+
+    @app.get("/api/wizard/instance-details")
+    async def _wizard_instance_details(media_type: str, name: str = ""):
+        """Look up one instance's full config, for pre-filling the wizard's Edit form.
+
+        Returns the same fields the wizard form collects (url, api_key,
+        root_folders, paths, DB block) straight from the live config object
+        — no need to re-read or re-parse the env files, config already has
+        it resolved. Includes the API key and DB password: this endpoint
+        exists specifically so Edit doesn't make someone retype secrets
+        they've already set, and they're already visible to anyone who can
+        reach /api/wizard/env-backup anyway.
+        """
+        cfg = dependencies.get("config")
+        if not cfg:
+            raise HTTPException(status_code=503, detail="Config not initialised")
+
+        if media_type not in ("radarr", "sonarr"):
+            raise HTTPException(status_code=400, detail="media_type must be 'radarr' or 'sonarr'")
+
+        instance_name = f"{media_type}_{name.lower()}" if name else media_type
+        instances = cfg.radarr_instances if media_type == "radarr" else cfg.sonarr_instances
+        match = next((i for i in instances if i.name == instance_name), None)
+        if not match:
+            raise HTTPException(status_code=404, detail=f"No instance named '{instance_name}' found")
+
+        return {
+            "media_type": media_type,
+            "name": name,
+            "url": match.url,
+            "api_key": match.api_key,
+            "root_folders": match.root_folders,
+            "movie_paths": getattr(match, "movie_paths", None),
+            "tv_paths": getattr(match, "tv_paths", None),
+            "db_type": match.db_type or None,
+            "db_host": match.db_host or None,
+            "db_port": match.db_port or None,
+            "db_name": match.db_name or None,
+            "db_user": match.db_user or None,
+            "db_password": match.db_password or None,
+            "db_path": match.db_path or None,
+        }
+
+    @app.post("/api/wizard/test-connection")
+    async def _wizard_test_connection(payload: WizardConnectionTestRequest):
+        """Setup wizard: try connecting with whatever the user has typed so far.
+
+        Doesn't write anything or touch the registry — just reports whether
+        the API URL+key and/or the DB block actually work, so the wizard
+        can show a real pass/fail before the user hits Save.
+        """
+        label = f"{payload.media_type}_{payload.name.lower()} (testing)" if payload.name else f"{payload.media_type} (testing)"
+        result = {}
+        if payload.url and payload.api_key:
+            result["api"] = _wizard_test_api(payload.url, payload.api_key)
+            if result["api"]["success"]:
+                result["api"]["root_folders"] = _wizard_fetch_root_folders(payload.url, payload.api_key)
+        if payload.db_type:
+            result["db"] = _wizard_test_db(
+                payload.media_type, payload.db_type, payload.db_host, payload.db_port,
+                payload.db_name, payload.db_user, payload.db_password, payload.db_path,
+                label=label,
+            )
+        return result
+
+    @app.post("/api/wizard/save-instance")
+    async def _wizard_save_instance(payload: WizardSaveInstanceRequest):
+        """Setup wizard: validate, then write one instance to .env / .env.secrets.
+
+        Either every check below passes and both files get written, or
+        nothing gets written at all — no half-applied instance sitting in
+        the config. Restarting chronarr-core is still required to actually
+        pick the new instance up; that limitation is explained in the docs
+        rather than hidden from the caller.
+        """
+        from config.env_writer import (
+            build_env_updates, upsert_env_file, validate_name_segment, InstanceNameError, backup_env_files,
+        )
+
+        registry = dependencies.get("registry")
+        if not registry:
+            raise HTTPException(status_code=503, detail="Registry not initialised")
+
+        if payload.media_type not in ("radarr", "sonarr"):
+            raise HTTPException(status_code=400, detail="media_type must be 'radarr' or 'sonarr'")
+
+        # Check against what's actually running, not just what's in the file —
+        # someone may have hand-edited .env since the last restart.
+        existing_names = set(registry.radarr_names) | set(registry.sonarr_names)
+
+        if payload.name:
+            try:
+                name_segment = validate_name_segment(
+                    payload.name, existing_names, payload.media_type, require_exists=payload.edit_existing
+                )
+            except InstanceNameError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        else:
+            # Empty name means "the default instance" — still needs the same
+            # existence check as a named one, just inline since there's no
+            # segment to run through validate_name_segment for.
+            name_segment = ""
+            default_exists = payload.media_type in existing_names
+            if payload.edit_existing and not default_exists:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No default {payload.media_type} instance exists to edit.",
+                )
+            if not payload.edit_existing and default_exists:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"The default {payload.media_type} instance is already configured. "
+                        "Give this one a name to add it as an additional instance instead."
+                    ),
+                )
+
+        instance_name = f"{payload.media_type}_{name_segment.lower()}" if name_segment else payload.media_type
+        # The pending-instance guard only matters for adds — it exists to
+        # stop the same brand-new name being saved twice before a restart.
+        # Editing an already-live instance repeatedly before restarting is
+        # the normal workflow (fix a typo, test again), not a collision.
+        if not payload.edit_existing and instance_name in _pending_wizard_instances:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{instance_name}' was already saved by the wizard this session but hasn't "
+                    "gone live yet — restart chronarr-core to pick it up before adding it again."
+                ),
+            )
+
+        if payload.db_type == "sqlite" and payload.db_path and not Path(payload.db_path).exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"SQLite path '{payload.db_path}' doesn't exist in this container — check the volume mount",
+            )
+
+        if not payload.force:
+            api_result = _wizard_test_api(payload.url, payload.api_key)
+            if not api_result["success"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Connection test failed: {api_result['error']}. Save again with force=true to skip this check.",
+                )
+            if payload.db_type:
+                db_result = _wizard_test_db(
+                    payload.media_type, payload.db_type, payload.db_host, payload.db_port,
+                    payload.db_name, payload.db_user, payload.db_password, payload.db_path,
+                    label=f"{instance_name} (pre-save test)",
+                )
+                if not db_result["success"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Database connection test failed: {db_result['error']}. Save again with force=true to skip this check.",
+                    )
+
+        fields = payload.dict(exclude={"media_type", "name", "force", "edit_existing"})
+        env_updates, secret_updates = build_env_updates(payload.media_type, name_segment, fields)
+
+        # Cheap insurance — every wizard write gets a snapshot of what the
+        # files looked like just before, so a bad save is never a dead end.
+        # Same format /api/wizard/env-backup produces, restorable the same way.
+        backup_env_files(Path(".env"), Path(".env.secrets"), Path("backups"))
+
+        env_changed = upsert_env_file(Path(".env"), env_updates, instance_label=instance_name)
+        secrets_changed = upsert_env_file(Path(".env.secrets"), secret_updates, instance_label=instance_name)
+        _pending_wizard_instances.add(instance_name)
+
+        _log("INFO", f"Setup wizard: wrote instance '{instance_name}' to .env/.env.secrets — restart required to apply")
+
+        return {
+            "instance_name": instance_name,
+            "webhook_path": f"/{instance_name}/webhook",
+            "env_changed": env_changed,
+            "secrets_changed": secrets_changed,
+            "restart_required": True,
+            "restart_reason": (
+                "chronarr-core builds its instance registry once at startup — "
+                "restart it to pick up this instance."
+            ),
+        }
+
+    @app.post("/api/wizard/delete-instance")
+    async def _wizard_delete_instance(payload: WizardDeleteInstanceRequest):
+        """Setup wizard: remove one instance's env vars from .env / .env.secrets.
+
+        Same "must exist" name validation as editing, same automatic
+        pre-write snapshot as every other wizard write. Removing the vars
+        doesn't remove the instance from Docker's own baked-in environment
+        (if it was there before, e.g. present when the container was
+        created) — restart_reason says so explicitly rather than implying
+        a restart alone is always enough.
+        """
+        from config.env_writer import (
+            remove_instance_keys, validate_name_segment, InstanceNameError, backup_env_files,
+        )
+
+        registry = dependencies.get("registry")
+        if not registry:
+            raise HTTPException(status_code=503, detail="Registry not initialised")
+
+        if payload.media_type not in ("radarr", "sonarr"):
+            raise HTTPException(status_code=400, detail="media_type must be 'radarr' or 'sonarr'")
+
+        existing_names = set(registry.radarr_names) | set(registry.sonarr_names)
+
+        if payload.name:
+            try:
+                name_segment = validate_name_segment(payload.name, existing_names, payload.media_type, require_exists=True)
+            except InstanceNameError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        else:
+            name_segment = ""
+            if payload.media_type not in existing_names:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No default {payload.media_type} instance exists to delete.",
+                )
+
+        instance_name = f"{payload.media_type}_{name_segment.lower()}" if name_segment else payload.media_type
+        prefix = f"{payload.media_type.upper()}_{name_segment}_" if name_segment else f"{payload.media_type.upper()}_"
+
+        backup_env_files(Path(".env"), Path(".env.secrets"), Path("backups"))
+
+        env_changed = remove_instance_keys(Path(".env"), prefix, instance_label=instance_name)
+        secrets_changed = remove_instance_keys(Path(".env.secrets"), prefix, instance_label=instance_name)
+        _pending_wizard_instances.discard(instance_name)
+
+        _log("INFO", f"Setup wizard: removed instance '{instance_name}' from .env/.env.secrets — restart required to apply")
+
+        return {
+            "instance_name": instance_name,
+            "env_changed": env_changed,
+            "secrets_changed": secrets_changed,
+            "restart_required": True,
+            "restart_reason": (
+                "chronarr-core builds its instance registry once at startup. A plain restart "
+                "isn't always enough — if this instance's env vars were present when the "
+                "container was first created, Docker's own env_file injection baked them into "
+                "the container and a restart alone won't drop them. Recreate the container "
+                "(docker compose up -d --force-recreate, or down + up) to be sure they're gone."
+            ),
+        }
+
+    @app.get("/api/wizard/env-backup")
+    async def _wizard_env_backup():
+        """Download the current .env + .env.secrets as one backup file.
+
+        A literal snapshot of both files' raw text, comments and all —
+        restoring it writes them back byte-for-byte. This file contains real
+        API keys and database passwords in plain text, same as .env.secrets
+        itself does; store it somewhere as secure as that file.
+        """
+        from config.env_writer import read_env_files
+        from version_utils import get_version
+
+        content = read_env_files(Path(".env"), Path(".env.secrets"))
+        payload = {
+            "chronarr_version": get_version(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            **content,
+        }
+        filename = f"chronarr-env-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+        return Response(
+            content=json.dumps(payload, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/api/wizard/env-restore")
+    async def _wizard_env_restore(payload: WizardEnvRestoreRequest):
+        """Restore .env + .env.secrets from a backup produced by /api/wizard/env-backup.
+
+        The current files are snapshotted first, the same as every wizard
+        save already does — restoring the wrong file, or one from an
+        incompatible version, isn't a dead end either.
+        """
+        from config.env_writer import write_env_files, backup_env_files
+
+        pre_restore_backup = backup_env_files(Path(".env"), Path(".env.secrets"), Path("backups"))
+        write_env_files(Path(".env"), Path(".env.secrets"), payload.env, payload.env_secrets)
+
+        _log("INFO", f"Setup wizard: restored .env/.env.secrets from an uploaded backup (pre-restore snapshot: {pre_restore_backup})")
+
+        return {
+            "restored": True,
+            "pre_restore_backup": str(pre_restore_backup) if pre_restore_backup else None,
+            "restart_required": True,
+            "restart_reason": (
+                "Restored files only take effect after chronarr-core restarts and reloads its environment."
+            ),
+        }
 
     @app.get("/health")
     async def _health() -> HealthResponse:

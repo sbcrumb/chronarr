@@ -66,9 +66,22 @@ def map_source_to_description(source: str) -> str:
     elif "omdb:" in source_lower:
         return "OMDb Release"
     
-    # Sonarr sources
-    elif "sonarr:" in source_lower:
+    # Sonarr sources — same granularity as Radarr above. This used to be a
+    # single catch-all ("Sonarr API") for every sonarr: source regardless of
+    # whether it actually came from direct DB history, the aired-date
+    # fallback, or a file date — genuinely misleading once instances started
+    # using direct DB access, since a DB-sourced date would still display
+    # as "Sonarr API".
+    elif "sonarr:db.history.import" in source_lower or "sonarr:db.bulk.import" in source_lower:
+        return "Sonarr Import History"
+    elif "sonarr:db.file.dateadded" in source_lower:
+        return "Sonarr File Date"
+    elif "sonarr:aired_fallback" in source_lower:
+        return "Sonarr Air Date"
+    elif "sonarr:api.import_history" in source_lower:
         return "Sonarr API"
+    elif "sonarr:" in source_lower:
+        return "Sonarr"
 
     # Manual and other sources
     elif "manual" in source_lower:
@@ -681,10 +694,18 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
         import json
         import os
         
-        # Get core container connection details
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
-        
+        # Where THIS (web) container reaches core — deliberately not named
+        # CORE_API_HOST/CORE_API_PORT, which are a different pre-existing
+        # pair that control what interface core's own uvicorn binds to
+        # (config/settings.py, main.py). Those two settings look like they
+        # should be the same thing and aren't — setting CORE_API_HOST to a
+        # specific hostname to fix cross-stack DNS collisions (two chronarr
+        # deployments sharing a Docker network) breaks core's own healthcheck
+        # instead, since it stops binding to 0.0.0.0. Learned this the hard
+        # way once already; keep these names distinct.
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+
         # Call core container to update NFO file
         nfo_update_url = f"http://{core_host}:{core_port}/api/episodes/{imdb_id}/{season}/{episode}/update-nfo"
         
@@ -1296,7 +1317,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
     }
 
 
-def _populate_worker_process(media_type: str, status_file: str):
+def _populate_worker_process(media_type: str, status_file: str, instance: str = "all"):
     """
     Worker process that runs database population in complete isolation.
     Runs in separate process - keeps web interface responsive.
@@ -1321,6 +1342,7 @@ def _populate_worker_process(media_type: str, status_file: str):
     status = {
         "running": True,
         "media_type": media_type,
+        "instance": instance,
         "start_time": datetime.now().isoformat(),
         "movies": {"status": "pending", "stats": None},
         "tv": {"status": "pending", "stats": None},
@@ -1357,9 +1379,38 @@ def _populate_worker_process(media_type: str, status_file: str):
                 merged['skipped_items'].extend(s.get('skipped_items', []))
             return merged
 
-        print(f"INFO: [Worker Process] Starting database population: {media_type}")
+        print(f"INFO: [Worker Process] Starting database population: {media_type} (instance: {instance})")
         radarr_instances = config.radarr_instances
         sonarr_instances = config.sonarr_instances
+
+        # A specific instance narrows the run to just that one, regardless of
+        # which media_type was picked — the instance's own type (it can only
+        # be a Radarr or a Sonarr instance) decides what actually runs. "all"
+        # (the default) keeps the original behavior: every configured
+        # instance of whichever media_type was selected.
+        if instance and instance != "all":
+            matched_radarr = [i for i in radarr_instances if i.name == instance]
+            matched_sonarr = [i for i in sonarr_instances if i.name == instance]
+            if not matched_radarr and not matched_sonarr:
+                known = [i.name for i in radarr_instances] + [i.name for i in sonarr_instances]
+                raise ValueError(f"Instance '{instance}' not found. Configured instances: {known}")
+            radarr_instances = matched_radarr
+            sonarr_instances = matched_sonarr
+            # The instance's own type is authoritative — a Radarr instance can
+            # only ever mean movies, a Sonarr instance only TV. Override
+            # whatever media_type the caller sent so a stale/mismatched value
+            # (e.g. the UI's Media Type dropdown left on the wrong setting)
+            # can't silently produce a no-op run: without this, an instance
+            # narrowed to (say) only Sonarr combined with media_type="movies"
+            # would iterate an empty radarr_instances list, skip the tv block
+            # entirely, and finish "successfully" having populated nothing.
+            effective_media_type = "movies" if matched_radarr else "tv"
+            if effective_media_type != media_type:
+                print(f"INFO: [Worker Process] media_type '{media_type}' overridden to '{effective_media_type}' — instance '{instance}' determines its own type")
+            media_type = effective_media_type
+            status["media_type"] = media_type
+            print(f"INFO: [Worker Process] Narrowed to instance '{instance}'")
+
         print(f"INFO: [Worker Process] Radarr instances: {[i.name for i in radarr_instances]}")
         print(f"INFO: [Worker Process] Sonarr instances: {[i.name for i in sonarr_instances]}")
 
@@ -1429,7 +1480,7 @@ def _populate_worker_process(media_type: str, status_file: str):
         update_status(status)
 
 
-async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None):
+async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None, instance: str = "all"):
     """
     Populate Chronarr database from Radarr/Sonarr sources in separate process.
     This keeps the web interface responsive during population.
@@ -1438,6 +1489,8 @@ async def populate_database(background_tasks: BackgroundTasks, media_type: str =
         background_tasks: FastAPI background tasks (not used - kept for compatibility)
         media_type: Type of media to populate ("movies", "tv", or "both")
         dependencies: Dictionary with dependencies (not used in multiprocessing mode)
+        instance: Specific instance name to populate (e.g. "sonarr_4k"), or "all"
+            (default) for every configured instance of the given media_type
 
     Returns:
         Status message indicating population has started
@@ -1458,6 +1511,7 @@ async def populate_database(background_tasks: BackgroundTasks, media_type: str =
     initial_status = {
         "running": True,
         "media_type": media_type,
+        "instance": instance,
         "start_time": datetime.now().isoformat(),
         "movies": {"status": "pending", "stats": None},
         "tv": {"status": "pending", "stats": None},
@@ -1475,16 +1529,17 @@ async def populate_database(background_tasks: BackgroundTasks, media_type: str =
     # Start population in separate process
     _populate_process = multiprocessing.Process(
         target=_populate_worker_process,
-        args=(media_type, POPULATE_STATUS_FILE),
+        args=(media_type, POPULATE_STATUS_FILE, instance),
         daemon=False  # Keep process alive even if parent exits
     )
     _populate_process.start()
 
-    _log("INFO", f"Database population process started for: {media_type}")
+    _log("INFO", f"Database population process started for: {media_type} (instance: {instance})")
     return {
         "status": "started",
         "media_type": media_type,
-        "message": f"Database population started for {media_type}"
+        "instance": instance,
+        "message": f"Database population started for {media_type}" + (f" ({instance})" if instance != "all" else "")
     }
 
 
@@ -1909,8 +1964,8 @@ def register_web_routes(app, dependencies):
         import socket
         
         # Get core container URL
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         
         # Forward query parameters from the request
         query_string = str(request.url.query) if request.url.query else ""
@@ -1946,8 +2001,8 @@ def register_web_routes(app, dependencies):
         import socket
 
         # Get core container URL
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         core_url = f"http://{core_host}:{core_port}/manual/cleanup-orphaned"
 
         try:
@@ -2066,8 +2121,8 @@ def register_web_routes(app, dependencies):
         import socket
         
         # Get core container connection details
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         
         try:
             # Call core container's detailed scan status endpoint
@@ -2505,10 +2560,12 @@ def register_database_admin_routes(app, dependencies):
         try:
             data = await request.json()
             media_type = data.get("media_type", "both")
+            instance = data.get("instance", "all")
         except Exception:
-            # Fallback to query parameter if JSON parsing fails
+            # Fallback to query parameters if JSON parsing fails
             media_type = request.query_params.get("media_type", "both")
-        return await populate_database(background_tasks, media_type, dependencies)
+            instance = request.query_params.get("instance", "all")
+        return await populate_database(background_tasks, media_type, dependencies, instance)
 
     _log("DEBUG", "/admin/populate-database registered")
 
@@ -2527,8 +2584,8 @@ def register_database_admin_routes(app, dependencies):
         import os
         import socket
 
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         core_url = f"http://{core_host}:{core_port}/api/instances"
 
         try:
@@ -2539,6 +2596,117 @@ def register_database_admin_routes(app, dependencies):
             raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
         except (urllib.error.URLError, socket.timeout) as e:
             raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/wizard/instance-details")
+    async def wizard_instance_details(request: Request):
+        """Proxy an instance's full config (for pre-filling Edit) from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/wizard/instance-details" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8")
+            try:
+                detail = json.loads(detail).get("detail", detail)
+            except ValueError:
+                pass
+            raise HTTPException(status_code=e.code, detail=detail)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    async def _proxy_post_to_core(path: str, body: dict):
+        """Forward a wizard POST to the core container and hand back its response as-is.
+
+        Same host/port lookup and error handling as the /api/instances GET
+        proxy above — core owns the InstanceRegistry and the env files, so
+        every wizard write goes through it rather than the web container
+        touching config directly.
+        """
+        import urllib.request
+        import urllib.error
+        import json as _json
+        import os as _os
+        import socket
+
+        core_host = _os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = _os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}{path}"
+
+        data = _json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(core_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Core sends back a real error detail (bad name, failed test, etc.) —
+            # pass it through instead of flattening everything to a generic 500.
+            detail = e.read().decode("utf-8")
+            try:
+                detail = _json.loads(detail).get("detail", detail)
+            except ValueError:
+                pass
+            raise HTTPException(status_code=e.code, detail=detail)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/wizard/test-connection")
+    async def wizard_test_connection(request: Request):
+        """Proxy the wizard's connection test to the core container."""
+        return await _proxy_post_to_core("/api/wizard/test-connection", await request.json())
+
+    @app.post("/api/wizard/save-instance")
+    async def wizard_save_instance(request: Request):
+        """Proxy the wizard's save (writes .env/.env.secrets) to the core container."""
+        return await _proxy_post_to_core("/api/wizard/save-instance", await request.json())
+
+    @app.post("/api/wizard/delete-instance")
+    async def wizard_delete_instance(request: Request):
+        """Proxy the wizard's delete (removes .env/.env.secrets entries) to the core container."""
+        return await _proxy_post_to_core("/api/wizard/delete-instance", await request.json())
+
+    @app.get("/api/wizard/env-backup")
+    async def wizard_env_backup():
+        """Proxy the .env/.env.secrets backup download from the core container.
+
+        Passed through as raw bytes with the same Content-Disposition header
+        core set, rather than re-parsed as JSON — this is a file download,
+        not a data endpoint.
+        """
+        import urllib.request
+        import urllib.error
+        import os as _os
+        import socket
+
+        core_host = _os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = _os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/wizard/env-backup"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read()
+                disposition = resp.headers.get("Content-Disposition", "attachment; filename=chronarr-env-backup.json")
+                return Response(content=body, media_type="application/json", headers={"Content-Disposition": disposition})
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=e.reason)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/wizard/env-restore")
+    async def wizard_env_restore(request: Request):
+        """Proxy the wizard's env-file restore (overwrites .env/.env.secrets) to core."""
+        return await _proxy_post_to_core("/api/wizard/env-restore", await request.json())
 
     @app.get("/setup")
     async def setup_page():

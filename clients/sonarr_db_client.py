@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
-from core.logging import _log
+from core.logging import _log as _log_raw
 
 
 class SonarrDbClient:
@@ -26,7 +26,8 @@ class SonarrDbClient:
                  db_port: Optional[int] = None,
                  db_name: Optional[str] = None,
                  db_user: Optional[str] = None,
-                 db_password: Optional[str] = None):
+                 db_password: Optional[str] = None,
+                 instance_name: str = ""):
         """
         Initialize Sonarr database client
 
@@ -38,6 +39,8 @@ class SonarrDbClient:
             db_name: PostgreSQL database name
             db_user: PostgreSQL username
             db_password: PostgreSQL password
+            instance_name: label prefixed onto every log line from this client
+                (e.g. "sonarr_strm") — leave blank for the unlabeled default instance
         """
         self.db_type = db_type.lower()
         self.db_path = db_path
@@ -46,6 +49,7 @@ class SonarrDbClient:
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
+        self.instance_name = instance_name
 
         self._test_connection()
 
@@ -60,9 +64,9 @@ class SonarrDbClient:
         if db_type == "sqlite":
             db_path = os.environ.get("SONARR_DB_PATH")
             if not db_path or not Path(db_path).exists():
-                _log("WARNING", f"SONARR_DB_PATH not found or invalid: {db_path}")
+                _log_raw("WARNING", f"SONARR_DB_PATH not found or invalid: {db_path}")
                 return None
-            return cls(db_type="sqlite", db_path=db_path)
+            return cls(db_type="sqlite", db_path=db_path, instance_name="sonarr")
 
         elif db_type == "postgresql":
             # Support both individual vars and connection string
@@ -75,7 +79,8 @@ class SonarrDbClient:
                     db_port=parsed.port or 5432,
                     db_name=parsed.path.lstrip('/'),
                     db_user=parsed.username,
-                    db_password=parsed.password
+                    db_password=parsed.password,
+                    instance_name="sonarr",
                 )
             else:
                 return cls(
@@ -84,11 +89,20 @@ class SonarrDbClient:
                     db_port=int(os.environ.get("SONARR_DB_PORT", "5432")),
                     db_name=os.environ.get("SONARR_DB_NAME"),
                     db_user=os.environ.get("SONARR_DB_USER"),
-                    db_password=os.environ.get("SONARR_DB_PASSWORD")
+                    db_password=os.environ.get("SONARR_DB_PASSWORD"),
+                    instance_name="sonarr",
                 )
         else:
-            _log("ERROR", f"Unsupported database type: {db_type}")
+            _log_raw("ERROR", f"Unsupported database type: {db_type}")
             return None
+
+    def _log(self, level: str, message: str) -> None:
+        """Log with this client's instance name prefixed, so a log line is
+        traceable back to which Radarr/Sonarr instance it came from — matters
+        as soon as there's more than one of the same type configured.
+        """
+        prefix = f"[{self.instance_name}] " if self.instance_name else ""
+        _log_raw(level, f"{prefix}{message}")
 
     def _test_connection(self) -> None:
         """Test database connection on initialization"""
@@ -96,11 +110,11 @@ class SonarrDbClient:
             conn = self._get_connection()
             if conn:
                 conn.close()
-                _log("INFO", f"Connected to Sonarr {self.db_type} database successfully")
+                self._log("INFO", f"Connected to Sonarr {self.db_type} database successfully")
             else:
                 raise Exception("Failed to create connection")
         except Exception as e:
-            _log("ERROR", f"Failed to connect to Sonarr database: {e}")
+            self._log("ERROR", f"Failed to connect to Sonarr database: {e}")
             raise
 
     def _get_connection(self) -> Union[sqlite3.Connection, psycopg2.extensions.connection]:
@@ -166,7 +180,7 @@ class SonarrDbClient:
                     return dict(row) if self.db_type == "sqlite" else row
 
         except Exception as e:
-            _log("ERROR", f"Database query error for IMDb {imdb_id}: {e}")
+            self._log("ERROR", f"Database query error for IMDb {imdb_id}: {e}")
 
         return None
 
@@ -205,7 +219,7 @@ class SonarrDbClient:
                     return rows
 
         except Exception as e:
-            _log("ERROR", f"Database query error getting all series: {e}")
+            self._log("ERROR", f"Database query error getting all series: {e}")
             return []
 
     def get_all_episodes_for_series(self, series_id: int) -> List[Dict[str, Any]]:
@@ -253,7 +267,7 @@ class SonarrDbClient:
                     return rows
 
         except Exception as e:
-            _log("ERROR", f"Database query error for series {series_id}: {e}")
+            self._log("ERROR", f"Database query error for series {series_id}: {e}")
             return []
 
     def get_episode_import_date(self, episode_id: int) -> Tuple[Optional[str], str]:
@@ -303,7 +317,7 @@ class SonarrDbClient:
                     return date_iso, "sonarr:db.history.import"
 
         except Exception as e:
-            _log("ERROR", f"Database query error for episode {episode_id}: {e}")
+            self._log("ERROR", f"Database query error for episode {episode_id}: {e}")
 
         return None, "sonarr:db.no_import_found"
 
@@ -368,7 +382,7 @@ class SonarrDbClient:
                             return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
 
         except Exception as e:
-            _log("ERROR", f"Database query error for episode file: {e}")
+            self._log("ERROR", f"Database query error for episode file: {e}")
 
         return None
 
@@ -428,7 +442,7 @@ class SonarrDbClient:
                         results[(season, episode)] = (None, "sonarr:db.bulk.no_import")
 
         except Exception as e:
-            _log("ERROR", f"Bulk query error for series {series_id}: {e}")
+            self._log("ERROR", f"Bulk query error for series {series_id}: {e}")
 
         return results
 
@@ -455,7 +469,7 @@ class SonarrDbClient:
                     stats[stat_name] = result[0] if result else 0
 
         except Exception as e:
-            _log("ERROR", f"Stats query error: {e}")
+            self._log("ERROR", f"Stats query error: {e}")
             stats["error"] = str(e)
 
         return stats
@@ -578,7 +592,7 @@ class SonarrDbClient:
             health["status"] = "error"
             health["connection"] = "failed"
             health["issues"].append(f"Connection failed: {e}")
-            _log("ERROR", f"Database health check failed: {e}")
+            self._log("ERROR", f"Database health check failed: {e}")
 
         # Overall status
         if health["issues"]:

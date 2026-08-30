@@ -11,6 +11,12 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+# utils.logging has to be imported before config.settings — importing it is
+# what actually loads .env/.env.secrets into the process (a side effect at
+# the bottom of that module). See the same note in main.py for the full
+# explanation of why this ordering matters.
+from utils.logging import _log
+
 # Import existing configuration (keep using core config for simplicity)
 from config.settings import config
 

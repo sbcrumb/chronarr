@@ -157,6 +157,20 @@
             background: var(--success-color);
         }
 
+        .instance-row-actions {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        .btn-danger {
+            background: var(--danger-color);
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
         .empty-note {
             color: var(--text-muted);
             font-size: 0.9rem;
@@ -208,6 +222,170 @@
                 grid-template-columns: 1fr;
             }
         }
+
+        /* --- Add Instance wizard --- */
+
+        .btn-add-instance {
+            margin-top: 0.75rem;
+            padding: 0.45rem 0.9rem;
+            background: none;
+            border: 1px dashed var(--border-color);
+            border-radius: 6px;
+            color: #667eea;
+            font-size: 0.85rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn-add-instance:hover {
+            background: var(--light-color);
+        }
+
+        .add-instance-form {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .form-row {
+            margin-bottom: 0.85rem;
+        }
+
+        .form-row label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--dark-color);
+            margin-bottom: 0.3rem;
+        }
+
+        .form-row input,
+        .form-row select {
+            width: 100%;
+            padding: 0.45rem 0.7rem;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+
+        .form-row input:focus,
+        .form-row select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+        }
+
+        .field-hint {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .db-toggle-row {
+            margin: 1rem 0 0.5rem;
+            font-size: 0.88rem;
+        }
+
+        .db-toggle-row label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .db-fields {
+            margin-top: 0.75rem;
+            padding: 0.85rem;
+            background: var(--light-color);
+            border-radius: 6px;
+        }
+
+        .wizard-actions {
+            display: flex;
+            gap: 0.6rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .wizard-actions button {
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            font-size: 0.88rem;
+            cursor: pointer;
+            border: none;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5a6fd6;
+        }
+
+        .btn-primary:disabled {
+            background: #a9b4e8;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: var(--light-color);
+            color: var(--dark-color);
+            border: 1px solid var(--border-color) !important;
+        }
+
+        .btn-secondary:hover {
+            background: #e9ecef;
+        }
+
+        .btn-cancel {
+            background: none;
+            color: var(--text-muted);
+        }
+
+        .btn-cancel:hover {
+            text-decoration: underline;
+        }
+
+        .wizard-result {
+            margin-top: 0.85rem;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
+        .wizard-result:empty {
+            margin-top: 0;
+        }
+
+        .wizard-result .result-success {
+            color: #155724;
+            background: #d4edda;
+            border-radius: 6px;
+            padding: 0.65rem 0.85rem;
+        }
+
+        .wizard-result .result-error {
+            color: #721c24;
+            background: #f8d7da;
+            border-radius: 6px;
+            padding: 0.65rem 0.85rem;
+        }
+
+        .wizard-result .result-testing {
+            color: var(--text-muted);
+        }
+
+        .test-badge {
+            display: inline-block;
+            font-size: 0.8rem;
+            margin-right: 0.75rem;
+        }
     </style>
 </head>
 <body>
@@ -253,6 +431,36 @@
                     <span class="loading-note">Loading&hellip;</span>
                 </div>
             </div>
+
+            <!-- Add Instance wizard -->
+            <div class="setup-section">
+                <h2><i class="fas fa-plus-circle"></i> Add Instance</h2>
+                <button class="btn-add-instance" onclick="toggleAddForm()" id="instance-add-toggle">
+                    <i class="fas fa-plus"></i> Add Radarr or Sonarr Instance
+                </button>
+                <div id="instance-add-form"></div>
+            </div>
+
+            <!-- Backup & Restore -->
+            <div class="setup-section">
+                <h2><i class="fas fa-database"></i> Backup &amp; Restore Config</h2>
+                <p class="hint-text" style="margin-top: 0;">
+                    A snapshot of <code>.env</code> and <code>.env.secrets</code> exactly as they are right now —
+                    every comment and setting, byte for byte. The downloaded file contains your real API keys and
+                    database passwords in plain text, so store it the same way you'd store either of those files.
+                    Every wizard save above also takes an automatic snapshot first, so a bad save is never a dead end.
+                </p>
+                <div class="wizard-actions">
+                    <a class="btn-secondary" href="/api/wizard/env-backup" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.4rem;">
+                        <i class="fas fa-download"></i> Download Backup
+                    </a>
+                    <button class="btn-secondary" onclick="document.getElementById('restore-file-input').click()">
+                        <i class="fas fa-upload"></i> Restore from Backup&hellip;
+                    </button>
+                    <input type="file" id="restore-file-input" accept="application/json" hidden onchange="handleRestoreFileChosen(event)" />
+                </div>
+                <div class="wizard-result" id="restore-result"></div>
+            </div>
         </div>
     </div>
 
@@ -273,7 +481,15 @@
             return base + path;
         }
 
-        function renderInstances(containerId, instances, serviceLabel) {
+        // The full instance name (e.g. "sonarr_strm") minus its media-type
+        // prefix is the bare segment the wizard's name field wants (e.g.
+        // "strm"). The default instance (name == media type exactly) has
+        // no segment at all.
+        function bareNameSegment(mediaType, fullName) {
+            return fullName === mediaType ? '' : fullName.slice(mediaType.length + 1);
+        }
+
+        function renderInstances(containerId, instances, serviceLabel, mediaType) {
             const container = document.getElementById(containerId);
             if (!instances || instances.length === 0) {
                 container.innerHTML = `<span class="empty-note">No ${serviceLabel} instances configured.</span>`;
@@ -295,6 +511,7 @@
                     : '';
 
                 const webhookUrl = buildWebhookUrl(inst.webhook_path);
+                const segment = bareNameSegment(mediaType, inst.name);
 
                 row.innerHTML = `
                     <div class="instance-meta">
@@ -304,9 +521,17 @@
                     <div class="webhook-url-cell">
                         <input type="text" class="url-field" value="${escHtml(webhookUrl)}" readonly />
                     </div>
-                    <button class="btn-copy" onclick="copyUrl(this)">
-                        <i class="fas fa-copy"></i> Copy
-                    </button>
+                    <div class="instance-row-actions">
+                        <button class="btn-copy" onclick="copyUrl(this)">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                        <button class="btn-copy" onclick="startEditInstance('${mediaType}', '${escHtml(segment)}')">
+                            <i class="fas fa-pen"></i> Edit
+                        </button>
+                        <button class="btn-copy btn-danger" onclick="deleteInstance('${mediaType}', '${escHtml(segment)}', '${escHtml(inst.name)}')">
+                            <i class="fas fa-trash"></i> Delete
+                        </button>
+                    </div>
                 `;
                 container.appendChild(row);
             }
@@ -322,23 +547,46 @@
             });
         }
 
+        function showCopied(btn) {
+            btn.classList.add('copied');
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check"></i> Copied';
+            setTimeout(() => {
+                btn.innerHTML = originalHtml;
+                btn.classList.remove('copied');
+            }, 1800);
+        }
+
         function copyUrl(btn) {
             const input = btn.closest('.instance-row').querySelector('.url-field');
             if (!input) return;
-            navigator.clipboard.writeText(input.value).then(() => {
-                btn.classList.add('copied');
-                const icon = btn.querySelector('i');
-                const originalHtml = btn.innerHTML;
-                btn.innerHTML = '<i class="fas fa-check"></i> Copied';
-                setTimeout(() => {
-                    btn.innerHTML = originalHtml;
-                    btn.classList.remove('copied');
-                }, 1800);
-            }).catch(() => {
-                // Fallback for older browsers / HTTP contexts
+
+            // navigator.clipboard doesn't just reject on an insecure origin
+            // (plain HTTP on anything but localhost) — it's often undefined
+            // entirely, so accessing .writeText() throws synchronously,
+            // before a .then()/.catch() chain ever gets attached. Most
+            // people reaching this page over their LAN are on plain HTTP,
+            // so check for the API rather than assuming it exists.
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(input.value).then(() => {
+                    showCopied(btn);
+                }).catch(() => {
+                    fallbackCopy(input, btn);
+                });
+            } else {
+                fallbackCopy(input, btn);
+            }
+        }
+
+        function fallbackCopy(input, btn) {
+            try {
                 input.select();
+                input.setSelectionRange(0, input.value.length);
                 document.execCommand('copy');
-            });
+                showCopied(btn);
+            } catch (err) {
+                alert(`Could not copy automatically — select and copy manually:\n\n${input.value}`);
+            }
         }
 
         function escHtml(str) {
@@ -354,8 +602,8 @@
                 const resp = await fetch('/api/instances');
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
-                renderInstances('radarr-list', data.radarr || [], 'Radarr');
-                renderInstances('sonarr-list', data.sonarr || [], 'Sonarr');
+                renderInstances('radarr-list', data.radarr || [], 'Radarr', 'radarr');
+                renderInstances('sonarr-list', data.sonarr || [], 'Sonarr', 'sonarr');
             } catch (err) {
                 const msg = `<span class="error-note"><i class="fas fa-times-circle"></i> Could not load instance data: ${escHtml(err.message)}</span>`;
                 document.getElementById('radarr-list').innerHTML = msg;
@@ -364,6 +612,454 @@
         }
 
         loadInstances();
+
+        // --- Add Instance wizard ---
+        //
+        // One form template shared by both Radarr and Sonarr — the only real
+        // difference between the two is the paths field label (movies vs TV)
+        // and a couple of placeholder strings, so it's simpler to generate
+        // the HTML once per media type than to keep two near-identical forms
+        // in sync by hand.
+
+        // FastAPI's own detail is a plain string, but a Pydantic validation
+        // error (a required field missing, wrong type, etc.) comes back as a
+        // list of {msg, loc, ...} objects instead — stringify that properly
+        // rather than letting it print as "[object Object]".
+        function formatErrorDetail(detail) {
+            if (!detail) return null;
+            if (typeof detail === 'string') return detail;
+            if (Array.isArray(detail)) {
+                return detail.map(d => d.msg || JSON.stringify(d)).join('; ');
+            }
+            return JSON.stringify(detail);
+        }
+
+        // One form for both Radarr and Sonarr — a Media Type dropdown at the
+        // top drives which labels/placeholders show and which payload field
+        // (movie_paths vs tv_paths) the paths box maps to. Fixed "instance-add-*"
+        // ids throughout since there's only ever one copy of this form now;
+        // switching the dropdown re-labels in place rather than rebuilding
+        // the form, so nothing already typed gets lost by picking the wrong
+        // type first.
+
+        function addFormTemplate() {
+            return `
+                <div class="add-instance-form">
+                    <div class="form-row">
+                        <label>Media Type</label>
+                        <select id="instance-add-type" onchange="onInstanceTypeChange()">
+                            <option value="radarr">Radarr</option>
+                            <option value="sonarr">Sonarr</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <label>Instance Name</label>
+                        <input type="text" id="instance-add-name" placeholder="e.g. 4k, strm — leave blank for the default instance" />
+                        <p class="field-hint">Letters, numbers, and underscores only — it becomes part of an env var name and the webhook URL.</p>
+                    </div>
+                    <div class="form-row">
+                        <label id="instance-add-url-label">Radarr URL</label>
+                        <input type="text" id="instance-add-url" placeholder="http://radarr:7878" />
+                    </div>
+                    <div class="form-row">
+                        <label>API Key</label>
+                        <input type="text" id="instance-add-api-key" placeholder="Found in Radarr → Settings → General" />
+                    </div>
+                    <div class="form-row">
+                        <label>Root Folders</label>
+                        <input type="text" id="instance-add-root-folders" placeholder="What Radarr sees on its side, comma-separated for more than one" />
+                        <p class="field-hint">Leave blank and hit Test Connection — filled in automatically from Radarr/Sonarr's own root folders.</p>
+                    </div>
+                    <div class="form-row">
+                        <label id="instance-add-paths-label">Movie Paths</label>
+                        <input type="text" id="instance-add-paths" placeholder="Container paths where movies live, comma-separated (e.g. /data/movies)" />
+                    </div>
+
+                    <div class="db-toggle-row">
+                        <label>
+                            <input type="checkbox" id="instance-add-db-enable" onchange="toggleDbFields()" />
+                            <span id="instance-add-db-toggle-label">Connect directly to Radarr's database (faster than the API, optional)</span>
+                        </label>
+                    </div>
+                    <div class="db-fields" id="instance-add-db-fields" hidden>
+                        <div class="form-row">
+                            <label>Database Type</label>
+                            <select id="instance-add-db-type" onchange="toggleDbTypeFields()">
+                                <option value="sqlite">SQLite</option>
+                                <option value="postgresql">PostgreSQL</option>
+                            </select>
+                        </div>
+                        <div class="form-row" id="instance-add-db-path-row">
+                            <label>SQLite Path</label>
+                            <input type="text" id="instance-add-db-path" placeholder="/radarr-4k-data/radarr.db" />
+                        </div>
+                        <div id="instance-add-db-pg-fields" hidden>
+                            <div class="form-row"><label>DB Host</label><input type="text" id="instance-add-db-host" /></div>
+                            <div class="form-row"><label>DB Port</label><input type="text" id="instance-add-db-port" placeholder="5432" /></div>
+                            <div class="form-row"><label>DB Name</label><input type="text" id="instance-add-db-name" /></div>
+                            <div class="form-row"><label>DB User</label><input type="text" id="instance-add-db-user" /></div>
+                            <div class="form-row"><label>DB Password</label><input type="password" id="instance-add-db-password" /></div>
+                        </div>
+                    </div>
+
+                    <div class="wizard-actions">
+                        <button class="btn-secondary" onclick="testWizardConnection()" id="instance-add-test-btn">Test Connection</button>
+                        <button class="btn-primary" onclick="saveWizardInstance()" id="instance-add-save-btn">Save Instance</button>
+                        <button class="btn-cancel" onclick="toggleAddForm()">Cancel</button>
+                    </div>
+                    <div class="wizard-result" id="instance-add-result"></div>
+                </div>
+            `;
+        }
+
+        function toggleAddForm() {
+            const container = document.getElementById('instance-add-form');
+            const toggleBtn = document.getElementById('instance-add-toggle');
+            if (container.innerHTML.trim()) {
+                // Already open — collapse it back to the "+ Add" button.
+                container.innerHTML = '';
+                toggleBtn.hidden = false;
+                return;
+            }
+            container.innerHTML = addFormTemplate();
+            // container itself survives innerHTML swaps, so any leftover
+            // editMode flag from a previous Edit needs clearing here —
+            // opening via the plain "+ Add Instance" button always means a
+            // real add, never a continuation of an earlier edit.
+            container.dataset.editMode = 'false';
+            toggleBtn.hidden = true;
+        }
+
+        // Opens the Add Instance form pre-filled with one instance's current
+        // settings and switches it into edit mode — Name and Media Type get
+        // locked (editing doesn't rename or retype an instance), everything
+        // else stays editable. mediaType/segment identify which instance;
+        // segment is "" for the default (unprefixed) instance.
+        async function startEditInstance(mediaType, segment) {
+            const container = document.getElementById('instance-add-form');
+            container.innerHTML = addFormTemplate();
+            document.getElementById('instance-add-toggle').hidden = true;
+
+            const resultEl = document.getElementById('instance-add-result');
+            resultEl.innerHTML = `<span class="result-testing">Loading current settings&hellip;</span>`;
+
+            try {
+                const resp = await fetch(
+                    `/api/wizard/instance-details?media_type=${encodeURIComponent(mediaType)}&name=${encodeURIComponent(segment)}`
+                );
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatErrorDetail(data.detail) || `HTTP ${resp.status}`);
+
+                document.getElementById('instance-add-type').value = mediaType;
+                document.getElementById('instance-add-type').disabled = true;
+                onInstanceTypeChange();
+
+                document.getElementById('instance-add-name').value = segment;
+                document.getElementById('instance-add-name').disabled = true;
+                document.getElementById('instance-add-url').value = data.url || '';
+                document.getElementById('instance-add-api-key').value = data.api_key || '';
+                document.getElementById('instance-add-root-folders').value = (data.root_folders || []).join(',');
+
+                const paths = mediaType === 'radarr' ? data.movie_paths : data.tv_paths;
+                document.getElementById('instance-add-paths').value = (paths || []).join(',');
+
+                if (data.db_type) {
+                    document.getElementById('instance-add-db-enable').checked = true;
+                    toggleDbFields();
+                    document.getElementById('instance-add-db-type').value = data.db_type;
+                    toggleDbTypeFields();
+                    if (data.db_type === 'sqlite') {
+                        document.getElementById('instance-add-db-path').value = data.db_path || '';
+                    } else {
+                        document.getElementById('instance-add-db-host').value = data.db_host || '';
+                        document.getElementById('instance-add-db-port').value = data.db_port || '';
+                        document.getElementById('instance-add-db-name').value = data.db_name || '';
+                        document.getElementById('instance-add-db-user').value = data.db_user || '';
+                        document.getElementById('instance-add-db-password').value = data.db_password || '';
+                    }
+                }
+
+                container.dataset.editMode = 'true';
+                document.getElementById('instance-add-save-btn').textContent = 'Save Changes';
+
+                const fullName = segment ? `${mediaType}_${segment}` : mediaType;
+                resultEl.innerHTML = `<div class="result-success">Editing <strong>${escHtml(fullName)}</strong> — change what you need, then Save Changes.</div>`;
+                container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">Could not load current settings: ${escHtml(err.message)}</div>`;
+            }
+        }
+
+        async function deleteInstance(mediaType, segment, fullName) {
+            const confirmed = confirm(
+                `Delete ${fullName}? This removes it from .env and .env.secrets.\n\n` +
+                `A snapshot of the current files is taken first, so this can be undone by restoring ` +
+                `that backup from the Backup & Restore section below.\n\n` +
+                `Note: if this instance's env vars were already present when the container was created, ` +
+                `a plain restart may not fully remove it — you may need to recreate the container ` +
+                `(docker compose up -d --force-recreate).`
+            );
+            if (!confirmed) return;
+
+            try {
+                const resp = await fetch('/api/wizard/delete-instance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ media_type: mediaType, name: segment }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatErrorDetail(data.detail) || `HTTP ${resp.status}`);
+
+                alert(`Removed ${data.instance_name} from the config files.\n\n${data.restart_reason}`);
+                loadInstances();
+            } catch (err) {
+                alert(`Could not delete ${fullName}: ${err.message}`);
+            }
+        }
+
+        // Re-labels the form in place for the currently selected media type.
+        // Doesn't touch any entered values — only the labels/placeholders/
+        // hints that describe which service they're for.
+        function onInstanceTypeChange() {
+            const mediaType = document.getElementById('instance-add-type').value;
+            const isRadarr = mediaType === 'radarr';
+            const label = isRadarr ? 'Radarr' : 'Sonarr';
+            const defaultPort = isRadarr ? '7878' : '8989';
+
+            document.getElementById('instance-add-url-label').textContent = `${label} URL`;
+            document.getElementById('instance-add-url').placeholder = `http://${mediaType}:${defaultPort}`;
+            document.getElementById('instance-add-api-key').placeholder = `Found in ${label} → Settings → General`;
+            document.getElementById('instance-add-root-folders').placeholder = `What ${label} sees on its side, comma-separated for more than one`;
+            document.getElementById('instance-add-db-toggle-label').textContent =
+                `Connect directly to ${label}'s database (faster than the API, optional)`;
+            document.getElementById('instance-add-db-path').placeholder =
+                `/${mediaType}-${isRadarr ? '4k' : 'strm'}-data/${mediaType}.db`;
+
+            const pathsLabel = document.getElementById('instance-add-paths-label');
+            const pathsInput = document.getElementById('instance-add-paths');
+            if (isRadarr) {
+                pathsLabel.textContent = 'Movie Paths';
+                pathsInput.placeholder = 'Container paths where movies live, comma-separated (e.g. /data/movies)';
+            } else {
+                pathsLabel.textContent = 'TV Paths';
+                pathsInput.placeholder = 'Container paths where TV shows live, comma-separated (e.g. /data/tv)';
+            }
+        }
+
+        function toggleDbFields() {
+            const enabled = document.getElementById('instance-add-db-enable').checked;
+            document.getElementById('instance-add-db-fields').hidden = !enabled;
+            if (enabled) toggleDbTypeFields();
+        }
+
+        function toggleDbTypeFields() {
+            const isSqlite = document.getElementById('instance-add-db-type').value === 'sqlite';
+            document.getElementById('instance-add-db-path-row').hidden = !isSqlite;
+            document.getElementById('instance-add-db-pg-fields').hidden = isSqlite;
+        }
+
+        // Comma-separated text field -> array of trimmed, non-empty strings.
+        function splitCsv(value) {
+            return (value || '').split(',').map(s => s.trim()).filter(Boolean);
+        }
+
+        // Read every field currently in the form into the shape the wizard
+        // API expects. Shared by the test and save calls so they can never
+        // drift apart on what a field means.
+        function collectWizardPayload() {
+            const field = id => document.getElementById(id).value.trim();
+            const mediaType = document.getElementById('instance-add-type').value;
+            const editMode = document.getElementById('instance-add-form').dataset.editMode === 'true';
+
+            const payload = {
+                media_type: mediaType,
+                name: field('instance-add-name'),
+                url: field('instance-add-url'),
+                api_key: field('instance-add-api-key'),
+                root_folders: splitCsv(field('instance-add-root-folders')),
+                edit_existing: editMode,
+            };
+
+            const paths = splitCsv(field('instance-add-paths'));
+            if (mediaType === 'radarr') {
+                payload.movie_paths = paths;
+            } else {
+                payload.tv_paths = paths;
+            }
+
+            if (document.getElementById('instance-add-db-enable').checked) {
+                payload.db_type = document.getElementById('instance-add-db-type').value;
+                if (payload.db_type === 'sqlite') {
+                    payload.db_path = field('instance-add-db-path');
+                } else {
+                    payload.db_host = field('instance-add-db-host');
+                    const port = field('instance-add-db-port');
+                    if (port) payload.db_port = parseInt(port, 10);
+                    payload.db_name = field('instance-add-db-name');
+                    payload.db_user = field('instance-add-db-user');
+                    payload.db_password = field('instance-add-db-password');
+                }
+            }
+
+            return payload;
+        }
+
+        async function testWizardConnection() {
+            const resultEl = document.getElementById('instance-add-result');
+            const btn = document.getElementById('instance-add-test-btn');
+            const payload = collectWizardPayload();
+
+            if (!payload.url || !payload.api_key) {
+                resultEl.innerHTML = `<div class="result-error">URL and API key are required before testing.</div>`;
+                return;
+            }
+
+            btn.disabled = true;
+            resultEl.innerHTML = `<span class="result-testing">Testing&hellip;</span>`;
+
+            try {
+                const resp = await fetch('/api/wizard/test-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatErrorDetail(data.detail) || `HTTP ${resp.status}`);
+
+                const parts = [];
+                if (data.api) {
+                    parts.push(data.api.success
+                        ? `<span class="test-badge">✅ API connection OK</span>`
+                        : `<span class="test-badge">❌ API: ${escHtml(data.api.error)}</span>`);
+
+                    // Radarr/Sonarr already know their own root folders — no
+                    // reason to make someone retype what the API already
+                    // has. Only fills the field if it's still empty, so this
+                    // never overwrites something the user already typed.
+                    if (data.api.success && data.api.root_folders && data.api.root_folders.length) {
+                        const rootFoldersInput = document.getElementById('instance-add-root-folders');
+                        if (rootFoldersInput && !rootFoldersInput.value.trim()) {
+                            rootFoldersInput.value = data.api.root_folders.join(',');
+                            parts.push(`<span class="test-badge">📁 Found ${data.api.root_folders.length} root folder(s), filled in below</span>`);
+                        }
+                    }
+                }
+                if (data.db) {
+                    parts.push(data.db.success
+                        ? `<span class="test-badge">✅ Database connection OK</span>`
+                        : `<span class="test-badge">❌ Database: ${escHtml(data.db.error)}</span>`);
+                }
+                resultEl.innerHTML = parts.length ? parts.join('') : 'Nothing to test yet — fill in a URL/API key or enable the database section.';
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">${escHtml(err.message)}</div>`;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function saveWizardInstance() {
+            const resultEl = document.getElementById('instance-add-result');
+            const saveBtn = document.getElementById('instance-add-save-btn');
+            const payload = collectWizardPayload();
+
+            if (!payload.url || !payload.api_key) {
+                resultEl.innerHTML = `<div class="result-error">URL and API key are required.</div>`;
+                return;
+            }
+
+            saveBtn.disabled = true;
+            resultEl.innerHTML = `<span class="result-testing">Saving&hellip;</span>`;
+
+            try {
+                const resp = await fetch('/api/wizard/save-instance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatErrorDetail(data.detail) || `HTTP ${resp.status}`);
+
+                resultEl.innerHTML = `
+                    <div class="result-success">
+                        <strong>Added ${escHtml(data.instance_name)}.</strong>
+                        Webhook path: <code>${escHtml(data.webhook_path)}</code><br>
+                        ${escHtml(data.restart_reason)}
+                    </div>
+                `;
+                // The new instance isn't live until chronarr-core restarts, so
+                // there's nothing more to do here — leave the success message
+                // up rather than collapsing the form, and refresh the instance
+                // list in case a restart already happened in the background.
+                loadInstances();
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">${escHtml(err.message)}</div>`;
+            } finally {
+                saveBtn.disabled = false;
+            }
+        }
+
+        // --- Backup & Restore ---
+
+        function handleRestoreFileChosen(event) {
+            const file = event.target.files[0];
+            // Clear the input now so choosing the same filename again later
+            // still fires this handler — browsers don't fire `change` for
+            // an unchanged value otherwise.
+            event.target.value = '';
+            if (!file) return;
+
+            const resultEl = document.getElementById('restore-result');
+            const reader = new FileReader();
+            reader.onload = () => restoreFromBackupText(reader.result, resultEl);
+            reader.onerror = () => {
+                resultEl.innerHTML = `<div class="result-error">Could not read that file.</div>`;
+            };
+            reader.readAsText(file);
+        }
+
+        async function restoreFromBackupText(text, resultEl) {
+            let backup;
+            try {
+                backup = JSON.parse(text);
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">That doesn't look like a valid backup file — it isn't valid JSON.</div>`;
+                return;
+            }
+
+            if (typeof backup.env !== 'string' || typeof backup.env_secrets !== 'string') {
+                resultEl.innerHTML = `<div class="result-error">That file doesn't look like a Chronarr env backup — missing "env"/"env_secrets" content.</div>`;
+                return;
+            }
+
+            const when = backup.exported_at ? ` from ${backup.exported_at}` : '';
+            const confirmed = confirm(
+                `This will overwrite your current .env and .env.secrets with the backup${when}. ` +
+                `Chronarr auto-snapshots the current files first, so this can be undone by restoring again — ` +
+                `but it does take effect immediately on disk. Continue?`
+            );
+            if (!confirmed) return;
+
+            resultEl.innerHTML = `<span class="result-testing">Restoring&hellip;</span>`;
+
+            try {
+                const resp = await fetch('/api/wizard/env-restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(backup),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatErrorDetail(data.detail) || `HTTP ${resp.status}`);
+
+                resultEl.innerHTML = `
+                    <div class="result-success">
+                        <strong>Restored.</strong> ${escHtml(data.restart_reason)}<br>
+                        Your previous files were saved as <code>${escHtml(data.pre_restore_backup || 'n/a')}</code> first.
+                    </div>
+                `;
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">${escHtml(err.message)}</div>`;
+            }
+        }
     </script>
 </body>
 </html>

@@ -32,6 +32,7 @@ def _build_radarr_client(instance: RadarrInstance) -> Optional[AnyRadarrClient]:
                 client = RadarrDbClient(
                     db_type="sqlite",
                     db_path=instance.db_path or None,
+                    instance_name=instance.name,
                 )
             else:
                 client = RadarrDbClient(
@@ -41,6 +42,7 @@ def _build_radarr_client(instance: RadarrInstance) -> Optional[AnyRadarrClient]:
                     db_name=instance.db_name or None,
                     db_user=instance.db_user or None,
                     db_password=instance.db_password or None,
+                    instance_name=instance.name,
                 )
             _log("INFO", f"[{instance.name}] Using Radarr direct database access")
             return client
@@ -52,6 +54,7 @@ def _build_radarr_client(instance: RadarrInstance) -> Optional[AnyRadarrClient]:
         return RadarrClient(
             base_url=instance.url,
             api_key=instance.api_key,
+            instance_name=instance.name,
         )
 
     _log("WARNING", f"[{instance.name}] No Radarr client available — no DB or API configured")
@@ -66,6 +69,7 @@ def _build_sonarr_client(instance: SonarrInstance) -> Optional[AnySonarrClient]:
                 client = SonarrDbClient(
                     db_type="sqlite",
                     db_path=instance.db_path or None,
+                    instance_name=instance.name,
                 )
             else:
                 client = SonarrDbClient(
@@ -75,6 +79,7 @@ def _build_sonarr_client(instance: SonarrInstance) -> Optional[AnySonarrClient]:
                     db_name=instance.db_name or None,
                     db_user=instance.db_user or None,
                     db_password=instance.db_password or None,
+                    instance_name=instance.name,
                 )
             _log("INFO", f"[{instance.name}] Using Sonarr direct database access")
             return client
@@ -86,6 +91,7 @@ def _build_sonarr_client(instance: SonarrInstance) -> Optional[AnySonarrClient]:
         return SonarrClient(
             base_url=instance.url,
             api_key=instance.api_key,
+            instance_name=instance.name,
         )
 
     _log("WARNING", f"[{instance.name}] No Sonarr client available — no DB or API configured")
