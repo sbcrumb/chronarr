@@ -10,11 +10,17 @@ from datetime import datetime, timezone
 import uvicorn
 from fastapi import FastAPI
 
-# Import configuration first
-from config.settings import config
-
-# Authentication removed - handled by separate web container
+# utils.logging has to be imported before config.settings — importing it is
+# what actually loads .env/.env.secrets into the process (a side effect at
+# the bottom of that module). config.settings builds its module-level
+# `config` singleton, including instance discovery, the moment it's
+# imported — if that happens first, any instance whose env vars only live
+# in the file (not already in the container's OS environment from Docker's
+# own env_file injection at container creation) gets silently missed.
 from utils.logging import _log
+
+# Import configuration — after logging, see above
+from config.settings import config
 
 # Import core components
 from core.database import ChronarrDatabase
@@ -92,9 +98,12 @@ def initialize_components(registry=None):
     if registry is None:
         registry = build_registry(config)
 
-    # Processors get the default instance's client and mapper. Multi-instance
-    # requests pass instance name explicitly at process time; the processors look
-    # up the right client from the registry during their DB writes.
+    # Processors are constructed with the default instance's client and mapper
+    # (used as a fallback when no registry is available, e.g. in tests), but
+    # also get the InstanceRegistry itself — every per-call `instance` param
+    # they take is resolved against it, so a named instance actually gets its
+    # own client and path mapper instead of silently falling back to whatever
+    # was wired in here.
     default_radarr_mapper = registry.radarr_mapper("radarr")
     default_sonarr_mapper = registry.sonarr_mapper("sonarr")
 
@@ -102,11 +111,13 @@ def initialize_components(registry=None):
         db, None,
         default_sonarr_mapper or _noop_mapper(),
         sonarr_client=registry.sonarr("sonarr"),
+        registry=registry,
     )
     movie_processor = MovieProcessor(
         db, None,
         default_radarr_mapper or _noop_mapper(),
         radarr_client=registry.radarr("radarr"),
+        registry=registry,
     )
 
     batcher = WebhookBatcher(nfo_manager=None)

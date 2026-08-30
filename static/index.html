@@ -444,6 +444,15 @@
                                     <option value="tv">TV Shows Only</option>
                                 </select>
                             </div>
+                            <div class="form-group">
+                                <label>Instance:</label>
+                                <select id="populate-instance" required>
+                                    <option value="all">All Instances</option>
+                                </select>
+                                <p class="field-hint" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
+                                    Picking a specific instance populates only that one and sets Media Type for you (a Radarr instance is always movies, a Sonarr instance always TV).
+                                </p>
+                            </div>
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-play"></i> Start Population
                             </button>

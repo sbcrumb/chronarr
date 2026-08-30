@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
-from core.logging import _log
+from core.logging import _log as _log_raw
 
 
 class RadarrDbClient:
@@ -26,7 +26,8 @@ class RadarrDbClient:
                  db_port: Optional[int] = None,
                  db_name: Optional[str] = None,
                  db_user: Optional[str] = None,
-                 db_password: Optional[str] = None):
+                 db_password: Optional[str] = None,
+                 instance_name: str = ""):
         """
         Initialize Radarr database client
         
@@ -38,6 +39,8 @@ class RadarrDbClient:
             db_name: PostgreSQL database name
             db_user: PostgreSQL username
             db_password: PostgreSQL password
+            instance_name: label prefixed onto every log line from this client
+                (e.g. "radarr_4k") — leave blank for the unlabeled default instance
         """
         self.db_type = db_type.lower()
         self.db_path = db_path
@@ -46,7 +49,8 @@ class RadarrDbClient:
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
-        
+        self.instance_name = instance_name
+
         self._test_connection()
         
     @classmethod
@@ -60,10 +64,10 @@ class RadarrDbClient:
         if db_type == "sqlite":
             db_path = os.environ.get("RADARR_DB_PATH")
             if not db_path or not Path(db_path).exists():
-                _log("WARNING", f"RADARR_DB_PATH not found or invalid: {db_path}")
+                _log_raw("WARNING", f"RADARR_DB_PATH not found or invalid: {db_path}")
                 return None
-            return cls(db_type="sqlite", db_path=db_path)
-            
+            return cls(db_type="sqlite", db_path=db_path, instance_name="radarr")
+
         elif db_type == "postgresql":
             # Support both individual vars and connection string
             db_url = os.environ.get("RADARR_DB_URL")
@@ -75,7 +79,8 @@ class RadarrDbClient:
                     db_port=parsed.port or 5432,
                     db_name=parsed.path.lstrip('/'),
                     db_user=parsed.username,
-                    db_password=parsed.password
+                    db_password=parsed.password,
+                    instance_name="radarr",
                 )
             else:
                 return cls(
@@ -84,23 +89,32 @@ class RadarrDbClient:
                     db_port=int(os.environ.get("RADARR_DB_PORT", "5432")),
                     db_name=os.environ.get("RADARR_DB_NAME"),
                     db_user=os.environ.get("RADARR_DB_USER"),
-                    db_password=os.environ.get("RADARR_DB_PASSWORD")
+                    db_password=os.environ.get("RADARR_DB_PASSWORD"),
+                    instance_name="radarr",
                 )
         else:
-            _log("ERROR", f"Unsupported database type: {db_type}")
+            _log_raw("ERROR", f"Unsupported database type: {db_type}")
             return None
     
+    def _log(self, level: str, message: str) -> None:
+        """Log with this client's instance name prefixed, so a log line is
+        traceable back to which Radarr/Sonarr instance it came from — matters
+        as soon as there's more than one of the same type configured.
+        """
+        prefix = f"[{self.instance_name}] " if self.instance_name else ""
+        _log_raw(level, f"{prefix}{message}")
+
     def _test_connection(self) -> None:
         """Test database connection on initialization"""
         try:
             conn = self._get_connection()
             if conn:
                 conn.close()
-                _log("INFO", f"Connected to Radarr {self.db_type} database successfully")
+                self._log("INFO", f"Connected to Radarr {self.db_type} database successfully")
             else:
                 raise Exception("Failed to create connection")
         except Exception as e:
-            _log("ERROR", f"Failed to connect to Radarr database: {e}")
+            self._log("ERROR", f"Failed to connect to Radarr database: {e}")
             raise
     
     def _get_connection(self) -> Union[sqlite3.Connection, psycopg2.extensions.connection]:
@@ -169,7 +183,7 @@ class RadarrDbClient:
                     return dict(row) if self.db_type == "sqlite" else row
                     
         except Exception as e:
-            _log("ERROR", f"Database query error for IMDb {imdb_id}: {e}")
+            self._log("ERROR", f"Database query error for IMDb {imdb_id}: {e}")
             
         return None
 
@@ -226,7 +240,7 @@ class RadarrDbClient:
                 return []
 
         except Exception as e:
-            _log("ERROR", f"Database query error getting all movies: {e}")
+            self._log("ERROR", f"Database query error getting all movies: {e}")
             return []
 
     def get_earliest_import_date(self, movie_id: int) -> Tuple[Optional[str], str]:
@@ -241,7 +255,7 @@ class RadarrDbClient:
         """
         # If first event is rename, all subsequent imports are upgrades - skip them
         if self.is_first_event_rename_based(movie_id):
-            _log("INFO", f"Movie {movie_id} has rename-first history - all imports are upgrades, skipping")
+            self._log("INFO", f"Movie {movie_id} has rename-first history - all imports are upgrades, skipping")
             return None, "radarr:db.upgrade_imports_skipped"
         
         # Query for earliest import event - PostgreSQL uses INTEGER EventType (3 = import)
@@ -295,7 +309,7 @@ class RadarrDbClient:
                         dt = event_date.replace(tzinfo=timezone.utc)
                     
                     date_iso = dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-                    _log("INFO", f"✅ Found import event ({event_type}) for movie {movie_id} at {date_iso}")
+                    self._log("INFO", f"✅ Found import event ({event_type}) for movie {movie_id} at {date_iso}")
                     return date_iso, "radarr:db.history.import"
                 
                 # Fallback to grab events
@@ -311,11 +325,11 @@ class RadarrDbClient:
                         dt = event_date.replace(tzinfo=timezone.utc)
                     
                     date_iso = dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-                    _log("WARNING", f"⚠️ Using grab event ({event_type}) for movie {movie_id} at {date_iso}")
+                    self._log("WARNING", f"⚠️ Using grab event ({event_type}) for movie {movie_id} at {date_iso}")
                     return date_iso, "radarr:db.history.grab"
                     
         except Exception as e:
-            _log("ERROR", f"Database query error for movie {movie_id}: {e}")
+            self._log("ERROR", f"Database query error for movie {movie_id}: {e}")
             
         return None, "radarr:db.no_date_found"
 
@@ -351,27 +365,27 @@ class RadarrDbClient:
                 rows = cursor.fetchall()
                 
                 if rows:
-                    _log("INFO", f"Movie {movie_id} history debug - first 5 events:")
+                    self._log("INFO", f"Movie {movie_id} history debug - first 5 events:")
                     for i, row in enumerate(rows):
                         event_type = row['event_type'] if self.db_type == "postgresql" else row[0] 
                         event_date = row['event_date'] if self.db_type == "postgresql" else row[1]
-                        _log("INFO", f"  Event {i+1}: Type={event_type}, Date={event_date}")
+                        self._log("INFO", f"  Event {i+1}: Type={event_type}, Date={event_date}")
                     
                     first_event_type = rows[0]['event_type'] if self.db_type == "postgresql" else rows[0][0]
                     # EventType 8 = movieFileRenamed
                     # Also check for EventType 7 = movieFileRenamed in some Radarr versions
                     is_rename_first = first_event_type in [7, 8]
-                    _log("INFO", f"Movie {movie_id}: First event type={first_event_type}, is_rename_first={is_rename_first}")
+                    self._log("INFO", f"Movie {movie_id}: First event type={first_event_type}, is_rename_first={is_rename_first}")
                     
                     if is_rename_first:
-                        _log("INFO", f"🎯 Movie {movie_id} detected as rename-first scenario - will prefer release dates over import dates")
+                        self._log("INFO", f"🎯 Movie {movie_id} detected as rename-first scenario - will prefer release dates over import dates")
                     
                     return is_rename_first
                 else:
-                    _log("WARNING", f"Movie {movie_id}: No history events found - this could indicate missing data")
+                    self._log("WARNING", f"Movie {movie_id}: No history events found - this could indicate missing data")
                     
         except Exception as e:
-            _log("ERROR", f"Error checking first event type for movie {movie_id}: {e}")
+            self._log("ERROR", f"Error checking first event type for movie {movie_id}: {e}")
             
         return False
     
@@ -415,7 +429,7 @@ class RadarrDbClient:
                         return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
                         
         except Exception as e:
-            _log("ERROR", f"Database query error for movie file date {movie_id}: {e}")
+            self._log("ERROR", f"Database query error for movie file date {movie_id}: {e}")
             
         return None
     
@@ -437,14 +451,14 @@ class RadarrDbClient:
         
         # Check if we skipped upgrades and should prefer release dates
         if source == "radarr:db.upgrade_imports_skipped":
-            _log("INFO", f"Movie {movie_id} upgrade scenario detected - signaling to prefer release dates")
+            self._log("INFO", f"Movie {movie_id} upgrade scenario detected - signaling to prefer release dates")
             return None, "radarr:db.prefer_release_dates"
         
         # Fallback to file date if requested
         if fallback_to_file_date:
             file_date = self.get_movie_file_date(movie_id)
             if file_date:
-                _log("WARNING", f"Using file dateAdded as fallback for movie_id {movie_id}")
+                self._log("WARNING", f"Using file dateAdded as fallback for movie_id {movie_id}")
                 return file_date, "radarr:db.file.dateAdded"
 
         return None, "radarr:db.no_date_found"
@@ -517,7 +531,7 @@ class RadarrDbClient:
                         results[imdb_id] = (None, "radarr:db.bulk.no_import")
                 
         except Exception as e:
-            _log("ERROR", f"Bulk query error: {e}")
+            self._log("ERROR", f"Bulk query error: {e}")
             # Return empty results for failed queries
             for imdb_id in clean_imdb_ids:
                 if imdb_id not in results:
@@ -547,7 +561,7 @@ class RadarrDbClient:
                     stats[stat_name] = result[0] if result else 0
                     
         except Exception as e:
-            _log("ERROR", f"Stats query error: {e}")
+            self._log("ERROR", f"Stats query error: {e}")
             stats["error"] = str(e)
             
         return stats
@@ -669,7 +683,7 @@ class RadarrDbClient:
             health["status"] = "error"
             health["connection"] = "failed"
             health["issues"].append(f"Connection failed: {e}")
-            _log("ERROR", f"Database health check failed: {e}")
+            self._log("ERROR", f"Database health check failed: {e}")
         
         # Overall status determination
         if health["issues"]:

@@ -54,7 +54,7 @@ function switchTab(tabName) {
         case 'movies': loadMovies(); break;
         case 'tv': loadSeries(); break;
         case 'reports': loadReport(); break;
-        case 'tools': loadDetailedStats(); break;
+        case 'tools': loadDetailedStats(); loadPopulateInstanceOptions(); break;
     }
 }
 
@@ -139,6 +139,10 @@ function initializeEventListeners() {
     document.getElementById('bulk-update-form').addEventListener('submit', handleBulkUpdate);
     document.getElementById('manual-scan-form').addEventListener('submit', handleManualScan);
     document.getElementById('populate-form').addEventListener('submit', handlePopulateDatabase);
+    const populateInstanceSelect = document.getElementById('populate-instance');
+    if (populateInstanceSelect) {
+        populateInstanceSelect.addEventListener('change', syncPopulateMediaTypeToInstance);
+    }
 }
 
 // API calls
@@ -1867,10 +1871,86 @@ async function bulkDeleteSelected() {
 // Database Population Functions
 // ---------------------------
 
+// Fills the Instance dropdown on the Populate Database card from the same
+// /api/instances data the sidebar already uses — "All Instances" plus one
+// entry per configured Radarr/Sonarr instance, grouped by type so it's
+// obvious which is which once there's more than a couple.
+async function loadPopulateInstanceOptions() {
+    const select = document.getElementById('populate-instance');
+    if (!select) return;
+
+    try {
+        const data = await apiCall('/api/instances');
+        const radarrNames = (data.radarr || []).map(i => i.name);
+        const sonarrNames = (data.sonarr || []).map(i => i.name);
+
+        // Keep "All Instances", drop everything else and rebuild — this
+        // gets called every time the Tools tab is opened, so it has to be
+        // safe to run repeatedly without piling up duplicate options.
+        select.innerHTML = '<option value="all">All Instances</option>';
+
+        if (radarrNames.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Radarr';
+            radarrNames.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                opt.dataset.mediaType = 'movies';
+                group.appendChild(opt);
+            });
+            select.appendChild(group);
+        }
+
+        if (sonarrNames.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Sonarr';
+            sonarrNames.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                opt.dataset.mediaType = 'tv';
+                group.appendChild(opt);
+            });
+            select.appendChild(group);
+        }
+
+        // Reset in case the last selection here no longer exists (e.g. an
+        // instance was deleted since this was last loaded).
+        syncPopulateMediaTypeToInstance();
+    } catch (error) {
+        console.error('Failed to load instances for populate dropdown:', error);
+        // Leave just "All Instances" — populate still works, just without
+        // the ability to target a single instance until this loads.
+    }
+}
+
+function syncPopulateMediaTypeToInstance() {
+    const instanceSelect = document.getElementById('populate-instance');
+    const mediaTypeSelect = document.getElementById('populate-media-type');
+    if (!instanceSelect || !mediaTypeSelect) return;
+
+    const selectedOption = instanceSelect.options[instanceSelect.selectedIndex];
+    const mediaType = selectedOption ? selectedOption.dataset.mediaType : null;
+
+    if (instanceSelect.value !== 'all' && mediaType) {
+        // A specific instance can only ever be one media type — a Radarr
+        // instance is movies, a Sonarr instance is TV. Lock the Media Type
+        // dropdown to match instead of making the user keep the two in sync
+        // by hand (picking the wrong one used to silently populate nothing).
+        mediaTypeSelect.value = mediaType;
+        mediaTypeSelect.disabled = true;
+    } else {
+        mediaTypeSelect.disabled = false;
+    }
+}
+
 async function handlePopulateDatabase(event) {
     event.preventDefault();
 
     const mediaType = document.getElementById('populate-media-type').value;
+    const instanceSelect = document.getElementById('populate-instance');
+    const instance = instanceSelect ? instanceSelect.value : 'all';
 
     // Validate input
     if (!mediaType) {
@@ -1879,7 +1959,8 @@ async function handlePopulateDatabase(event) {
     }
 
     // Confirm with user
-    const confirmMsg = `Are you sure you want to populate the database with ${mediaType}? This will query Radarr/Sonarr and may take several minutes.`;
+    const target = instance !== 'all' ? `instance '${instance}'` : `${mediaType}`;
+    const confirmMsg = `Are you sure you want to populate the database with ${target}? This will query Radarr/Sonarr and may take several minutes.`;
     if (!confirm(confirmMsg)) {
         return;
     }
@@ -1890,7 +1971,7 @@ async function handlePopulateDatabase(event) {
 
         // Start the population
         showToast('🚀 Starting database population...', 'info');
-        const response = await fetch(`/admin/populate-database?media_type=${mediaType}`, {
+        const response = await fetch(`/admin/populate-database?media_type=${mediaType}&instance=${encodeURIComponent(instance)}`, {
             method: 'POST',
             credentials: 'include'
         });

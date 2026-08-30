@@ -67,7 +67,8 @@ class DatabasePopulator:
             except Exception:
                 self.radarr_api = radarr_client if radarr_client else RadarrClient(
                     os.environ.get("RADARR_URL", ""),
-                    os.environ.get("RADARR_API_KEY", "")
+                    os.environ.get("RADARR_API_KEY", ""),
+                    instance_name="radarr",
                 )
                 self.radarr = self.radarr_api
                 _log("INFO", "DatabasePopulator: Using Radarr API client")
@@ -96,7 +97,8 @@ class DatabasePopulator:
             except Exception:
                 self.sonarr_api = sonarr_client if sonarr_client else SonarrClient(
                     os.environ.get("SONARR_URL", ""),
-                    os.environ.get("SONARR_API_KEY", "")
+                    os.environ.get("SONARR_API_KEY", ""),
+                    instance_name="sonarr",
                 )
                 self.sonarr = self.sonarr_api
                 _log("INFO", "DatabasePopulator: Using Sonarr API client")
@@ -120,10 +122,11 @@ class DatabasePopulator:
                 db_name=inst.db_name or None,
                 db_user=inst.db_user or None,
                 db_password=inst.db_password or None,
+                instance_name=inst.name,
             )
             _log("INFO", f"DatabasePopulator: DB access configured for Radarr instance '{inst.name}'")
             return cls(db, _radarr_db_override=client)
-        client = RadarrClient(inst.url, inst.api_key)
+        client = RadarrClient(inst.url, inst.api_key, instance_name=inst.name)
         return cls(db, _radarr_db_override=client)
 
     @classmethod
@@ -141,26 +144,32 @@ class DatabasePopulator:
                 db_name=inst.db_name or None,
                 db_user=inst.db_user or None,
                 db_password=inst.db_password or None,
+                instance_name=inst.name,
             )
             _log("INFO", f"DatabasePopulator: DB access configured for Sonarr instance '{inst.name}'")
             return cls(db, _sonarr_db_override=client)
-        client = SonarrClient(inst.url, inst.api_key)
+        client = SonarrClient(inst.url, inst.api_key, instance_name=inst.name)
         return cls(db, _sonarr_db_override=client)
 
-    def get_episode_import_history(self, episode_id: int) -> Optional[str]:
+    def get_episode_import_history(self, episode_id: int) -> Tuple[Optional[str], Optional[str]]:
         """
-        Get episode import history from either database or API
-        Wraps both SonarrDbClient.get_episode_import_date and SonarrClient.get_episode_import_history
+        Get episode import history from either database or API.
+        Wraps both SonarrDbClient.get_episode_import_date and SonarrClient.get_episode_import_history.
+
+        Always returns (date_iso, source) now — this used to discard the DB
+        client's real source string ("sonarr:db.history.import") and let the
+        caller hardcode "sonarr:api.import_history" regardless of which path
+        actually ran, mislabeling every DB-sourced date as API-sourced.
         """
         if self.using_sonarr_db and self.sonarr_db:
-            # Database client returns (date_iso, source)
-            date_iso, source = self.sonarr_db.get_episode_import_date(episode_id)
-            return date_iso
+            # Database client already returns (date_iso, source)
+            return self.sonarr_db.get_episode_import_date(episode_id)
         elif self.sonarr_api:
-            # API client returns Optional[str]
-            return self.sonarr_api.get_episode_import_history(episode_id)
+            # API client returns just the date — the source is always the same for it
+            date_iso = self.sonarr_api.get_episode_import_history(episode_id)
+            return date_iso, ('sonarr:api.import_history' if date_iso else None)
         else:
-            return None
+            return None, None
 
     def populate_movies(self, instance: str = 'radarr') -> Dict[str, any]:
         """
@@ -547,10 +556,10 @@ class DatabasePopulator:
                             else:
                                 episode_id = episode.get('id')
                                 if episode_id:
-                                    import_date = self.get_episode_import_history(episode_id)
+                                    import_date, import_source = self.get_episode_import_history(episode_id)
                                     if import_date:
                                         dateadded = import_date
-                                        source = 'sonarr:api.import_history'
+                                        source = import_source or 'sonarr:api.import_history'
 
                             # Fallback to air date if no import date
                             if not dateadded and aired:
