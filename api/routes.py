@@ -1651,24 +1651,29 @@ async def cleanup_orphaned_records_hybrid(request: OrphanedCleanupRequest, depen
     from utils.orphaned_cleanup import OrphanedRecordCleaner
 
     db = dependencies["db"]
-    radarr_db_client = dependencies.get("radarr_db_client")
-    sonarr_db_client = dependencies.get("sonarr_db_client")
+    registry = dependencies.get("registry")
 
     try:
-        # Initialize the cleaner with available database clients
+        # Initialize the cleaner — registry lets it resolve the right
+        # Radarr/Sonarr client per row's own instance instead of a single
+        # fixed client (the old radarr_db_client/sonarr_db_client keys were
+        # never actually populated in dependencies, so check_database was
+        # silently inert before this).
         cleaner = OrphanedRecordCleaner(
             chronarr_db=db,
-            radarr_db_client=radarr_db_client,
-            sonarr_db_client=sonarr_db_client
+            registry=registry
         )
 
         # Validate that we can perform the requested checks
         warnings = []
         if request.check_database:
-            if request.check_movies and not radarr_db_client:
-                warnings.append("Radarr database client not configured - movie database validation disabled")
-            if request.check_series and not sonarr_db_client:
-                warnings.append("Sonarr database client not configured - series database validation disabled")
+            if not registry:
+                warnings.append("Instance registry not available - database validation disabled")
+            else:
+                if request.check_movies and not registry.radarr_names:
+                    warnings.append("No Radarr instances configured - movie database validation disabled")
+                if request.check_series and not registry.sonarr_names:
+                    warnings.append("No Sonarr instances configured - series database validation disabled")
 
         _log("INFO", f"Starting hybrid orphaned record cleanup (dry_run={request.dry_run})")
 

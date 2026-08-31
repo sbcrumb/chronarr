@@ -8,23 +8,68 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 
 from core.logging import _log
+from clients.radarr_db_client import RadarrDbClient
+from clients.sonarr_db_client import SonarrDbClient
 
 
 class OrphanedRecordCleaner:
-    """Clean up orphaned records from Chronarr database"""
+    """Clean up orphaned records from Chronarr database, per (imdb_id, instance).
 
-    def __init__(self, chronarr_db, radarr_db_client=None, sonarr_db_client=None):
+    The same IMDb ID can have independent rows under multiple Radarr/Sonarr
+    instances (a full back-catalog under the default instance, a separate
+    smaller pickup under a named one). Every check and delete here is scoped
+    to one row's own instance — resolved from the InstanceRegistry — so
+    checking or removing one instance's row never touches another instance's
+    still-valid data sharing the same IMDb ID.
+    """
+
+    def __init__(self, chronarr_db, registry=None, radarr_db_client=None, sonarr_db_client=None):
         """
         Initialize cleanup utility
 
         Args:
             chronarr_db: ChronarrDatabase instance
-            radarr_db_client: Optional RadarrDbClient instance
-            sonarr_db_client: Optional SonarrDbClient instance
+            registry: InstanceRegistry — resolves the right Radarr/Sonarr client
+                per row's own instance. Required for check_database to work
+                correctly across more than the default instance.
+            radarr_db_client, sonarr_db_client: fallback single clients, used only
+                when registry is None or doesn't have a client for a row's instance
+                (legacy/test construction path — same pattern as TVProcessor/MovieProcessor).
         """
         self.chronarr_db = chronarr_db
+        self.registry = registry
         self.radarr_db = radarr_db_client
         self.sonarr_db = sonarr_db_client
+
+    def _resolve_radarr(self, instance: str):
+        """Return a Radarr client for this instance, or the fallback default."""
+        if self.registry:
+            client = self.registry.radarr(instance)
+            if client is not None:
+                return client
+        return self.radarr_db
+
+    def _resolve_sonarr(self, instance: str):
+        """Return a Sonarr client for this instance, or the fallback default."""
+        if self.registry:
+            client = self.registry.sonarr(instance)
+            if client is not None:
+                return client
+        return self.sonarr_db
+
+    @staticmethod
+    def _radarr_movie_by_imdb(client, imdb_id: str) -> Optional[Dict[str, Any]]:
+        """Call whichever lookup method this client type actually has."""
+        if isinstance(client, RadarrDbClient):
+            return client.get_movie_by_imdb(imdb_id)
+        return client.movie_by_imdb(imdb_id)
+
+    @staticmethod
+    def _sonarr_series_by_imdb(client, imdb_id: str) -> Optional[Dict[str, Any]]:
+        """Call whichever lookup method this client type actually has."""
+        if isinstance(client, SonarrDbClient):
+            return client.get_series_by_imdb(imdb_id)
+        return client.series_by_imdb(imdb_id)
 
     def find_orphaned_movies(self, check_filesystem: bool = True, check_database: bool = True) -> List[Dict[str, Any]]:
         """
@@ -43,7 +88,7 @@ class OrphanedRecordCleaner:
         with self.chronarr_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT imdb_id, title, path, dateadded
+                SELECT imdb_id, instance, title, path, dateadded
                 FROM movies
                 ORDER BY title
             """)
@@ -53,6 +98,7 @@ class OrphanedRecordCleaner:
 
         for movie in movies:
             imdb_id = movie['imdb_id']
+            instance = movie['instance']
             title = movie['title']
             file_path = movie.get('path')
 
@@ -66,15 +112,19 @@ class OrphanedRecordCleaner:
                     filesystem_missing = True
                     reasons.append(f"File not found: {file_path}")
 
-            # Check 2: Radarr database
-            if check_database and self.radarr_db:
-                try:
-                    radarr_movie = self.radarr_db.get_movie_by_imdb(imdb_id)
-                    if not radarr_movie:
-                        database_missing = True
-                        reasons.append("Not found in Radarr database")
-                except Exception as e:
-                    _log("WARNING", f"Error checking Radarr DB for {imdb_id}: {e}")
+            # Check 2: this row's own Radarr instance's database
+            if check_database:
+                radarr_client = self._resolve_radarr(instance)
+                if radarr_client:
+                    try:
+                        radarr_movie = self._radarr_movie_by_imdb(radarr_client, imdb_id)
+                        if not radarr_movie:
+                            database_missing = True
+                            reasons.append(f"Not found in Radarr database (instance: {instance})")
+                    except Exception as e:
+                        _log("WARNING", f"[{instance}] Error checking Radarr DB for {imdb_id}: {e}")
+                else:
+                    _log("WARNING", f"[{instance}] No Radarr client available to verify {imdb_id} — skipping database check for this row")
 
             # Orphaned if BOTH checks fail (hybrid approach)
             if check_filesystem and check_database:
@@ -89,6 +139,7 @@ class OrphanedRecordCleaner:
             if is_orphaned and reasons:
                 orphaned.append({
                     'imdb_id': imdb_id,
+                    'instance': instance,
                     'title': title,
                     'file_path': file_path,
                     'dateadded': movie.get('dateadded'),
@@ -116,7 +167,7 @@ class OrphanedRecordCleaner:
         with self.chronarr_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT imdb_id, path
+                SELECT imdb_id, instance, path
                 FROM series
                 ORDER BY path
             """)
@@ -126,6 +177,7 @@ class OrphanedRecordCleaner:
 
         for series in series_list:
             imdb_id = series['imdb_id']
+            instance = series['instance']
             series_path = series.get('path')
             # Extract title from path for display purposes
             title = Path(series_path).name if series_path else imdb_id
@@ -140,15 +192,19 @@ class OrphanedRecordCleaner:
                     filesystem_missing = True
                     reasons.append(f"Series path not found: {series_path}")
 
-            # Check 2: Sonarr database
-            if check_database and self.sonarr_db:
-                try:
-                    sonarr_series = self.sonarr_db.get_series_by_imdb(imdb_id)
-                    if not sonarr_series:
-                        database_missing = True
-                        reasons.append("Not found in Sonarr database")
-                except Exception as e:
-                    _log("WARNING", f"Error checking Sonarr DB for {imdb_id}: {e}")
+            # Check 2: this row's own Sonarr instance's database
+            if check_database:
+                sonarr_client = self._resolve_sonarr(instance)
+                if sonarr_client:
+                    try:
+                        sonarr_series = self._sonarr_series_by_imdb(sonarr_client, imdb_id)
+                        if not sonarr_series:
+                            database_missing = True
+                            reasons.append(f"Not found in Sonarr database (instance: {instance})")
+                    except Exception as e:
+                        _log("WARNING", f"[{instance}] Error checking Sonarr DB for {imdb_id}: {e}")
+                else:
+                    _log("WARNING", f"[{instance}] No Sonarr client available to verify {imdb_id} — skipping database check for this row")
 
             # Orphaned if BOTH checks fail (hybrid approach)
             if check_filesystem and check_database:
@@ -161,19 +217,20 @@ class OrphanedRecordCleaner:
                 is_orphaned = False
 
             if is_orphaned and reasons:
-                # Count episodes for this series
+                # Count episodes for this series, scoped to the same instance
                 with self.chronarr_db.get_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT COUNT(*) as episode_count
                         FROM episodes
-                        WHERE imdb_id = %s
-                    """, (imdb_id,))
+                        WHERE imdb_id = %s AND instance = %s
+                    """, (imdb_id, instance))
                     result = cursor.fetchone()
                     episode_count = result['episode_count'] if result else 0
 
                 orphaned.append({
                     'imdb_id': imdb_id,
+                    'instance': instance,
                     'title': title,
                     'series_path': series_path,
                     'episode_count': episode_count,
@@ -200,24 +257,25 @@ class OrphanedRecordCleaner:
 
         for movie in orphaned_movies:
             imdb_id = movie['imdb_id']
+            instance = movie.get('instance', 'radarr')
             title = movie['title']
             reasons = ', '.join(movie['reasons'])
 
             if dry_run:
-                _log("INFO", f"[DRY RUN] Would remove movie: {title} ({imdb_id}) - Reasons: {reasons}")
+                _log("INFO", f"[DRY RUN] Would remove movie: {title} ({imdb_id}, instance: {instance}) - Reasons: {reasons}")
                 removed_titles.append(f"{title} ({imdb_id})")
                 removed_count += 1
             else:
                 try:
                     with self.chronarr_db.get_connection() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (imdb_id,))
+                        cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
 
-                    _log("INFO", f"Removed orphaned movie: {title} ({imdb_id}) - Reasons: {reasons}")
+                    _log("INFO", f"Removed orphaned movie: {title} ({imdb_id}, instance: {instance}) - Reasons: {reasons}")
                     removed_titles.append(f"{title} ({imdb_id})")
                     removed_count += 1
                 except Exception as e:
-                    _log("ERROR", f"Failed to remove movie {imdb_id}: {e}")
+                    _log("ERROR", f"[{instance}] Failed to remove movie {imdb_id}: {e}")
 
         return {
             'removed_count': removed_count,
@@ -242,12 +300,13 @@ class OrphanedRecordCleaner:
 
         for series in orphaned_series:
             imdb_id = series['imdb_id']
+            instance = series.get('instance', 'sonarr')
             title = series['title']
             episode_count = series.get('episode_count', 0)
             reasons = ', '.join(series['reasons'])
 
             if dry_run:
-                _log("INFO", f"[DRY RUN] Would remove series: {title} ({imdb_id}) with {episode_count} episodes - Reasons: {reasons}")
+                _log("INFO", f"[DRY RUN] Would remove series: {title} ({imdb_id}, instance: {instance}) with {episode_count} episodes - Reasons: {reasons}")
                 removed_titles.append(f"{title} ({imdb_id}) - {episode_count} episodes")
                 removed_count += 1
                 removed_episodes += episode_count
@@ -256,16 +315,16 @@ class OrphanedRecordCleaner:
                     with self.chronarr_db.get_connection() as conn:
                         cursor = conn.cursor()
                         # Remove episodes first
-                        cursor.execute("DELETE FROM episodes WHERE imdb_id = %s", (imdb_id,))
+                        cursor.execute("DELETE FROM episodes WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
                         # Then remove series
-                        cursor.execute("DELETE FROM series WHERE imdb_id = %s", (imdb_id,))
+                        cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
 
-                    _log("INFO", f"Removed orphaned series: {title} ({imdb_id}) with {episode_count} episodes - Reasons: {reasons}")
+                    _log("INFO", f"Removed orphaned series: {title} ({imdb_id}, instance: {instance}) with {episode_count} episodes - Reasons: {reasons}")
                     removed_titles.append(f"{title} ({imdb_id}) - {episode_count} episodes")
                     removed_count += 1
                     removed_episodes += episode_count
                 except Exception as e:
-                    _log("ERROR", f"Failed to remove series {imdb_id}: {e}")
+                    _log("ERROR", f"[{instance}] Failed to remove series {imdb_id}: {e}")
 
         return {
             'removed_count': removed_count,

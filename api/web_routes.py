@@ -389,32 +389,41 @@ async def debug_series_date_distribution(dependencies: dict):
         }
 
 
-async def get_series_episodes(dependencies: dict, imdb_id: str):
-    """Get all episodes for a specific TV series"""
+async def get_series_episodes(dependencies: dict, imdb_id: str, instance: str = 'sonarr'):
+    """Get all episodes for a specific TV series, scoped to one instance.
+
+    A given IMDb ID can exist independently under multiple Sonarr instances
+    (e.g. a full back-catalog under the default `sonarr` and a separate,
+    smaller pickup under a named instance like `sonarr_strm`) — each is its
+    own series/episodes rows, keyed by (imdb_id, instance). Not filtering by
+    instance here pulled every instance's episodes into one merged list, so
+    a series row that's genuinely only 15 episodes under one instance would
+    show all 175 from every instance sharing the IMDb ID.
+    """
     db = dependencies["db"]
-    
+
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        
+
         # Get series info - PostgreSQL
-        cursor.execute("SELECT * FROM series WHERE imdb_id = %s", (imdb_id,))
+        cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
         series_row = cursor.fetchone()
         if not series_row:
             raise HTTPException(status_code=404, detail="Series not found")
-        
+
         series_info = dict(series_row)
         try:
             series_info['title'] = _clean_folder_title(Path(series_info['path']).name) if series_info['path'] else imdb_id
         except:
             series_info['title'] = imdb_id
-        
+
         # Get episodes - PostgreSQL
         cursor.execute("""
             SELECT season, episode, instance, aired, dateadded, source, has_video_file, last_updated
             FROM episodes
-            WHERE imdb_id = %s
+            WHERE imdb_id = %s AND instance = %s
             ORDER BY season, episode
-        """, (imdb_id,))
+        """, (imdb_id, instance))
         
         episodes = []
         for row in cursor.fetchall():
@@ -1715,8 +1724,8 @@ def register_web_routes(app, dependencies):
         return await get_tv_series_list(dependencies, skip, limit, search, imdb_search, date_filter, source_filter, instance)
     
     @app.get("/api/series/{imdb_id}/episodes")
-    async def api_series_episodes(imdb_id: str):
-        return await get_series_episodes(dependencies, imdb_id)
+    async def api_series_episodes(imdb_id: str, instance: str = 'sonarr'):
+        return await get_series_episodes(dependencies, imdb_id, instance)
     
     @app.get("/api/series/sources")
     async def api_series_sources():
@@ -1811,13 +1820,13 @@ def register_web_routes(app, dependencies):
         return await get_episode_date_options(dependencies, imdb_id, season, episode, instance)
     
     @app.delete("/api/episodes/{imdb_id}/{season}/{episode}")
-    async def api_delete_episode(imdb_id: str, season: int, episode: int):
+    async def api_delete_episode(imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
         """Delete an episode from the database"""
         db = dependencies["db"]
-        
+
         try:
             # Use the existing database method
-            deleted = db.delete_episode(imdb_id, season, episode)
+            deleted = db.delete_episode(imdb_id, season, episode, instance)
             
             if deleted:
                 return {

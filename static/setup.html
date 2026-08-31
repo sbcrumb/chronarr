@@ -408,11 +408,18 @@
                 <div class="base-url-row">
                     <label for="base-url">Base URL:</label>
                     <input type="text" id="base-url" placeholder="http://your-server:8080" />
+                    <button type="button" class="btn-copy" id="base-url-reset" title="Reset to this page's own address">
+                        <i class="fas fa-rotate-left"></i> Reset
+                    </button>
                 </div>
                 <p class="hint-text">
                     This is the address Radarr and Sonarr will use to reach Chronarr's core container.
-                    It should be the hostname (or IP) your media apps can reach, on port
-                    <code>8080</code> by default. Edit it once here and all webhook URLs below update automatically.
+                    Defaults to the address you're viewing this page from, but that's often wrong: if Radarr/Sonarr
+                    run as Docker containers on the <strong>same network</strong> as Chronarr, use the Docker
+                    <strong>container or service name</strong> instead (e.g. <code>http://chronarr-core:8080</code>,
+                    not this page's IP) — container names resolve between containers on a shared network even when
+                    the host IP doesn't. Edit it once here and all webhook URLs below update automatically; your
+                    change is remembered in this browser so it won't reset on the next visit.
                 </p>
             </div>
 
@@ -466,15 +473,48 @@
 
     <script>
         // Infer the likely core URL from the current page's host, swapping port to 8080.
-        // The user can override this in the input.
+        // Only a starting guess — it's the address *this browser* used to reach the
+        // web container, which for a Docker-networked Radarr/Sonarr is frequently not
+        // reachable from inside another container (the container/service name is).
         function defaultCoreUrl() {
             const { protocol, hostname } = window.location;
             return `${protocol}//${hostname}:8080`;
         }
 
+        const BASE_URL_STORAGE_KEY = 'chronarr.setup.baseUrl';
+
+        function readStoredBaseUrl() {
+            try {
+                return localStorage.getItem(BASE_URL_STORAGE_KEY) || '';
+            } catch (e) {
+                return ''; // private browsing / storage blocked — just fall back to the guess
+            }
+        }
+
+        function storeBaseUrl(value) {
+            try {
+                localStorage.setItem(BASE_URL_STORAGE_KEY, value);
+            } catch (e) {
+                // Nothing to do — the field still works for this session, it just
+                // won't survive a reload if storage isn't available.
+            }
+        }
+
         const baseInput = document.getElementById('base-url');
-        baseInput.value = defaultCoreUrl();
-        baseInput.addEventListener('input', rebuildUrls);
+        // A value saved in this browser (e.g. the Docker network name the user
+        // corrected it to) wins over the page-address guess, so it doesn't reset
+        // every time /setup is reopened.
+        baseInput.value = readStoredBaseUrl() || defaultCoreUrl();
+        baseInput.addEventListener('input', () => {
+            storeBaseUrl(baseInput.value);
+            rebuildUrls();
+        });
+
+        document.getElementById('base-url-reset').addEventListener('click', () => {
+            baseInput.value = defaultCoreUrl();
+            storeBaseUrl(baseInput.value);
+            rebuildUrls();
+        });
 
         function buildWebhookUrl(path) {
             const base = (baseInput.value || '').replace(/\/$/, '');

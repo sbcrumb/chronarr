@@ -581,19 +581,29 @@ class ChronarrDatabase:
             return deleted_count
     
     def delete_orphaned_episodes(self) -> List[Dict]:
-        """Delete DB episode rows that have no matching file on disk. Checks filesystem."""
+        """Delete DB episode rows that have no matching file on disk. Checks filesystem.
+
+        Scoped per (imdb_id, instance): the same IMDb ID can have independent
+        series/episode rows under multiple Sonarr instances (e.g. a full
+        back-catalog under the default instance and a separate pickup under
+        a named one). Without filtering the episode SELECT/DELETE by
+        instance too, checking one instance's directory listing would delete
+        another instance's still-present episodes just because they share an
+        IMDb ID.
+        """
         from utils.file_utils import find_episodes_on_disk
         from pathlib import Path
-        
+
         deleted_episodes = []
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT DISTINCT imdb_id, path FROM series")
+            cursor.execute("SELECT DISTINCT imdb_id, instance, path FROM series")
             series_list = cursor.fetchall()
 
             for series in series_list:
                 imdb_id = series['imdb_id']
+                instance = series['instance']
                 series_path = Path(series['path'])
                 if not series_path.exists():
                     continue
@@ -602,18 +612,19 @@ class ChronarrDatabase:
                 disk_episode_keys = set(disk_episodes.keys())
 
                 cursor.execute(
-                    "SELECT season, episode, dateadded, source FROM episodes WHERE imdb_id = %s",
-                    (imdb_id,)
+                    "SELECT season, episode, dateadded, source FROM episodes WHERE imdb_id = %s AND instance = %s",
+                    (imdb_id, instance)
                 )
                 for ep in cursor.fetchall():
                     season, episode = ep['season'], ep['episode']
                     if (season, episode) not in disk_episode_keys:
                         cursor.execute(
-                            "DELETE FROM episodes WHERE imdb_id = %s AND season = %s AND episode = %s",
-                            (imdb_id, season, episode)
+                            "DELETE FROM episodes WHERE imdb_id = %s AND instance = %s AND season = %s AND episode = %s",
+                            (imdb_id, instance, season, episode)
                         )
                         deleted_episodes.append({
                             'imdb_id': imdb_id,
+                            'instance': instance,
                             'season': season,
                             'episode': episode,
                             'dateadded': ep['dateadded'],
@@ -787,7 +798,12 @@ class ChronarrDatabase:
             return [dict(r) for r in cursor.fetchall()]
 
     def delete_orphaned_movies(self) -> List[Dict]:
-        """Delete DB movie rows whose directory or video files no longer exist on disk."""
+        """Delete DB movie rows whose directory or video files no longer exist on disk.
+
+        Scoped per (imdb_id, instance) — see delete_orphaned_episodes for why: the same
+        IMDb ID can have independent rows under multiple Radarr instances, and deleting
+        by imdb_id alone would remove another instance's still-valid row too.
+        """
         from pathlib import Path
 
         deleted_movies = []
@@ -795,16 +811,17 @@ class ChronarrDatabase:
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT imdb_id, path, dateadded, source FROM movies")
+            cursor.execute("SELECT imdb_id, instance, path, dateadded, source FROM movies")
 
             for movie in cursor.fetchall():
                 imdb_id = movie['imdb_id']
+                instance = movie['instance']
                 movie_path = Path(movie['path'])
 
                 if not movie_path.exists():
-                    cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (imdb_id,))
+                    cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
                     deleted_movies.append({
-                        'imdb_id': imdb_id, 'reason': 'directory_not_found',
+                        'imdb_id': imdb_id, 'instance': instance, 'reason': 'directory_not_found',
                         'path': str(movie_path), 'dateadded': movie['dateadded'],
                         'source': movie['source']
                     })
@@ -815,9 +832,9 @@ class ChronarrDatabase:
                     for f in movie_path.iterdir() if f.is_file()
                 )
                 if not has_video:
-                    cursor.execute("DELETE FROM movies WHERE imdb_id = %s", (imdb_id,))
+                    cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
                     deleted_movies.append({
-                        'imdb_id': imdb_id, 'reason': 'no_video_files',
+                        'imdb_id': imdb_id, 'instance': instance, 'reason': 'no_video_files',
                         'path': str(movie_path), 'dateadded': movie['dateadded'],
                         'source': movie['source']
                     })
@@ -825,27 +842,32 @@ class ChronarrDatabase:
             conn.commit()
 
         return deleted_movies
-    
+
     def delete_orphaned_series(self) -> List[Dict]:
-        """Delete DB series (and all their episodes) whose directory no longer exists on disk."""
+        """Delete DB series (and all their episodes) whose directory no longer exists on disk.
+
+        Scoped per (imdb_id, instance) — see delete_orphaned_episodes for why.
+        """
         from pathlib import Path
 
         deleted_series = []
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT imdb_id, path, last_updated, metadata FROM series")
+            cursor.execute("SELECT imdb_id, instance, path, last_updated, metadata FROM series")
 
             for series in cursor.fetchall():
                 imdb_id = series['imdb_id']
+                instance = series['instance']
                 series_path = Path(series['path'])
 
                 if not series_path.exists():
-                    cursor.execute("DELETE FROM episodes WHERE imdb_id = %s", (imdb_id,))
+                    cursor.execute("DELETE FROM episodes WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
                     episodes_deleted = cursor.rowcount
-                    cursor.execute("DELETE FROM series WHERE imdb_id = %s", (imdb_id,))
+                    cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
                     deleted_series.append({
                         'imdb_id': imdb_id,
+                        'instance': instance,
                         'reason': 'directory_not_found',
                         'path': str(series_path),
                         'last_updated': series['last_updated'],

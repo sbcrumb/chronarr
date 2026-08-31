@@ -215,14 +215,16 @@ class CleanupScheduler:
             from utils.orphaned_cleanup import OrphanedRecordCleaner
 
             db = self.dependencies.get("db")
-            radarr_db_client = self.dependencies.get("radarr_db_client")
-            sonarr_db_client = self.dependencies.get("sonarr_db_client")
+            registry = self.dependencies.get("registry")
 
-            # Initialize the cleaner
+            # Initialize the cleaner — registry lets it resolve the right
+            # Radarr/Sonarr client per row's own instance instead of a single
+            # fixed client (this dict never actually had radarr_db_client/
+            # sonarr_db_client keys, so check_database was silently inert
+            # before this).
             cleaner = OrphanedRecordCleaner(
                 chronarr_db=db,
-                radarr_db_client=radarr_db_client,
-                sonarr_db_client=sonarr_db_client
+                registry=registry
             )
 
             # Run cleanup with configured options
