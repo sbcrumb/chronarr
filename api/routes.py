@@ -2590,30 +2590,38 @@ async def update_episode_nfo(imdb_id: str, season: int, episode: int, request: R
 # Emby Plugin Lookup Functions
 # ---------------------------
 
-async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: dict):
+async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: dict, instance: str = None):
     """
     Lookup episode dateadded from Chronarr database for Emby plugin integration
-    
+
     Returns dateadded information if found, or null if not available.
     Used by Emby plugin to populate missing dateadded elements in NFO files.
+
+    The plugin's request has no concept of instance (it predates multi-instance
+    support) — when instance isn't given, search across every instance sharing
+    this imdb_id/season/episode instead of silently defaulting to 'sonarr' only,
+    which would miss any row that exists solely under a named instance.
     """
     try:
-        _log("DEBUG", f"Episode lookup called for {imdb_id} S{season:02d}E{episode:02d}")
-        
+        _log("DEBUG", f"Episode lookup called for {imdb_id} S{season:02d}E{episode:02d} (instance: {instance or 'any'})")
+
         db = dependencies.get("db")
         if not db:
             print(f"ERROR: Database not available in dependencies")
             raise HTTPException(status_code=500, detail="Database not available")
-        
+
         # Normalize IMDb ID (ensure tt prefix)
         if not imdb_id.startswith('tt'):
             imdb_id = f"tt{imdb_id}"
-        
+
         _log("DEBUG", f"Querying database for episode {imdb_id} S{season:02d}E{episode:02d}")
-        
+
         # Query database for episode
-        result = db.get_episode_date(imdb_id, season, episode)
-        
+        if instance:
+            result = db.get_episode_date(imdb_id, season, episode, instance)
+        else:
+            result = db.get_episode_date_any_instance(imdb_id, season, episode)
+
         _log("DEBUG", f"Database query result: {result}")
         
         if result and result.get('dateadded'):
@@ -2636,6 +2644,7 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
                 "dateadded": dateadded_str,
                 "source": result.get('source', 'database'),
                 "air_date": result.get('air_date') if result.get('air_date') else None,
+                "instance": result.get('instance'),
                 "auto_fixed": False  # Auto-fix functionality disabled
             }
         else:
@@ -2833,28 +2842,31 @@ async def lookup_movie_by_title(title: str, year: str, dependencies: dict):
         raise HTTPException(status_code=500, detail=f"Movie title lookup failed: {str(e)}")
 
 
-async def lookup_movie(imdb_id: str, dependencies: dict):
+async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
     """
     Lookup movie dateadded from Chronarr database for Emby plugin integration
-    
-    Returns dateadded information if found, or null if not available.  
+
+    Returns dateadded information if found, or null if not available.
     Used by Emby plugin to populate missing dateadded elements in NFO files.
+
+    See lookup_episode() for why instance is optional and how it's resolved
+    when the caller (the plugin, which predates multi-instance) doesn't send one.
     """
     try:
         db = dependencies.get("db")
         if not db:
             raise HTTPException(status_code=500, detail="Database not available")
-        
-        _log("DEBUG", f"Movie lookup called for IMDb ID: {imdb_id}")
-        
+
+        _log("DEBUG", f"Movie lookup called for IMDb ID: {imdb_id} (instance: {instance or 'any'})")
+
         # Normalize IMDb ID (ensure tt prefix)
         if not imdb_id.startswith('tt'):
             imdb_id = f"tt{imdb_id}"
-        
+
         _log("DEBUG", f"Normalized IMDb ID: {imdb_id}")
-        
+
         # Query database for movie
-        result = db.get_movie_dates(imdb_id)
+        result = db.get_movie_dates(imdb_id, instance) if instance else db.get_movie_dates_any_instance(imdb_id)
         _log("DEBUG", f"Movie lookup for {imdb_id}: database result = {result}")
         
         # If not found, let's see what movies we DO have in the database
@@ -2884,6 +2896,7 @@ async def lookup_movie(imdb_id: str, dependencies: dict):
                 "dateadded": dateadded_str,
                 "source": result.get('source', 'database'),
                 "released": result.get('released') if result.get('released') else None,
+                "instance": result.get('instance'),
                 "auto_fixed": False  # Auto-fix functionality disabled
             }
         else:
@@ -3597,12 +3610,12 @@ def register_routes(app, dependencies: dict):
     # ---------------------------
     
     @app.get("/api/lookup/episode/{imdb_id}/{season}/{episode}")
-    async def _lookup_episode(imdb_id: str, season: int, episode: int):
-        return await lookup_episode(imdb_id, season, episode, dependencies)
-    
+    async def _lookup_episode(imdb_id: str, season: int, episode: int, instance: str = None):
+        return await lookup_episode(imdb_id, season, episode, dependencies, instance)
+
     @app.get("/api/lookup/movie/{imdb_id}")
-    async def _lookup_movie(imdb_id: str):
-        return await lookup_movie(imdb_id, dependencies)
+    async def _lookup_movie(imdb_id: str, instance: str = None):
+        return await lookup_movie(imdb_id, dependencies, instance)
     
     @app.get("/api/lookup/movie/title/{title}")
     async def _lookup_movie_by_title(title: str, year: str = None):
