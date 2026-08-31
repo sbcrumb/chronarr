@@ -499,7 +499,7 @@ function updateSeriesTable(data) {
                 <td>${series.episodes_with_video}</td>
                 <td>${instanceBadge(series.instance)}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
+                    <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}', '${series.instance || 'sonarr'}')">
                         <i class="fas fa-list"></i> Episodes
                     </button>
                     <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id).replace(/"/g, '&quot;')})" style="margin-left: 5px;" title="Delete Series">
@@ -542,9 +542,9 @@ function refreshSeries() {
     loadSeries(isNaN(currentSeriesPage) ? 1 : currentSeriesPage);
 }
 
-async function viewSeriesEpisodes(imdbId) {
+async function viewSeriesEpisodes(imdbId, instance = 'sonarr') {
     try {
-        const data = await apiCall(`/api/series/${imdbId}/episodes`);
+        const data = await apiCall(`/api/series/${imdbId}/episodes?instance=${encodeURIComponent(instance)}`);
         showEpisodesModal(data);
     } catch (error) {
         console.error('Failed to load episodes:', error);
@@ -622,7 +622,7 @@ function showEpisodesModal(data) {
                                         `<td>${dateadded}</td>`;
                                     
                                     return `
-                                        <tr class="${rowClass}" data-has-date="${!missingDate}" data-imdb="${data.series.imdb_id}" data-season="${episode.season}" data-episode="${episode.episode}">
+                                        <tr class="${rowClass}" data-has-date="${!missingDate}" data-imdb="${data.series.imdb_id}" data-season="${episode.season}" data-episode="${episode.episode}" data-instance="${episode.instance || 'sonarr'}">
                                             <td>
                                                 <input type="checkbox" class="episode-checkbox" onchange="updateBulkDeleteButton()">
                                             </td>
@@ -635,7 +635,7 @@ function showEpisodesModal(data) {
                                                 <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}', '${episode.instance || 'sonarr'}')">
                                                     <i class="fas fa-edit"></i> Edit
                                                 </button>
-                                                <button class="btn btn-sm btn-danger" onclick="deleteEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode})" style="margin-left: 5px;">
+                                                <button class="btn btn-sm btn-danger" onclick="deleteEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${episode.instance || 'sonarr'}')" style="margin-left: 5px;">
                                                     <i class="fas fa-trash"></i> Delete
                                                 </button>
                                             </td>
@@ -1311,7 +1311,7 @@ async function updateEpisodeDate(imdbId, season, episode, dateadded, source, ins
         const episodesModal = document.getElementById('episodes-modal');
         if (episodesModal) {
             closeEpisodesModal();
-            setTimeout(() => viewSeriesEpisodes(imdbId), 100);
+            setTimeout(() => viewSeriesEpisodes(imdbId, instance), 100);
         }
         
     } catch (error) {
@@ -1407,23 +1407,23 @@ Analysis:
 }
 
 // Episode deletion functionality
-async function deleteEpisode(imdbId, season, episode) {
+async function deleteEpisode(imdbId, season, episode, instance = 'sonarr') {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('deleteEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
     const episodeStr = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
-    
+
     // Confirmation dialog
     if (!confirm(`⚠️ Delete Episode ${episodeStr}?\n\nThis will permanently remove the episode from the database.\n\nAre you sure you want to continue?`)) {
         return;
     }
-    
+
     try {
-        const response = await fetch(`/api/episodes/${imdbId}/${season}/${episode}`, {
+        const response = await fetch(`/api/episodes/${imdbId}/${season}/${episode}?instance=${encodeURIComponent(instance)}`, {
             method: 'DELETE',
             headers: {
                 'Content-Type': 'application/json'
@@ -1829,9 +1829,10 @@ async function bulkDeleteSelected() {
         const imdbId = row.getAttribute('data-imdb');
         const season = parseInt(row.getAttribute('data-season'));
         const episode = parseInt(row.getAttribute('data-episode'));
-        
+        const instance = row.getAttribute('data-instance') || 'sonarr';
+
         try {
-            const response = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}`, {
+            const response = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}?instance=${encodeURIComponent(instance)}`, {
                 method: 'DELETE'
             });
             
