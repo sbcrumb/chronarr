@@ -1635,12 +1635,12 @@ def register_web_routes(app, dependencies):
         return await get_movie_date_options(dependencies, imdb_id, instance)
 
     @app.get("/api/debug/movie/{imdb_id}/raw")
-    async def api_debug_movie_raw(imdb_id: str):
+    async def api_debug_movie_raw(imdb_id: str, instance: str = 'radarr'):
         """Get raw database data for a movie for debugging"""
         db = dependencies["db"]
 
         try:
-            movie = db.get_movie_dates(imdb_id)
+            movie = db.get_movie_dates(imdb_id, instance)
 
             if not movie:
                 raise HTTPException(status_code=404, detail="Movie not found")
@@ -1657,13 +1657,13 @@ def register_web_routes(app, dependencies):
             raise HTTPException(status_code=500, detail=f"Failed to get debug data: {str(e)}")
 
     @app.delete("/api/movies/{imdb_id}")
-    async def api_delete_movie(imdb_id: str):
+    async def api_delete_movie(imdb_id: str, instance: str = 'radarr'):
         """Delete a movie from the database"""
         db = dependencies["db"]
-        
+
         try:
             # Use the existing database method
-            deleted = db.delete_movie(imdb_id)
+            deleted = db.delete_movie(imdb_id, instance)
             
             if deleted:
                 return {
