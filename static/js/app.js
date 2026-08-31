@@ -362,10 +362,10 @@ function updateMoviesTable(data) {
                     <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-edit"></i> Edit
                     </button>
-                    <button class="btn btn-sm btn-secondary" onclick="debugMovie('${movie.imdb_id}')" title="Debug Data">
+                    <button class="btn btn-sm btn-secondary" onclick="debugMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')" title="Debug Data">
                         <i class="fas fa-bug"></i>
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteMovie('${movie.imdb_id}')" style="margin-left: 5px;" title="Delete Movie">
+                    <button class="btn btn-sm btn-danger" onclick="deleteMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')" style="margin-left: 5px;" title="Delete Movie">
                         <i class="fas fa-trash"></i> Delete
                     </button>
                 </td>
@@ -1375,9 +1375,9 @@ function showToast(message, type = 'info') {
 }
 
 // Debug function
-async function debugMovie(imdbId) {
+async function debugMovie(imdbId, instance = 'radarr') {
     try {
-        const data = await apiCall(`/api/debug/movie/${imdbId}/raw`);
+        const data = await apiCall(`/api/debug/movie/${imdbId}/raw?instance=${encodeURIComponent(instance)}`);
         
         const debugInfo = `
 DEBUG INFO for ${imdbId}:
@@ -1459,14 +1459,14 @@ async function deleteEpisode(imdbId, season, episode, instance = 'sonarr') {
 }
 
 // Movie deletion functionality
-async function deleteMovie(imdbId) {
+async function deleteMovie(imdbId, instance = 'radarr') {
     // Confirmation dialog
     if (!confirm(`⚠️ Delete Movie?\n\nThis will permanently remove the movie (${imdbId}) from the database.\n\nAre you sure you want to continue?`)) {
         return;
     }
-    
+
     try {
-        const response = await fetch(`/api/movies/${imdbId}`, {
+        const response = await fetch(`/api/movies/${imdbId}?instance=${encodeURIComponent(instance)}`, {
             method: 'DELETE',
             headers: {
                 'Content-Type': 'application/json'
