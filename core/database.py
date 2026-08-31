@@ -440,10 +440,51 @@ class ChronarrDatabase:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_episode_date_any_instance(self, imdb_id: str, season: int, episode: int) -> Optional[Dict]:
+        """Look up an episode's date without knowing which instance owns it.
+
+        For callers that only have (imdb_id, season, episode) — no instance —
+        e.g. the Emby/Jellyfin plugin lookup endpoints, which predate
+        multi-instance and have no instance in their URL. The same IMDb ID
+        can have independent rows under multiple Sonarr instances (a full
+        back-catalog under the default instance, a separate pickup under a
+        named one covering different seasons), so defaulting to 'sonarr'
+        alone would silently miss any row that only exists under a named
+        instance. Prefers a row that actually has a dateadded set; among
+        those, picks deterministically (ordered by instance name) rather
+        than arbitrarily, so behavior doesn't flap between calls.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM episodes
+                WHERE imdb_id = %s AND season = %s AND episode = %s
+                ORDER BY (dateadded IS NULL), instance
+                LIMIT 1
+            """, (imdb_id, season, episode))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def get_movie_dates(self, imdb_id: str, instance: str = 'radarr') -> Optional[Dict]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_movie_dates_any_instance(self, imdb_id: str) -> Optional[Dict]:
+        """Look up a movie's date without knowing which instance owns it.
+
+        Same reasoning as get_episode_date_any_instance() — see there.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM movies
+                WHERE imdb_id = %s
+                ORDER BY (dateadded IS NULL), instance
+                LIMIT 1
+            """, (imdb_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
     

@@ -101,10 +101,16 @@ class TVProcessor:
     def find_series_path(self, series_title: str, imdb_id: str, sonarr_path: str = None, instance: str = 'sonarr') -> Optional[Path]:
         """Find series directory path using unified file utilities"""
         _, _, path_mapper = self._resolve_sonarr(instance)
+        # Scope the fallback directory scan to this instance's own configured
+        # paths, not every instance's (config.tv_paths). Otherwise a webhook
+        # for one instance can be crashed by a completely unrelated instance's
+        # path being unreadable (e.g. a stale/disconnected mount) — the scan
+        # would still walk into it while looking for this series.
+        instance_tv_paths = [Path(p) for p in path_mapper.container_paths] if path_mapper.container_paths else config.tv_paths
         return find_media_path_by_imdb_and_title(
             title=series_title,
             imdb_id=imdb_id,
-            search_paths=config.tv_paths,
+            search_paths=instance_tv_paths,
             webhook_path=sonarr_path,
             path_mapper=path_mapper
         )

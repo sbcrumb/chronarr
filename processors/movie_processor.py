@@ -116,10 +116,15 @@ class MovieProcessor:
     def find_movie_path(self, movie_title: str, imdb_id: str, radarr_path: str = None, instance: str = 'radarr') -> Optional[Path]:
         """Find movie directory path using unified file utilities"""
         _, _, path_mapper = self._resolve_radarr(instance)
+        # Scope the fallback directory scan to this instance's own configured
+        # paths, not every instance's (config.movie_paths) — see
+        # TVProcessor.find_series_path for why (an unrelated instance's
+        # unreadable path shouldn't be able to crash this one's lookup).
+        instance_movie_paths = [Path(p) for p in path_mapper.container_paths] if path_mapper.container_paths else config.movie_paths
         return find_media_path_by_imdb_and_title(
             title=movie_title,
             imdb_id=imdb_id,
-            search_paths=config.movie_paths,
+            search_paths=instance_movie_paths,
             webhook_path=radarr_path,
             path_mapper=path_mapper
         )
