@@ -15,7 +15,7 @@ from clients.external_clients import ExternalClientManager
 from config.settings import config
 from utils.logging import _log
 from utils.imdb_utils import find_imdb_in_directory  # Phase 3: Replaced NFOManager
-from utils.file_utils import find_media_path_by_imdb_and_title
+from utils.file_utils import find_media_path_by_imdb_and_title, list_video_files_with_retry
 
 
 def _get_local_timezone():
@@ -195,10 +195,11 @@ class MovieProcessor:
         # Update database
         self.db.upsert_movie(imdb_id, str(movie_path), instance=instance)
         
-        # Check for video files
-        video_exts = (".mkv", ".mp4", ".avi", ".mov", ".m4v")
-        has_video = any(f.is_file() and f.suffix.lower() in video_exts for f in movie_path.iterdir())
-        
+        # Check for video files — retries internally on a transient OSError
+        # (e.g. a network/FUSE mount reporting ENOTCONN for a just-created
+        # file) instead of failing the whole webhook on a one-off blip.
+        has_video = len(list_video_files_with_retry(movie_path)) > 0
+
         if not has_video:
             _log("WARNING", f"[{instance}] No video files found in: {movie_path} - skipping database entry")
             return "no_video_files"
