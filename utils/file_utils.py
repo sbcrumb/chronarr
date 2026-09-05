@@ -1,6 +1,7 @@
 """File utilities — path resolution, video file discovery, episode parsing."""
 import glob
 import re
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Union
 
@@ -62,9 +63,9 @@ def clean_title_for_search(title: str) -> str:
 def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
     if not directory.exists():
         return []
-    
+
     video_files = []
-    
+
     if recursive:
         for item in directory.rglob('*'):
             if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
@@ -73,8 +74,49 @@ def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
         for item in directory.iterdir():
             if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
                 video_files.append(item)
-    
+
     return video_files
+
+
+# Some network/FUSE-backed mounts (e.g. decypharr's DFS backend for debrid/usenet
+# libraries) can report a just-created file as briefly unreadable — ENOTCONN or
+# similar — for a few seconds right after it's symlinked in, while the mount's
+# own backing downloader for that file finishes initializing. That's a timing
+# race in the mount layer, not a real "file is missing" condition, so retrying
+# a few times rides it out instead of failing the whole webhook on a one-off
+# blip. Starting point: 5 attempts, 3s apart (~15s of patience before giving
+# up) — tune these two constants if that's not enough (or is too much) in
+# practice.
+TRANSIENT_FS_RETRIES = 5
+TRANSIENT_FS_RETRY_DELAY = 3.0
+
+
+def list_video_files_with_retry(
+    directory: Path,
+    retries: int = TRANSIENT_FS_RETRIES,
+    delay: float = TRANSIENT_FS_RETRY_DELAY,
+) -> List[Path]:
+    """Return video files directly under `directory` (non-recursive), retrying
+    the whole listing+stat pass on a transient OSError (e.g. ENOTCONN) instead
+    of letting it propagate and fail the caller immediately.
+
+    Re-raises the last OSError once every attempt is exhausted, so a genuinely
+    broken mount still surfaces loudly rather than being silently treated as
+    "no video files found".
+    """
+    last_exc: Optional[OSError] = None
+    for attempt in range(1, retries + 1):
+        try:
+            return [
+                item for item in directory.iterdir()
+                if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS
+            ]
+        except OSError as e:
+            last_exc = e
+            if attempt < retries:
+                _log("WARNING", f"Transient error listing {directory} (attempt {attempt}/{retries}): {e} — retrying in {delay}s")
+                time.sleep(delay)
+    raise last_exc
 
 
 def extract_episode_info(filename: str) -> Optional[Tuple[int, int]]:

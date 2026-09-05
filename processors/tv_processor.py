@@ -18,7 +18,8 @@ from utils.imdb_utils import parse_imdb_from_path  # Phase 3: Replaced NFOManage
 from utils.file_utils import (
     find_media_path_by_imdb_and_title,
     find_episodes_on_disk,
-    extract_title_from_directory_name
+    extract_title_from_directory_name,
+    list_video_files_with_retry
 )
 from utils.async_file_utils import (
     async_find_episodes_on_disk,
@@ -738,13 +739,14 @@ class TVProcessor:
                 _log("WARNING", f"[{instance}] Season directory not found: {season_dir}")
                 continue
 
-            # Find matching episode files
+            # Find matching episode files — the listing itself retries internally on
+            # a transient OSError (e.g. a network/FUSE mount reporting ENOTCONN for
+            # a just-created file) instead of failing the whole webhook on a blip.
             episode_files = []
-            for file_path in season_dir.iterdir():
-                if file_path.is_file() and file_path.suffix.lower() in ('.mkv', '.mp4', '.avi', '.mov', '.m4v'):
-                    parsed = self._parse_episode_from_filename(file_path.name)
-                    if parsed and parsed == (season_num, episode_num):
-                        episode_files.append(file_path)
+            for file_path in list_video_files_with_retry(season_dir):
+                parsed = self._parse_episode_from_filename(file_path.name)
+                if parsed and parsed == (season_num, episode_num):
+                    episode_files.append(file_path)
 
             if not episode_files:
                 _log("WARNING", f"[{instance}] No video files found for S{season_num:02d}E{episode_num:02d}")
