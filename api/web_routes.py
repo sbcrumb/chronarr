@@ -2717,6 +2717,83 @@ def register_database_admin_routes(app, dependencies):
         """Proxy the wizard's env-file restore (overwrites .env/.env.secrets) to core."""
         return await _proxy_post_to_core("/api/wizard/env-restore", await request.json())
 
+    @app.get("/api/logs")
+    async def logs_list():
+        """Proxy the log file listing from the core container (only core has LOG_DIR mounted)."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/logs"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/logs/{filename}/tail")
+    async def logs_tail(filename: str, request: Request):
+        """Proxy the log tail (last N lines, as JSON) from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/logs/{filename}/tail" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8")
+            try:
+                detail = json.loads(detail).get("detail", detail)
+            except (ValueError, AttributeError):
+                pass
+            raise HTTPException(status_code=e.code, detail=detail)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/logs/{filename}/download")
+    async def logs_download(filename: str):
+        """Proxy a log file download from the core container.
+
+        Passed through as raw bytes with the same Content-Disposition/media
+        type core set, rather than re-parsed — this is a file download.
+        """
+        import urllib.request
+        import urllib.error
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/logs/{filename}/download"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read()
+                disposition = resp.headers.get("Content-Disposition", f'attachment; filename="{filename}"')
+                return Response(content=body, media_type="text/plain", headers={"Content-Disposition": disposition})
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=e.reason)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
     @app.get("/setup")
     async def setup_page():
         """Serve the instance setup / webhook URL reference page."""

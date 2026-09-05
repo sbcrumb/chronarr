@@ -2,11 +2,14 @@
 FastAPI routes for Chronarr - extracted from main chronarr.py for modular architecture
 """
 import os
+import re
 import hmac
 import hashlib
 import json
+import uuid
 import requests
 import asyncio
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
 from fastapi import HTTPException, BackgroundTasks, Request, Response
@@ -95,7 +98,13 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             raise HTTPException(status_code=422, detail="Empty Sonarr payload")
         
         webhook = SonarrWebhook(**payload)
-        _log("INFO", f"[{instance}] Received Sonarr webhook: {webhook.eventType}")
+        # Short id so related log lines across the async receive -> batch ->
+        # background-thread processing hop can be told apart from other
+        # webhooks landing around the same time, without needing to thread it
+        # through every internal call — see it again at the batch/process
+        # boundaries in webhooks/webhook_batcher.py.
+        req_id = uuid.uuid4().hex[:6]
+        _log("INFO", f"[{instance}:{req_id}] Received Sonarr webhook: {webhook.eventType}")
         
         if webhook.eventType not in ["Download", "Upgrade", "Rename"]:
             return {"status": "ignored", "reason": f"Event type {webhook.eventType} not processed"}
@@ -111,25 +120,25 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         sonarr_path = series_info.get("path", "")
         
         if not imdb_id:
-            _log("ERROR", f"[{instance}] No IMDb ID for series: {series_title}")
+            _log("ERROR", f"[{instance}:{req_id}] No IMDb ID for series: {series_title}")
             return {"status": "error", "reason": "No IMDb ID"}
 
         # Find series path — instance-aware so a named instance's own root
         # folder mapping is used, not always the default instance's.
         series_path = tv_processor.find_series_path(series_title, imdb_id, sonarr_path, instance=instance)
         if not series_path:
-            _log("ERROR", f"[{instance}] Could not find series directory: {series_title} ({imdb_id})")
+            _log("ERROR", f"[{instance}:{req_id}] Could not find series directory: {series_title} ({imdb_id})")
             return {"status": "error", "reason": "Series directory not found"}
 
         # Extract episode data for targeted processing
         episodes_data = webhook.episodes or []
-        _log("DEBUG", f"[{instance}] Initial episodes_data from webhook.episodes: {len(episodes_data)} episodes")
+        _log("DEBUG", f"[{instance}:{req_id}] Initial episodes_data from webhook.episodes: {len(episodes_data)} episodes")
         
         # For all webhook events, if no episodes in webhook.episodes, try to extract from episodeFile
         # This ensures targeted processing for single episode operations (Download, Rename, Upgrade)
-        _log("DEBUG", f"[{instance}] webhook.episodeFile present: {webhook.episodeFile is not None}")
+        _log("DEBUG", f"[{instance}:{req_id}] webhook.episodeFile present: {webhook.episodeFile is not None}")
         if webhook.episodeFile:
-            _log("DEBUG", f"[{instance}] episodeFile content: {webhook.episodeFile}")
+            _log("DEBUG", f"[{instance}:{req_id}] episodeFile content: {webhook.episodeFile}")
         
         if not episodes_data and webhook.episodeFile:
             episode_file = webhook.episodeFile
@@ -143,17 +152,17 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                 
                 # Try relativePath first, then path
                 file_path = episode_file.get("relativePath") or episode_file.get("path", "")
-                _log("DEBUG", f"[{instance}] Parsing episode info from path: {file_path}")
+                _log("DEBUG", f"[{instance}:{req_id}] Parsing episode info from path: {file_path}")
                 
                 episode_info = extract_episode_info_from_filename(file_path)
                 if episode_info:
                     season_num = episode_info["season"]
                     episode_num = episode_info["episode"]
-                    _log("DEBUG", f"[{instance}] Extracted from filename - Season: {season_num}, Episode: {episode_num}")
+                    _log("DEBUG", f"[{instance}:{req_id}] Extracted from filename - Season: {season_num}, Episode: {episode_num}")
                 else:
-                    _log("DEBUG", f"[{instance}] Could not extract season/episode from filename: {file_path}")
+                    _log("DEBUG", f"[{instance}:{req_id}] Could not extract season/episode from filename: {file_path}")
             
-            _log("DEBUG", f"[{instance}] episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
+            _log("DEBUG", f"[{instance}:{req_id}] episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
             if season_num and episode_num:
                 # Create episode data structure that matches what process_webhook_episodes expects
                 episodes_data = [{
@@ -163,37 +172,37 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                     "title": episode_file.get("title")
                     # Note: Not including dateAdded - we use database-first approach with Sonarr fallback
                 }]
-                _log("INFO", f"[{instance}] Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
+                _log("INFO", f"[{instance}:{req_id}] Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
             else:
-                _log("DEBUG", f"[{instance}] Missing season/episode numbers in episodeFile for {webhook.eventType}")
+                _log("DEBUG", f"[{instance}:{req_id}] Missing season/episode numbers in episodeFile for {webhook.eventType}")
         
         # Special handling for Rename events - Sonarr doesn't include episodeFile for renames
         # Try to find recently renamed episodes using Sonarr history API
         if not episodes_data and webhook.eventType == "Rename":
-            _log("DEBUG", f"[{instance}] Attempting to find recently renamed episode for series {imdb_id}")
+            _log("DEBUG", f"[{instance}:{req_id}] Attempting to find recently renamed episode for series {imdb_id}")
             try:
                 # Get series info from Sonarr to find series ID
                 series_lookup_url = f"{config.sonarr_url}/api/v3/series/lookup?term=imdbid:{imdb_id}"
-                _log("DEBUG", f"[{instance}] Sonarr lookup for rename: {series_lookup_url}")
+                _log("DEBUG", f"[{instance}:{req_id}] Sonarr lookup for rename: {series_lookup_url}")
                 
                 response = requests.get(series_lookup_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                 if response.status_code == 200:
                     series_results = response.json()
                     if series_results:
                         series_id = series_results[0].get("id")
-                        _log("DEBUG", f"[{instance}] Found series ID {series_id} for rename lookup")
+                        _log("DEBUG", f"[{instance}:{req_id}] Found series ID {series_id} for rename lookup")
                         
                         # Get recent history for the series and filter for rename events
                         from datetime import datetime, timedelta
                         since_date = (datetime.utcnow() - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
                         history_url = f"{config.sonarr_url}/api/v3/history?seriesId={series_id}&sortKey=date&sortDir=desc&page=1&pageSize=50"
-                        _log("DEBUG", f"[{instance}] Checking recent rename history: {history_url}")
+                        _log("DEBUG", f"[{instance}:{req_id}] Checking recent rename history: {history_url}")
                         
                         history_response = requests.get(history_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                         if history_response.status_code == 200:
                             history_data = history_response.json()
                             all_records = history_data.get("records", [])
-                            _log("DEBUG", f"[{instance}] Got {len(all_records)} total history records")
+                            _log("DEBUG", f"[{instance}:{req_id}] Got {len(all_records)} total history records")
                             
                             # Filter for recent rename events
                             since_timestamp = datetime.utcnow() - timedelta(hours=1)
@@ -213,16 +222,16 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         # If datetime parsing fails, include it anyway
                                         recent_renames.append(record)
                             
-                            _log("DEBUG", f"[{instance}] Found {len(recent_renames)} recent rename events")
+                            _log("DEBUG", f"[{instance}:{req_id}] Found {len(recent_renames)} recent rename events")
                             
                             if recent_renames:
                                 # Take the most recent rename event
                                 latest_rename = recent_renames[0]
-                                _log("DEBUG", f"[{instance}] Processing latest rename event")
+                                _log("DEBUG", f"[{instance}:{req_id}] Processing latest rename event")
                                 
                                 # Extract episodeId directly from the rename event
                                 episode_id = latest_rename.get("episodeId")
-                                _log("DEBUG", f"[{instance}] Found episodeId {episode_id} in rename event")
+                                _log("DEBUG", f"[{instance}:{req_id}] Found episodeId {episode_id} in rename event")
                                 
                                 if episode_id:
                                     # Fetch episode details using the episodeId
@@ -235,7 +244,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         episode_num = episode_detail.get("episodeNumber")
                                         episode_title = episode_detail.get("title")
                                         
-                                        _log("DEBUG", f"[{instance}] Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
+                                        _log("DEBUG", f"[{instance}:{req_id}] Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
                                         
                                         if season_num is not None and episode_num is not None:
                                             episodes_data = [{
@@ -244,30 +253,30 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                                 "id": episode_id,
                                                 "title": episode_title
                                             }]
-                                            _log("INFO", f"[{instance}] Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
+                                            _log("INFO", f"[{instance}:{req_id}] Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
                                         else:
-                                            _log("DEBUG", f"[{instance}] Episode details missing season/episode numbers")
+                                            _log("DEBUG", f"[{instance}:{req_id}] Episode details missing season/episode numbers")
                                     else:
-                                        _log("DEBUG", f"[{instance}] Failed to fetch episode details: {episode_response.status_code}")
+                                        _log("DEBUG", f"[{instance}:{req_id}] Failed to fetch episode details: {episode_response.status_code}")
                                 else:
-                                    _log("DEBUG", f"[{instance}] No episodeId found in rename event")
+                                    _log("DEBUG", f"[{instance}:{req_id}] No episodeId found in rename event")
                             else:
-                                _log("DEBUG", f"[{instance}] No recent rename events found in last hour")
+                                _log("DEBUG", f"[{instance}:{req_id}] No recent rename events found in last hour")
                         else:
-                            _log("DEBUG", f"[{instance}] Failed to get rename history: {history_response.status_code}")
+                            _log("DEBUG", f"[{instance}:{req_id}] Failed to get rename history: {history_response.status_code}")
                     else:
-                        _log("DEBUG", f"[{instance}] No series found for IMDb {imdb_id}")
+                        _log("DEBUG", f"[{instance}:{req_id}] No series found for IMDb {imdb_id}")
                 else:
-                    _log("DEBUG", f"[{instance}] Series lookup failed: {response.status_code}")
+                    _log("DEBUG", f"[{instance}:{req_id}] Series lookup failed: {response.status_code}")
             except Exception as e:
-                _log("DEBUG", f"[{instance}] Error finding renamed episode: {e}")
+                _log("DEBUG", f"[{instance}:{req_id}] Error finding renamed episode: {e}")
                 # Continue with series processing as fallback
         
         # Force targeted mode for single-episode webhooks to prevent full series processing
         processing_mode = config.tv_webhook_processing_mode
         if episodes_data and len(episodes_data) <= 3:  # Single episode or small batch
             processing_mode = "targeted"
-            _log("INFO", f"[{instance}] Forcing targeted mode for {len(episodes_data)} episode(s)")
+            _log("INFO", f"[{instance}:{req_id}] Forcing targeted mode for {len(episodes_data)} episode(s)")
         
         tv_batch_key = f"tv:{imdb_id}"
         webhook_dict = {
@@ -277,13 +286,14 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             'episodes': episodes_data,
             'processing_mode': processing_mode,
             'instance': instance,
+            'req_id': req_id,
         }
         batcher.add_webhook(tv_batch_key, webhook_dict, 'tv')
         
         return {"status": "accepted", "message": f"Sonarr webhook queued for {tv_batch_key}"}
 
     except Exception as e:
-        _log("ERROR", f"[{instance}] Sonarr webhook error: {e}")
+        _log("ERROR", f"[{instance}:{req_id}] Sonarr webhook error: {e}")
         raise HTTPException(status_code=422, detail=f"Invalid webhook: {e}")
 
 
@@ -298,9 +308,25 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         body = await request.body()
         await _verify_webhook_signature(request, body, config.radarr_webhook_secret, "X-Radarr-Signature")
         payload = await _read_payload(request)
-        _log("INFO", f"[{instance}] Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
-        _log("DEBUG", f"[{instance}] Full Radarr webhook payload: {payload}")
-        
+        # Short id so related log lines across the async receive -> batch ->
+        # background-thread processing hop can be told apart from other
+        # webhooks landing around the same time — see it again at the
+        # batch/process boundaries in webhooks/webhook_batcher.py.
+        req_id = uuid.uuid4().hex[:6]
+        _log("INFO", f"[{instance}:{req_id}] Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
+        # A compact summary by default — the full payload is a multi-KB blob that
+        # drowns out everything around it. Set LOG_RAW_WEBHOOK_PAYLOADS=true for
+        # the old full-dump behavior when deep-debugging a specific webhook.
+        _movie = payload.get('movie', {}) or {}
+        _movie_file = payload.get('movieFile', {}) or {}
+        _log("DEBUG", (
+            f"[{instance}:{req_id}] Radarr webhook summary: title={_movie.get('title')!r} "
+            f"imdb={_movie.get('imdbId')} year={_movie.get('year')} "
+            f"path={_movie_file.get('path') or _movie.get('folderPath')}"
+        ))
+        if os.environ.get("LOG_RAW_WEBHOOK_PAYLOADS", "false").lower() == "true":
+            _log("DEBUG", f"[{instance}:{req_id}] Full Radarr webhook payload: {payload}")
+
         # Filter supported event types (same as Sonarr: Download, Upgrade, Rename)
         event_type = payload.get('eventType', '')
         if event_type not in ["Download", "Upgrade", "Rename"]:
@@ -309,29 +335,29 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         # Extract movie info
         movie_data = payload.get("movie", {})
         if not movie_data:
-            _log("WARNING", f"[{instance}] No movie data in Radarr webhook")
+            _log("WARNING", f"[{instance}:{req_id}] No movie data in Radarr webhook")
             return {"status": "error", "message": "No movie data"}
         
         # Get IMDb ID for batching key
         imdb_id = movie_data.get("imdbId", "").lower()
         if not imdb_id:
-            _log("WARNING", f"[{instance}] No IMDb ID in Radarr webhook movie data")
+            _log("WARNING", f"[{instance}:{req_id}] No IMDb ID in Radarr webhook movie data")
             return {"status": "error", "message": "No IMDb ID"}
         
         # Get movie path and map it
         movie_path = movie_data.get("folderPath") or movie_data.get("path", "")
         if not movie_path:
-            _log("ERROR", f"[{instance}] No movie path in Radarr webhook")
+            _log("ERROR", f"[{instance}:{req_id}] No movie path in Radarr webhook")
             return {"status": "error", "message": "No movie path provided"}
         
         # Map the path to container path
         container_path = path_mapper.radarr_path_to_container_path(movie_path)
-        _log("DEBUG", f"[{instance}] Mapped Radarr path {movie_path} -> {container_path}")
+        _log("DEBUG", f"[{instance}:{req_id}] Mapped Radarr path {movie_path} -> {container_path}")
         
         # CRITICAL: Verify the mapped path actually exists
         if not Path(container_path).exists():
-            _log("ERROR", f"[{instance}] RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
-            _log("ERROR", f"[{instance}] This prevents processing wrong movies due to path mapping issues")
+            _log("ERROR", f"[{instance}:{req_id}] RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
+            _log("ERROR", f"[{instance}:{req_id}] This prevents processing wrong movies due to path mapping issues")
             return {"status": "error", "message": f"Mapped movie path does not exist: {container_path}"}
         
         # IMDb ID won't be in the path for standard Radarr folder naming — omit the check
@@ -342,16 +368,17 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             'event_type': payload.get('eventType'),
             'original_payload': payload,
             'instance': instance,
+            'req_id': req_id,
         }
 
         movie_batch_key = f"movie:{imdb_id}"
-        _log("DEBUG", f"[{instance}] Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}, instance={instance}")
+        _log("DEBUG", f"[{instance}:{req_id}] Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}, instance={instance}")
         batcher.add_webhook(movie_batch_key, movie_webhook_data, "movie")
         
         return {"status": "success", "message": f"Radarr webhook queued for {movie_batch_key}"}
         
     except Exception as e:
-        _log("ERROR", f"[{instance}] Radarr webhook error: {e}")
+        _log("ERROR", f"[{instance}:{req_id}] Radarr webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -3453,6 +3480,72 @@ def register_routes(app, dependencies: dict):
         write_env_files(Path(".env"), Path(".env.secrets"), payload.env, payload.env_secrets)
 
         _log("INFO", f"Setup wizard: restored .env/.env.secrets from an uploaded backup (pre-restore snapshot: {pre_restore_backup})")
+
+    # ---------------------------
+    # Log file endpoints
+    # ---------------------------
+    # Only chronarr.log (current) and its rotated backups (chronarr.log.1/.2/.3)
+    # ever exist in LOG_DIR — validate every filename against this before
+    # touching the filesystem so a request can't read/download anything else.
+    _LOG_FILENAME_RE = re.compile(r"^chronarr\.log(\.\d+)?$")
+
+    def _log_dir() -> Path:
+        return Path(os.environ.get("LOG_DIR", "/app/data/logs"))
+
+    def _validated_log_path(filename: str) -> Path:
+        if not _LOG_FILENAME_RE.match(filename):
+            raise HTTPException(status_code=404, detail="Log file not found")
+        path = _log_dir() / filename
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Log file not found")
+        return path
+
+    @app.get("/api/logs")
+    async def _list_logs():
+        """List the current log file and any rotated backups, newest first."""
+        log_dir = _log_dir()
+        files = []
+        if log_dir.is_dir():
+            for path in log_dir.iterdir():
+                if _LOG_FILENAME_RE.match(path.name):
+                    stat = path.stat()
+                    files.append({
+                        "filename": path.name,
+                        "size_bytes": stat.st_size,
+                        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                        "is_current": path.name == "chronarr.log",
+                    })
+        # Current log first, then rotated backups oldest-suffix-last (.1 before .2, etc.)
+        files.sort(key=lambda f: (not f["is_current"], f["filename"]))
+        return {"files": files}
+
+    @app.get("/api/logs/{filename}/tail")
+    async def _tail_log(filename: str, lines: int = 200):
+        """Return the last N lines of a log file as JSON, for the in-browser viewer.
+
+        Reads the whole file to get an accurate tail (these files cap at 50MB
+        per the rotation policy — fast enough for occasional viewing) rather
+        than an approximate byte-offset seek.
+        """
+        lines = max(1, min(lines, 5000))  # keep the response itself reasonable
+        path = _validated_log_path(filename)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                tail = list(deque(f, maxlen=lines))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read log file: {e}")
+        return {
+            "filename": filename,
+            "lines": [line.rstrip("\n") for line in tail],
+            "returned_count": len(tail),
+        }
+
+    @app.get("/api/logs/{filename}/download")
+    async def _download_log(filename: str):
+        """Download a log file as-is."""
+        from fastapi.responses import FileResponse
+        path = _validated_log_path(filename)
+        return FileResponse(path, media_type="text/plain", filename=filename)
 
         return {
             "restored": True,

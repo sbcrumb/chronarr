@@ -10,6 +10,26 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 
+_LEVEL_VALUES = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
+def _configured_log_level() -> int:
+    """Minimum level that actually gets written, to both console and file.
+
+    Defaults to INFO — DEBUG lines (the bulk of the volume: per-file webhook
+    tracing, tier-by-tier date-decision detail, etc.) are still available by
+    setting LOG_LEVEL=DEBUG, they're just not the default anymore.
+    """
+    name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    return _LEVEL_VALUES.get(name, logging.INFO)
+
+
 class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
     """A RotatingFileHandler that handles missing backup files gracefully"""
     
@@ -91,7 +111,7 @@ def _setup_file_logging():
     log_dir.mkdir(parents=True, exist_ok=True)
     
     logger = logging.getLogger("Chronarr")
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(_configured_log_level())
     
     # Clear any existing handlers to avoid duplicates
     logger.handlers.clear()
@@ -178,11 +198,20 @@ def _get_local_timezone():
 
 
 def _log(level: str, msg: str):
-    """Enhanced logging that writes to both console and file with sensitive data masking"""
+    """Enhanced logging that writes to both console and file with sensitive data masking.
+
+    Below-threshold calls (see _configured_log_level()) are dropped before the
+    print() below, which is otherwise unconditional and is what actually shows
+    up in `docker compose logs` — the file logger's own level check alone
+    doesn't gate console output.
+    """
+    if _LEVEL_VALUES.get(level.upper(), logging.INFO) < _configured_log_level():
+        return
+
     masked_msg = _mask_sensitive_data(msg)
     tz = _get_local_timezone()
     print(f"[{datetime.now(tz).isoformat(timespec='seconds')}] {level}: {masked_msg}")
-    
+
     try:
         file_logger = _setup_file_logging()
         getattr(file_logger, level.lower(), file_logger.info)(masked_msg)
