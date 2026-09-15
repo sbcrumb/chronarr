@@ -49,9 +49,9 @@ function switchTab(tabName) {
 
     currentTab = tabName;
 
-    if (tabName !== 'tools') {
+    if (tabName !== 'tool-logs') {
         // Don't keep polling the log tail in the background once the user
-        // has navigated away from the tab that shows it.
+        // has navigated away from the page that shows it.
         stopLogTailAutoRefresh();
     }
 
@@ -60,7 +60,9 @@ function switchTab(tabName) {
         case 'movies': loadMovies(); break;
         case 'tv': loadSeries(); break;
         case 'reports': loadReport(); break;
-        case 'tools': loadDetailedStats(); loadPopulateInstanceOptions(); loadLogFiles(); break;
+        case 'tool-stats': loadDetailedStats(); break;
+        case 'tool-populate': loadPopulateInstanceOptions(); break;
+        case 'tool-logs': loadLogFiles(); break;
     }
 }
 
@@ -71,6 +73,13 @@ function toggleSidebarGroup(subId, tabName) {
     const toggle = sub.closest('.sidebar-group').querySelector('.sidebar-group-toggle');
     toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
     if (tabName) switchTab(tabName);
+}
+
+function selectToolsPage(page) {
+    document.querySelectorAll('#tools-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(`sub-${page}`);
+    if (target) target.classList.add('active');
+    switchTab(page);
 }
 
 function selectMovieInstance(name) {
