@@ -473,6 +473,35 @@
                             </button>
                         </div>
                     </div>
+
+                    <div class="tool-card">
+                        <h3><i class="fas fa-file-lines"></i> Log Files</h3>
+                        <p>View recent activity or download the current log and its rotated backups</p>
+                        <div class="stats-display" id="log-files-list">
+                            <p>Loading&hellip;</p>
+                        </div>
+
+                        <div class="form-group" style="margin-top: 1rem;">
+                            <label>Tail:</label>
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                                <select id="log-tail-file" style="width: auto;"></select>
+                                <select id="log-tail-lines" style="width: auto;">
+                                    <option value="100">Last 100 lines</option>
+                                    <option value="200" selected>Last 200 lines</option>
+                                    <option value="500">Last 500 lines</option>
+                                    <option value="1000">Last 1000 lines</option>
+                                </select>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="refreshLogTail()">
+                                    <i class="fas fa-sync"></i> Refresh
+                                </button>
+                                <label style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.3rem; margin: 0;">
+                                    <input type="checkbox" id="log-tail-auto-refresh" onchange="toggleLogTailAutoRefresh()" style="width: auto;">
+                                    Auto-refresh (5s)
+                                </label>
+                            </div>
+                        </div>
+                        <pre id="log-tail-output" style="max-height: 420px; overflow: auto; background: var(--bg-secondary, #1a1a1a); color: var(--text-primary, #ddd); padding: 0.75rem; border-radius: 4px; font-size: 0.78rem; line-height: 1.4; white-space: pre-wrap; word-break: break-all; margin-top: 0.5rem;">Select a file above and click Refresh.</pre>
+                    </div>
                 </div>
             </div>
         </main>

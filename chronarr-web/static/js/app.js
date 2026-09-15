@@ -49,12 +49,18 @@ function switchTab(tabName) {
 
     currentTab = tabName;
 
+    if (tabName !== 'tools') {
+        // Don't keep polling the log tail in the background once the user
+        // has navigated away from the tab that shows it.
+        stopLogTailAutoRefresh();
+    }
+
     switch(tabName) {
         case 'dashboard': loadDashboard(); break;
         case 'movies': loadMovies(); break;
         case 'tv': loadSeries(); break;
         case 'reports': loadReport(); break;
-        case 'tools': loadDetailedStats(); loadPopulateInstanceOptions(); break;
+        case 'tools': loadDetailedStats(); loadPopulateInstanceOptions(); loadLogFiles(); break;
     }
 }
 
@@ -1943,6 +1949,103 @@ function syncPopulateMediaTypeToInstance() {
         mediaTypeSelect.disabled = true;
     } else {
         mediaTypeSelect.disabled = false;
+    }
+}
+
+// --- Log Files (Tools tab) ---
+let logTailAutoRefreshTimer = null;
+
+function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+async function loadLogFiles() {
+    const listEl = document.getElementById('log-files-list');
+    const fileSelect = document.getElementById('log-tail-file');
+    if (!listEl || !fileSelect) return;
+
+    try {
+        const data = await apiCall('/api/logs');
+        const files = data.files || [];
+
+        if (files.length === 0) {
+            listEl.innerHTML = '<p class="empty-note">No log files found.</p>';
+            fileSelect.innerHTML = '';
+            return;
+        }
+
+        listEl.innerHTML = `
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr><th>File</th><th>Size</th><th>Modified</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                    ${files.map(f => `
+                        <tr>
+                            <td>${escapeHtml(f.filename)}${f.is_current ? ' <span class="badge badge-success">current</span>' : ''}</td>
+                            <td>${formatBytes(f.size_bytes)}</td>
+                            <td>${formatDateTime(f.modified_at)}</td>
+                            <td>
+                                <a class="btn btn-sm btn-secondary" href="/api/logs/${encodeURIComponent(f.filename)}/download">
+                                    <i class="fas fa-download"></i> Download
+                                </a>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+
+        // Preserve the current tail-file selection across refreshes (this is
+        // called every time the Tools tab is opened) if it still exists.
+        const previousSelection = fileSelect.value;
+        fileSelect.innerHTML = files.map(f =>
+            `<option value="${escapeHtml(f.filename)}">${escapeHtml(f.filename)}${f.is_current ? ' (current)' : ''}</option>`
+        ).join('');
+        if (files.some(f => f.filename === previousSelection)) {
+            fileSelect.value = previousSelection;
+        }
+    } catch (error) {
+        listEl.innerHTML = '<p class="empty-note">Failed to load log files.</p>';
+    }
+}
+
+async function refreshLogTail() {
+    const fileSelect = document.getElementById('log-tail-file');
+    const linesSelect = document.getElementById('log-tail-lines');
+    const output = document.getElementById('log-tail-output');
+    if (!fileSelect || !fileSelect.value || !output) return;
+
+    try {
+        const data = await apiCall(`/api/logs/${encodeURIComponent(fileSelect.value)}/tail?lines=${linesSelect.value}`);
+        output.textContent = (data.lines || []).join('\n') || '(empty)';
+        output.scrollTop = output.scrollHeight;
+    } catch (error) {
+        output.textContent = 'Failed to load log tail.';
+    }
+}
+
+function stopLogTailAutoRefresh() {
+    if (logTailAutoRefreshTimer) {
+        clearInterval(logTailAutoRefreshTimer);
+        logTailAutoRefreshTimer = null;
+    }
+    const checkbox = document.getElementById('log-tail-auto-refresh');
+    if (checkbox) checkbox.checked = false;
+}
+
+function toggleLogTailAutoRefresh() {
+    const checkbox = document.getElementById('log-tail-auto-refresh');
+    if (logTailAutoRefreshTimer) {
+        clearInterval(logTailAutoRefreshTimer);
+        logTailAutoRefreshTimer = null;
+    }
+    if (checkbox && checkbox.checked) {
+        refreshLogTail();
+        logTailAutoRefreshTimer = setInterval(refreshLogTail, 5000);
     }
 }
 

@@ -13,6 +13,14 @@ from utils.logging import _log
 from utils.imdb_utils import find_imdb_in_directory, parse_imdb_from_path  # Phase 3: Replaced NFOManager
 
 
+def _tag(instance: str, req_id: str = None) -> str:
+    """Log-line prefix: 'instance' alone, or 'instance:req_id' when a request
+    id is available — lets related lines for one webhook be told apart from
+    others landing around the same time, without threading req_id through
+    every call in the processors."""
+    return f"{instance}:{req_id}" if req_id else instance
+
+
 class WebhookBatcher:
     """Batches webhook events to avoid processing storms"""
 
@@ -54,8 +62,9 @@ class WebhookBatcher:
 
             self.pending[key] = webhook_data
             instance = webhook_data.get('instance', media_type)
-            _log("INFO", f"[{instance}] Batched {media_type} webhook for {key} ({len(webhook_data.get('episodes', []))} episode(s) pending)")
-            _log("DEBUG", f"[{instance}] Batch added - key: {key}, media_type: {media_type}, timer scheduled for {config.batch_delay}s")
+            tag = _tag(instance, webhook_data.get('req_id'))
+            _log("INFO", f"[{tag}] Batched {media_type} webhook for {key} ({len(webhook_data.get('episodes', []))} episode(s) pending)")
+            _log("DEBUG", f"[{tag}] Batch added - key: {key}, media_type: {media_type}, timer scheduled for {config.batch_delay}s")
 
             timer = threading.Timer(config.batch_delay, self._process_item, args=[key])
             self.timers[key] = timer
@@ -70,7 +79,8 @@ class WebhookBatcher:
                 # Previous batch for this key is still running — re-schedule so accumulated
                 # episode data isn't stranded with no timer and no processor to pick it up.
                 instance = self.pending[key].get('instance', '?')
-                _log("DEBUG", f"[{instance}] Batch item {key} still processing, re-scheduling in {config.batch_delay}s")
+                tag = _tag(instance, self.pending[key].get('req_id'))
+                _log("DEBUG", f"[{tag}] Batch item {key} still processing, re-scheduling in {config.batch_delay}s")
                 timer = threading.Timer(config.batch_delay, self._process_item, args=[key])
                 self.timers[key] = timer
                 timer.start()
@@ -92,17 +102,19 @@ class WebhookBatcher:
             media_type = webhook_data.get('media_type')
             path_str = webhook_data.get('path')
             instance = webhook_data.get('instance', media_type or '?')
+            req_id = webhook_data.get('req_id')
+            tag = _tag(instance, req_id)
 
-            _log("DEBUG", f"[{instance}] Processing batch item: key={key}, media_type={media_type}, path={path_str}")
+            _log("DEBUG", f"[{tag}] Processing batch item: key={key}, media_type={media_type}, path={path_str}")
 
             if not path_str:
-                _log("ERROR", f"[{instance}] No path found for {media_type} {key}")
+                _log("ERROR", f"[{tag}] No path found for {media_type} {key}")
                 return
 
             path_obj = Path(path_str)
             if not path_obj.exists():
-                _log("ERROR", f"[{instance}] BATCH PROCESSING FAILED: Path does not exist: {path_obj}")
-                _log("ERROR", f"[{instance}] This indicates a path mapping issue - webhook rejected to prevent wrong processing")
+                _log("ERROR", f"[{tag}] BATCH PROCESSING FAILED: Path does not exist: {path_obj}")
+                _log("ERROR", f"[{tag}] This indicates a path mapping issue - webhook rejected to prevent wrong processing")
                 return
             
             # Validate IMDb ID for movies — only reject if a conflicting ID is found.
@@ -115,14 +127,14 @@ class WebhookBatcher:
                 if detected_imdb:
                     # An ID was found — check it matches
                     if detected_imdb == expected_imdb or detected_imdb.replace('tt', '') == expected_imdb.replace('tt', ''):
-                        _log("DEBUG", f"[{instance}] Batch validation passed: IMDb {expected_imdb} confirmed in folder name")
+                        _log("DEBUG", f"[{tag}] Batch validation passed: IMDb {expected_imdb} confirmed in folder name")
                     else:
-                        _log("ERROR", f"[{instance}] BATCH VALIDATION FAILED: folder contains {detected_imdb} but webhook expected {expected_imdb} in {path_str}")
-                        _log("ERROR", f"[{instance}] This prevents processing the wrong movie due to a mismatched batch entry")
+                        _log("ERROR", f"[{tag}] BATCH VALIDATION FAILED: folder contains {detected_imdb} but webhook expected {expected_imdb} in {path_str}")
+                        _log("ERROR", f"[{tag}] This prevents processing the wrong movie due to a mismatched batch entry")
                         return
                 else:
                     # No IMDb ID in folder/file names — standard naming, trust the webhook
-                    _log("DEBUG", f"[{instance}] Batch validation: no IMDb in folder name for {path_str}, trusting webhook ID {expected_imdb}")
+                    _log("DEBUG", f"[{tag}] Batch validation: no IMDb in folder name for {path_str}, trusting webhook ID {expected_imdb}")
 
             # Validate IMDb ID for TV shows — same logic: conflict = reject, absent = proceed.
             if media_type == 'tv':
@@ -131,48 +143,48 @@ class WebhookBatcher:
                 detected_imdb = parse_imdb_from_path(path_obj)
                 if detected_imdb:
                     if detected_imdb == expected_imdb or detected_imdb.replace('tt', '') == expected_imdb.replace('tt', ''):
-                        _log("DEBUG", f"[{instance}] TV batch validation passed: IMDb {expected_imdb} confirmed in folder name")
+                        _log("DEBUG", f"[{tag}] TV batch validation passed: IMDb {expected_imdb} confirmed in folder name")
                     else:
-                        _log("ERROR", f"[{instance}] BATCH VALIDATION FAILED: folder contains {detected_imdb} but webhook expected {expected_imdb} in TV {path_str}")
-                        _log("ERROR", f"[{instance}] This prevents processing the wrong series due to a mismatched batch entry")
+                        _log("ERROR", f"[{tag}] BATCH VALIDATION FAILED: folder contains {detected_imdb} but webhook expected {expected_imdb} in TV {path_str}")
+                        _log("ERROR", f"[{tag}] This prevents processing the wrong series due to a mismatched batch entry")
                         return
                 else:
-                    _log("DEBUG", f"[{instance}] TV batch validation: no IMDb in folder name for {path_str}, trusting webhook ID {expected_imdb}")
+                    _log("DEBUG", f"[{tag}] TV batch validation: no IMDb in folder name for {path_str}, trusting webhook ID {expected_imdb}")
 
                 if not self.tv_processor:
-                    _log("ERROR", f"[{instance}] TV processor not available")
+                    _log("ERROR", f"[{tag}] TV processor not available")
                     return
 
                 processing_mode = webhook_data.get('processing_mode', config.tv_webhook_processing_mode)
                 episodes_data = webhook_data.get('episodes', [])
 
                 if processing_mode == 'targeted' and episodes_data:
-                    _log("INFO", f"[{instance}] Using targeted episode processing for {len(episodes_data)} episodes")
+                    _log("INFO", f"[{tag}] Using targeted episode processing for {len(episodes_data)} episodes")
                     if len(episodes_data) > 1 and config.sequential_delay > 0:
-                        _log("INFO", f"[{instance}] Processing {len(episodes_data)} episodes sequentially with {config.sequential_delay}s delay")
-                        self._process_episodes_sequentially(path_obj, episodes_data, imdb_id=expected_imdb, instance=instance)
+                        _log("INFO", f"[{tag}] Processing {len(episodes_data)} episodes sequentially with {config.sequential_delay}s delay")
+                        self._process_episodes_sequentially(path_obj, episodes_data, imdb_id=expected_imdb, instance=instance, req_id=req_id)
                     else:
                         self.tv_processor.process_webhook_episodes(path_obj, episodes_data, imdb_id=expected_imdb, instance=instance)
                 else:
-                    _log("INFO", f"[{instance}] Using series processing mode (fallback or configured)")
+                    _log("INFO", f"[{tag}] Using series processing mode (fallback or configured)")
                     self.tv_processor.process_series(path_obj, imdb_id=expected_imdb, instance=instance)
 
             elif media_type == 'movie':
                 if not self.movie_processor:
-                    _log("ERROR", f"[{instance}] Movie processor not available")
+                    _log("ERROR", f"[{tag}] Movie processor not available")
                     return
 
                 self.movie_processor.process_movie(path_obj, webhook_mode=True, imdb_id=expected_imdb, instance=instance)
             else:
-                _log("ERROR", f"[{instance}] Unknown media type: {media_type}")
+                _log("ERROR", f"[{tag}] Unknown media type: {media_type}")
 
         except Exception as e:
-            _log("ERROR", f"[{locals().get('instance', '?')}] Error processing {media_type} {key}: {e}")
+            _log("ERROR", f"[{_tag(locals().get('instance', '?'), locals().get('req_id'))}] Error processing {media_type} {key}: {e}")
         finally:
             with self.lock:
                 self.processing.discard(key)
-    
-    def _process_episodes_sequentially(self, path_obj: Path, episodes_data: list, imdb_id: str = None, instance: str = 'sonarr'):
+
+    def _process_episodes_sequentially(self, path_obj: Path, episodes_data: list, imdb_id: str = None, instance: str = 'sonarr', req_id: str = None):
         """Process episodes one by one with delays to avoid Sonarr API spam.
 
         imdb_id is the ID the batch already validated (webhook-provided,
@@ -182,20 +194,21 @@ class WebhookBatcher:
         "Gunsmoke" folder with no embedded IMDb tag has nothing to parse,
         so every episode in the batch would fail outright without this.
         """
+        tag = _tag(instance, req_id)
         total_episodes = len(episodes_data)
         for i, episode in enumerate(episodes_data, 1):
             try:
                 season = episode.get('seasonNumber', '?')
                 episode_num = episode.get('episodeNumber', '?')
-                _log("INFO", f"[{instance}] Processing episode {i}/{total_episodes}: S{season:02d}E{episode_num:02d}")
+                _log("INFO", f"[{tag}] Processing episode {i}/{total_episodes}: S{season:02d}E{episode_num:02d}")
                 self.tv_processor.process_webhook_episodes(path_obj, [episode], imdb_id=imdb_id, instance=instance)
                 if i < total_episodes and config.sequential_delay > 0:
-                    _log("INFO", f"[{instance}] Waiting {config.sequential_delay}s before next episode...")
+                    _log("INFO", f"[{tag}] Waiting {config.sequential_delay}s before next episode...")
                     time.sleep(config.sequential_delay)
             except Exception as e:
-                _log("ERROR", f"[{instance}] Error processing episode {i}/{total_episodes}: {e}")
+                _log("ERROR", f"[{tag}] Error processing episode {i}/{total_episodes}: {e}")
 
-        _log("INFO", f"[{instance}] Completed sequential processing of {total_episodes} episodes")
+        _log("INFO", f"[{tag}] Completed sequential processing of {total_episodes} episodes")
     
     def get_status(self) -> Dict:
         """Get batch queue status"""
