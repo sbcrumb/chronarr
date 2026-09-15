@@ -754,26 +754,22 @@ body {
     color: var(--dark-color);
 }
 
-/* Tools */
-.tools-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 1.5rem;
-}
-
-.tool-card {
+/* Tools — each tool is its own full page now (sidebar dropdown), not a
+   shared grid of cards, so a five-line form and a full log viewer don't
+   have to fight each other for space. */
+.tool-page {
     background: white;
     border-radius: 0.5rem;
     padding: 1.5rem;
     box-shadow: var(--shadow);
+    max-width: 640px;
 }
 
-.tool-card h3 {
-    margin-bottom: 0.5rem;
-    color: var(--dark-color);
+.tool-page.tool-page-wide {
+    max-width: none;
 }
 
-.tool-card p {
+.tool-page-desc {
     margin-bottom: 1.5rem;
     color: var(--text-muted);
 }
@@ -1013,8 +1009,8 @@ body {
         grid-template-columns: 1fr;
     }
 
-    .tools-grid {
-        grid-template-columns: 1fr;
+    .tool-page {
+        max-width: none;
     }
 }
 
