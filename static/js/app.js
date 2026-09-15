@@ -2028,10 +2028,18 @@ async function refreshLogTail() {
     const output = document.getElementById('log-tail-output');
     if (!fileSelect || !fileSelect.value || !output) return;
 
+    // Only follow to the bottom if the viewer was already there (or close to
+    // it) before this refresh. Otherwise every 5s auto-refresh yanks anyone
+    // who scrolled up to read older lines straight back down again.
+    const nearBottomTolerancePx = 24;
+    const wasNearBottom = output.scrollHeight - output.clientHeight - output.scrollTop <= nearBottomTolerancePx;
+
     try {
         const data = await apiCall(`/api/logs/${encodeURIComponent(fileSelect.value)}/tail?lines=${linesSelect.value}`);
         output.textContent = (data.lines || []).join('\n') || '(empty)';
-        output.scrollTop = output.scrollHeight;
+        if (wasNearBottom) {
+            output.scrollTop = output.scrollHeight;
+        }
     } catch (error) {
         output.textContent = 'Failed to load log tail.';
     }
