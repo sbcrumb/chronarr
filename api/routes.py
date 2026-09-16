@@ -9,6 +9,8 @@ import json
 import uuid
 import requests
 import asyncio
+import tempfile
+import multiprocessing
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
@@ -2654,15 +2656,24 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
         if result and result.get('dateadded'):
             # Format response for Emby plugin
             dateadded = result['dateadded']
-            
+
             # Convert datetime to ISO string if needed
             if hasattr(dateadded, 'isoformat'):
                 dateadded_str = dateadded.isoformat()
             else:
                 dateadded_str = str(dateadded)
-            
+
             # NOTE: Auto-fix functionality removed - just return database data
-            
+
+            # One INFO line per lookup — same convention as the webhook
+            # handlers ("Received Sonarr webhook..."). The DEBUG lines above
+            # are silent by default now (LOG_LEVEL=INFO), so without this,
+            # a plugin scan (scheduled full-library or single-item) never
+            # showed up on Chronarr's side at all, only in Emby/Jellyfin's
+            # own log — there was no INFO-level line on a normal lookup,
+            # only on an outright error.
+            _log("INFO", f"Plugin lookup: episode {imdb_id} S{season:02d}E{episode:02d} -> found (source={result.get('source', 'database')})")
+
             return {
                 "found": True,
                 "imdb_id": imdb_id,
@@ -2676,6 +2687,7 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
             }
         else:
             # Not found in database
+            _log("INFO", f"Plugin lookup: episode {imdb_id} S{season:02d}E{episode:02d} -> not found")
             return {
                 "found": False,
                 "imdb_id": imdb_id,
@@ -2685,7 +2697,7 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
                 "source": None,
                 "air_date": None
             }
-            
+
     except Exception as e:
         _log("ERROR", f"Episode lookup failed for {imdb_id} S{season:02d}E{episode:02d}: {e}")
         raise HTTPException(status_code=500, detail=f"Episode lookup failed: {str(e)}")
@@ -2908,15 +2920,21 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
         if result and result.get('dateadded'):
             # Format response for Emby plugin
             dateadded = result['dateadded']
-            
+
             # Convert datetime to ISO string if needed
             if hasattr(dateadded, 'isoformat'):
                 dateadded_str = dateadded.isoformat()
             else:
                 dateadded_str = str(dateadded)
-            
+
             # NOTE: Auto-fix functionality removed - just return database data
-            
+
+            # One INFO line per lookup — see lookup_episode() for why this is
+            # needed: the DEBUG lines above are silent by default now
+            # (LOG_LEVEL=INFO), so a plugin scan never showed up on
+            # Chronarr's side at all, only in Emby/Jellyfin's own log.
+            _log("INFO", f"Plugin lookup: movie {imdb_id} -> found (source={result.get('source', 'database')})")
+
             return {
                 "found": True,
                 "imdb_id": imdb_id,
@@ -2928,6 +2946,7 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
             }
         else:
             # Not found in database
+            _log("INFO", f"Plugin lookup: movie {imdb_id} -> not found")
             return {
                 "found": False,
                 "imdb_id": imdb_id,
@@ -2941,37 +2960,215 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
         raise HTTPException(status_code=500, detail=f"Movie lookup failed: {str(e)}")
 
 
-async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None):
+# Populate Database — runs in a separate OS process (not an asyncio background
+# task) so a large populate doesn't block this container's event loop, and
+# writes its status to a file both this process and the worker process can
+# see. Moved here from chronarr-web (2026-09-15): it was previously running
+# entirely inside the web container, which has no LOG_DIR volume mount, so
+# every _log() call DatabasePopulator makes went to a path invisible on the
+# host and lost on restart — docker logs showed it live (print() doesn't care
+# about mounts) but chronarr.log itself never got it. This container is the
+# one with the log volume, so this is where the actual work belongs; web now
+# proxies to here the same way it already does for /manual/scan.
+POPULATE_STATUS_FILE = os.path.join(tempfile.gettempdir(), "chronarr_populate_status.json")
+_populate_process = None
+
+
+def _populate_worker_process(media_type: str, status_file: str, instance: str = "all"):
     """
-    Populate Chronarr database from Radarr/Sonarr sources
+    Worker process that runs database population in complete isolation.
+    Runs in a separate process - keeps this container's API responsive.
+    """
+    import os
+    import sys
+    import json
+    from datetime import datetime
+
+    # Add parent directory to path for imports
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def update_status(status_data):
+        """Write status to file for main process to read"""
+        try:
+            with open(status_file, 'w') as f:
+                json.dump(status_data, f)
+        except Exception as e:
+            print(f"ERROR: Failed to update status file: {e}")
+
+    # Initialize status
+    status = {
+        "running": True,
+        "media_type": media_type,
+        "instance": instance,
+        "start_time": datetime.now().isoformat(),
+        "movies": {"status": "pending", "stats": None},
+        "tv": {"status": "pending", "stats": None},
+        "completed": False,
+        "error": None
+    }
+    update_status(status)
+
+    try:
+        # Import here (inside process) to avoid pickling issues
+        from core.database import ChronarrDatabase
+        from core.database_populator import DatabasePopulator
+        from config.settings import config
+
+        db = ChronarrDatabase(config)
+
+        def _merge_movie_stats(all_stats):
+            merged = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
+                      'duration': 0.0, 'skipped_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+            return merged
+
+        def _merge_tv_stats(all_stats):
+            merged = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                      'skipped': 0, 'errors': 0, 'duration': 0.0, 'skipped_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total_series', 'total_episodes', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+            return merged
+
+        print(f"INFO: [Worker Process] Starting database population: {media_type} (instance: {instance})")
+        radarr_instances = config.radarr_instances
+        sonarr_instances = config.sonarr_instances
+
+        # A specific instance narrows the run to just that one, regardless of
+        # which media_type was picked — the instance's own type (it can only
+        # be a Radarr or a Sonarr instance) decides what actually runs. "all"
+        # (the default) keeps the original behavior: every configured
+        # instance of whichever media_type was selected.
+        if instance and instance != "all":
+            matched_radarr = [i for i in radarr_instances if i.name == instance]
+            matched_sonarr = [i for i in sonarr_instances if i.name == instance]
+            if not matched_radarr and not matched_sonarr:
+                known = [i.name for i in radarr_instances] + [i.name for i in sonarr_instances]
+                raise ValueError(f"Instance '{instance}' not found. Configured instances: {known}")
+            radarr_instances = matched_radarr
+            sonarr_instances = matched_sonarr
+            # The instance's own type is authoritative — a Radarr instance can
+            # only ever mean movies, a Sonarr instance only TV. Override
+            # whatever media_type the caller sent so a stale/mismatched value
+            # (e.g. the UI's Media Type dropdown left on the wrong setting)
+            # can't silently produce a no-op run: without this, an instance
+            # narrowed to (say) only Sonarr combined with media_type="movies"
+            # would iterate an empty radarr_instances list, skip the tv block
+            # entirely, and finish "successfully" having populated nothing.
+            effective_media_type = "movies" if matched_radarr else "tv"
+            if effective_media_type != media_type:
+                print(f"INFO: [Worker Process] media_type '{media_type}' overridden to '{effective_media_type}' — instance '{instance}' determines its own type")
+            media_type = effective_media_type
+            status["media_type"] = media_type
+            print(f"INFO: [Worker Process] Narrowed to instance '{instance}'")
+
+        print(f"INFO: [Worker Process] Radarr instances: {[i.name for i in radarr_instances]}")
+        print(f"INFO: [Worker Process] Sonarr instances: {[i.name for i in sonarr_instances]}")
+
+        # Run population based on media type
+        if media_type in ["movies", "both"]:
+            all_movie_stats = []
+            for inst in radarr_instances:
+                status["movies"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating movies for instance '{inst.name}'")
+
+                try:
+                    pop = DatabasePopulator.from_radarr_instance(inst, db)
+                    inst_stats = pop.populate_movies(instance=inst.name)
+                except Exception as e:
+                    print(f"ERROR: [Worker Process] Movies failed for instance '{inst.name}': {e}")
+                    inst_stats = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 1,
+                                  'duration': 0.0,
+                                  'skipped_items': [f"Instance '{inst.name}' failed: {e}"]}
+                all_movie_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] Movies done for '{inst.name}': {inst_stats}")
+
+            movie_stats = _merge_movie_stats(all_movie_stats)
+            status["movies"]["status"] = "completed"
+            status["movies"]["stats"] = movie_stats
+            update_status(status)
+            print(f"INFO: [Worker Process] All movie population complete: {movie_stats}")
+
+        if media_type in ["tv", "both"]:
+            all_tv_stats = []
+            for inst in sonarr_instances:
+                status["tv"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating TV for instance '{inst.name}'")
+
+                try:
+                    pop = DatabasePopulator.from_sonarr_instance(inst, db)
+                    inst_stats = pop.populate_tv_episodes(instance=inst.name)
+                except Exception as e:
+                    print(f"ERROR: [Worker Process] TV failed for instance '{inst.name}': {e}")
+                    inst_stats = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                                  'skipped': 0, 'errors': 1, 'duration': 0.0,
+                                  'skipped_items': [f"Instance '{inst.name}' failed: {e}"]}
+                all_tv_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] TV done for '{inst.name}': {inst_stats}")
+
+            tv_stats = _merge_tv_stats(all_tv_stats)
+            status["tv"]["status"] = "completed"
+            status["tv"]["stats"] = tv_stats
+            update_status(status)
+            print(f"INFO: [Worker Process] All TV population complete: {tv_stats}")
+
+        # Mark as completed
+        status["completed"] = True
+        status["running"] = False
+        update_status(status)
+        print("INFO: [Worker Process] Database population completed successfully")
+
+    except Exception as e:
+        print(f"ERROR: [Worker Process] Database population failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+        status["error"] = str(e)
+        status["running"] = False
+        status["completed"] = True
+        update_status(status)
+
+
+async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None, instance: str = "all"):
+    """
+    Populate Chronarr database from Radarr/Sonarr sources in a separate process.
+    This keeps this container's API responsive during population.
 
     Args:
-        background_tasks: FastAPI background tasks
+        background_tasks: FastAPI background tasks (not used - kept for compatibility)
         media_type: Type of media to populate ("movies", "tv", or "both")
-        dependencies: Dictionary with db, radarr_client, sonarr_client
+        dependencies: Dictionary with dependencies (not used in multiprocessing mode)
+        instance: Specific instance name to populate (e.g. "sonarr_4k"), or "all"
+            (default) for every configured instance of the given media_type
 
     Returns:
         Status message indicating population has started
     """
-    from core.database_populator import DatabasePopulator
-
-    db = dependencies["db"]
-    config = dependencies["config"]
-
-    # Get Radarr and Sonarr clients
-    from clients.radarr_client import RadarrClient
-    from clients.sonarr_client import SonarrClient
-
-    radarr_client = RadarrClient(config)
-    sonarr_client = SonarrClient(config)
+    global _populate_process
 
     if media_type not in ["both", "movies", "tv"]:
         raise HTTPException(status_code=400, detail="media_type must be 'both', 'movies', or 'tv'")
 
-    # Create global status tracking
-    populate_status = {
+    # Check if process is already running
+    if _populate_process and _populate_process.is_alive():
+        return {
+            "status": "already_running",
+            "message": "Database population is already in progress"
+        }
+
+    # Initialize status file
+    initial_status = {
         "running": True,
         "media_type": media_type,
+        "instance": instance,
         "start_time": datetime.now().isoformat(),
         "movies": {"status": "pending", "stats": None},
         "tv": {"status": "pending", "stats": None},
@@ -2979,75 +3176,62 @@ async def populate_database(background_tasks: BackgroundTasks, media_type: str =
         "error": None
     }
 
-    # Store status globally so it can be queried
-    global _populate_status
-    _populate_status = populate_status
+    try:
+        with open(POPULATE_STATUS_FILE, 'w') as f:
+            json.dump(initial_status, f)
+    except Exception as e:
+        print(f"ERROR: Failed to initialize status file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize status tracking: {e}")
 
-    async def run_population():
-        """Background task to populate the database"""
-        try:
-            populator = DatabasePopulator(db, radarr_client, sonarr_client)
+    # Start population in separate process
+    _populate_process = multiprocessing.Process(
+        target=_populate_worker_process,
+        args=(media_type, POPULATE_STATUS_FILE, instance),
+        daemon=False  # Keep process alive even if parent exits
+    )
+    _populate_process.start()
 
-            _log("INFO", f"Starting database population: {media_type}")
-
-            if media_type == "movies":
-                populate_status["movies"]["status"] = "running"
-                movie_stats = populator.populate_movies()
-                populate_status["movies"]["status"] = "completed"
-                populate_status["movies"]["stats"] = movie_stats
-                _log("INFO", f"Movie population completed: {movie_stats}")
-
-            elif media_type == "tv":
-                populate_status["tv"]["status"] = "running"
-                tv_stats = populator.populate_tv_episodes()
-                populate_status["tv"]["status"] = "completed"
-                populate_status["tv"]["stats"] = tv_stats
-                _log("INFO", f"TV population completed: {tv_stats}")
-
-            elif media_type == "both":
-                populate_status["movies"]["status"] = "running"
-                movie_stats = populator.populate_movies()
-                populate_status["movies"]["status"] = "completed"
-                populate_status["movies"]["stats"] = movie_stats
-                _log("INFO", f"Movie population completed: {movie_stats}")
-
-                populate_status["tv"]["status"] = "running"
-                tv_stats = populator.populate_tv_episodes()
-                populate_status["tv"]["status"] = "completed"
-                populate_status["tv"]["stats"] = tv_stats
-                _log("INFO", f"TV population completed: {tv_stats}")
-
-            populate_status["completed"] = True
-            populate_status["running"] = False
-            _log("INFO", "Database population completed successfully")
-
-        except Exception as e:
-            _log("ERROR", f"Database population failed: {e}")
-            populate_status["error"] = str(e)
-            populate_status["running"] = False
-            populate_status["completed"] = True
-
-    # Add task to background
-    background_tasks.add_task(run_population)
-
-    _log("INFO", f"Database population started for: {media_type}")
+    _log("INFO", f"Database population process started for: {media_type} (instance: {instance})")
     return {
         "status": "started",
         "media_type": media_type,
-        "message": f"Database population started for {media_type}"
+        "instance": instance,
+        "message": f"Database population started for {media_type}" + (f" ({instance})" if instance != "all" else "")
     }
 
 
 async def get_populate_status():
-    """Get the current status of database population"""
-    global _populate_status
-    if '_populate_status' not in globals():
+    """Get the current status of database population from status file"""
+    global _populate_process
+
+    # Check if status file exists
+    if not os.path.exists(POPULATE_STATUS_FILE):
         return {"running": False, "completed": False}
-    return _populate_status
 
+    # Read status from file
+    try:
+        with open(POPULATE_STATUS_FILE, 'r') as f:
+            status = json.load(f)
 
-# Initialize global populate status
-_populate_status = {"running": False, "completed": False}
+        # Check if process is still alive
+        if _populate_process:
+            status["process_alive"] = _populate_process.is_alive()
+            if not _populate_process.is_alive() and status.get("running"):
+                # Process died unexpectedly
+                status["running"] = False
+                status["completed"] = True
+                if not status.get("error"):
+                    status["error"] = "Process terminated unexpectedly"
+
+        return status
+
+    except Exception as e:
+        print(f"ERROR: Failed to read status file: {e}")
+        return {
+            "running": False,
+            "completed": True,
+            "error": f"Failed to read status: {e}"
+        }
 
 # Instance names the wizard has written to .env this process, but that aren't
 # live yet because chronarr-core hasn't been restarted to pick them up. The
@@ -3663,8 +3847,8 @@ def register_routes(app, dependencies: dict):
         return await get_scan_status()
 
     @app.post("/admin/populate-database")
-    async def _populate_database(background_tasks: BackgroundTasks, media_type: str = "both"):
-        return await populate_database(background_tasks, media_type, dependencies)
+    async def _populate_database(background_tasks: BackgroundTasks, media_type: str = "both", instance: str = "all"):
+        return await populate_database(background_tasks, media_type, dependencies, instance)
 
     @app.get("/api/populate/status")
     async def _populate_status():
