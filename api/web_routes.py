@@ -2600,6 +2600,11 @@ def register_database_admin_routes(app, dependencies):
         """Proxy dismissing an unresolved plugin lookup to the core container."""
         return await _proxy_post_to_core(f"/api/unresolved-lookups/{lookup_id}/dismiss", {})
 
+    @app.post("/api/unresolved-lookups/dismiss-all")
+    async def unresolved_lookups_dismiss_all():
+        """Proxy dismissing every active unresolved plugin lookup to the core container."""
+        return await _proxy_post_to_core("/api/unresolved-lookups/dismiss-all", {})
+
     @app.get("/setup")
     async def setup_page():
         """Serve the instance setup / webhook URL reference page."""

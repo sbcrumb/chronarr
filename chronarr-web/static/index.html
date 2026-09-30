@@ -553,11 +553,14 @@
                 </div>
                 <div class="tool-page tool-page-wide">
                     <p class="tool-page-desc">Movies and episodes the Emby/Jellyfin plugin asked about that Chronarr answered "not found" for — persists across scans so these don't have to be caught live in the logs. Clears itself automatically once a lookup for the same item succeeds.</p>
-                    <div class="form-group" style="margin-top: 0.5rem;">
+                    <div class="form-group" style="margin-top: 0.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
                         <label style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.3rem; margin: 0;">
                             <input type="checkbox" id="unresolved-show-dismissed" onchange="loadUnresolvedLookups()" style="width: auto;">
                             Show dismissed
                         </label>
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="dismissAllUnresolvedLookups()">
+                            <i class="fas fa-eye-slash"></i> Dismiss All
+                        </button>
                     </div>
                     <div class="stats-display" id="unresolved-lookups-list" style="margin-top: 0.5rem;">
                         <p>Loading&hellip;</p>
@@ -630,6 +633,6 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=unresolved-lookups"></script>
+    <script src="/static/js/app.js?v=unresolved-lookups-2"></script>
 </body>
 </html>

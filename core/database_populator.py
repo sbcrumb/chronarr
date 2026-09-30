@@ -198,7 +198,8 @@ class DatabasePopulator:
             'skipped': 0,
             'errors': 0,
             'duration': 0.0,
-            'skipped_items': []  # Track what was skipped and why
+            'skipped_items': [],  # Track what was skipped and why
+            'added_items': []  # Track what was newly added
         }
 
         try:
@@ -267,7 +268,7 @@ class DatabasePopulator:
                         # Already in database - update file path and video status if needed
                         existing_path = existing.get('path')
                         if not existing_path or existing_path == 'unknown' or existing_path != path:
-                            _log("INFO", f"[{instance}] Movie {imdb_id} exists but updating file info: {path}")
+                            _log("INFO", f"[{instance}] Movie \"{movie.get('title', 'Unknown')}\" {imdb_id} exists but updating file info: {path}")
                             self.db.update_movie_file_info(imdb_id, path, has_video_file=True)
 
                             # Add to processing history
@@ -387,6 +388,12 @@ class DatabasePopulator:
                         _log("WARNING", f"[{instance}] Failed to add processing history for {imdb_id}: {e}")
 
                     stats['added'] += 1
+                    stats['added_items'].append({
+                        'title': title or 'Unknown',
+                        'year': year,
+                        'imdb_id': imdb_id,
+                        'source': source,
+                    })
                     _log("DEBUG", f"[{instance}] Added movie {imdb_id}: {title} ({year}) (source: {source})")
 
                 except Exception as e:
@@ -406,6 +413,16 @@ class DatabasePopulator:
             _log("INFO", f"[{instance}] Skipped items details ({len(stats['skipped_items'])} total):")
             for item in stats['skipped_items']:
                 _log("INFO", f"[{instance}]   - {item['title']} ({item.get('year', 'N/A')}) [{item.get('imdb_id', 'No IMDb')}]: {item['reason']}")
+
+        # Log details of added items — same convention as skipped items above,
+        # capped in the log (the full list is still in stats['added_items']
+        # for the web interface) since a full library sync can add thousands.
+        if stats['added_items']:
+            _log("INFO", f"[{instance}] Added items details ({len(stats['added_items'])} total):")
+            for item in stats['added_items'][:20]:
+                _log("INFO", f"[{instance}]   + {item['title']} ({item.get('year', 'N/A')}) [{item.get('imdb_id', 'No IMDb')}] (source: {item.get('source', 'unknown')})")
+            if len(stats['added_items']) > 20:
+                _log("INFO", f"[{instance}]   ... and {len(stats['added_items']) - 20} more (see web interface for full list)")
 
         return stats
 
@@ -438,7 +455,8 @@ class DatabasePopulator:
             'skipped': 0,
             'errors': 0,
             'duration': 0.0,
-            'skipped_items': []  # Track what was skipped and why
+            'skipped_items': [],  # Track what was skipped and why
+            'added_items': []  # Track what was newly added
         }
 
         try:
@@ -516,7 +534,7 @@ class DatabasePopulator:
                                 existing_path = existing.get('path')
                                 episode_path = episode.get('path', 'unknown')
                                 if not existing_path or existing_path == 'unknown' or existing_path != episode_path:
-                                    _log("INFO", f"[{instance}] Episode {imdb_id} S{season_num:02d}E{episode_num:02d} exists but updating file info: {episode_path}")
+                                    _log("INFO", f"[{instance}] Episode \"{series_title}\" {imdb_id} S{season_num:02d}E{episode_num:02d} exists but updating file info: {episode_path}")
                                     self.db.update_episode_file_info(imdb_id, season_num, episode_num, episode_path, has_video_file=True)
 
                                     # Add to processing history
@@ -614,6 +632,13 @@ class DatabasePopulator:
                                 _log("WARNING", f"[{instance}] Failed to add processing history for {imdb_id} S{season_num:02d}E{episode_num:02d}: {e}")
 
                             stats['added'] += 1
+                            stats['added_items'].append({
+                                'title': series_title,
+                                'episode_title': episode_title,
+                                'season': season_num,
+                                'episode': episode_num,
+                                'source': source,
+                            })
 
                         except Exception as e:
                             _log("ERROR", f"[{instance}] Error processing episode S{season_num:02d}E{episode_num:02d} of {series_title}: {e}")
@@ -639,6 +664,15 @@ class DatabasePopulator:
                 _log("INFO", f"[{instance}]   - {item['title']} S{str(item['season']).zfill(2)}E{str(item['episode']).zfill(2)} ({item.get('episode_title', 'Unknown')}): {item['reason']}")
             if len(stats['skipped_items']) > 20:
                 _log("INFO", f"[{instance}]   ... and {len(stats['skipped_items']) - 20} more (see web interface for full list)")
+
+        # Log details of added episodes — see populate_movies() for why this
+        # is capped in the log but not in stats['added_items'] itself.
+        if stats['added_items']:
+            _log("INFO", f"[{instance}] Added episodes details ({len(stats['added_items'])} total):")
+            for item in stats['added_items'][:20]:
+                _log("INFO", f"[{instance}]   + {item['title']} S{str(item['season']).zfill(2)}E{str(item['episode']).zfill(2)} ({item.get('episode_title', 'Unknown')}) (source: {item.get('source', 'unknown')})")
+            if len(stats['added_items']) > 20:
+                _log("INFO", f"[{instance}]   ... and {len(stats['added_items']) - 20} more (see web interface for full list)")
 
         return stats
 

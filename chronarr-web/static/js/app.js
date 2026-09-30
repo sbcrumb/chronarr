@@ -2142,6 +2142,19 @@ async function dismissUnresolvedLookup(id) {
     }
 }
 
+async function dismissAllUnresolvedLookups() {
+    if (!confirm('Dismiss every unresolved lookup currently shown? Any that miss again later will resurface.')) {
+        return;
+    }
+    try {
+        const result = await apiCall('/api/unresolved-lookups/dismiss-all', { method: 'POST' });
+        showToast(`✅ Dismissed ${result.dismissed_count || 0} lookups`, 'success');
+        loadUnresolvedLookups();
+    } catch (error) {
+        // apiCall already surfaces a toast on failure
+    }
+}
+
 async function handlePopulateDatabase(event) {
     event.preventDefault();
 
@@ -2249,6 +2262,33 @@ function stopPopulatePolling() {
     }
 }
 
+// Renders a collapsed-by-default <details> list of populate-run items —
+// used for both added_items and skipped_items, which can run into the
+// thousands on a full library sync, so this is never expanded by default.
+// Item shape tells movie apart from episode: episodes carry `season`.
+function renderPopulateItemsList(items, label) {
+    if (!items || items.length === 0) return '';
+
+    const rows = items.map(item => {
+        if ('season' in item) {
+            const ep = `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}`;
+            const extra = item.reason ? escapeHtml(item.reason) : escapeHtml(item.source || '');
+            return `${escapeHtml(item.title || 'Unknown')} ${ep} (${escapeHtml(item.episode_title || 'Unknown')}) &mdash; ${extra}`;
+        }
+        const extra = item.reason ? escapeHtml(item.reason) : escapeHtml(item.source || '');
+        return `${escapeHtml(item.title || 'Unknown')} (${item.year || 'N/A'}) [${escapeHtml(item.imdb_id || '')}] &mdash; ${extra}`;
+    });
+
+    return `
+        <details style="margin-top: 6px;">
+            <summary style="cursor: pointer;">${label} (${items.length})</summary>
+            <div style="max-height: 300px; overflow-y: auto; font-size: 0.85rem; margin-top: 4px;">
+                ${rows.map(r => `<div>${r}</div>`).join('')}
+            </div>
+        </details>
+    `;
+}
+
 function updatePopulateProgress(status) {
     const progressBar = document.getElementById('populate-progress-bar');
     const operationText = document.getElementById('populate-current-operation');
@@ -2279,6 +2319,8 @@ function updatePopulateProgress(status) {
                     <strong>Movies:</strong><br>
                     Total: ${m.total || 0} | Added: ${m.added || 0} | Skipped: ${m.skipped || 0} | Errors: ${m.errors || 0}<br>
                     Duration: ${m.duration ? m.duration.toFixed(2) : 0}s
+                    ${renderPopulateItemsList(m.added_items, 'Added')}
+                    ${renderPopulateItemsList(m.skipped_items, 'Skipped')}
                 </div>
             `;
         }
@@ -2291,6 +2333,8 @@ function updatePopulateProgress(status) {
                     Series: ${t.total_series || 0} | Episodes: ${t.total_episodes || 0}<br>
                     Added: ${t.added || 0} | Skipped: ${t.skipped || 0} | Errors: ${t.errors || 0}<br>
                     Duration: ${t.duration ? t.duration.toFixed(2) : 0}s
+                    ${renderPopulateItemsList(t.added_items, 'Added')}
+                    ${renderPopulateItemsList(t.skipped_items, 'Skipped')}
                 </div>
             `;
         }
