@@ -520,20 +520,28 @@ class ChronarrDatabase:
     def get_series_title_any_instance(self, imdb_id: str) -> Optional[str]:
         """Look up a series' title without knowing which instance owns it.
 
-        series has no plain title column — it lives inside the JSONB
-        metadata blob (see TVProcessor's sync code, which sets
-        metadata['title']). Used to put a show name on episode plugin-lookup
-        log lines / unresolved-lookup rows instead of just an IMDb ID.
+        series has no title column, and its `metadata` JSONB column — despite
+        the name suggesting otherwise — is never actually populated; every
+        upsert_series() call site omits it, so it's always NULL in practice.
+        (Confirmed live: production logs showed every episode lookup missing
+        its title even on a "found" result.) The only title-shaped thing
+        Chronarr actually has on hand is the series directory name, which
+        follows the same "<Title> [imdb-ttXXXXXXX]" convention the directory
+        scan in find_media_path_by_imdb_and_title() already depends on — so
+        derive it from `path` instead.
         """
+        from utils.file_utils import extract_title_from_directory_name
+        from pathlib import Path
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT metadata FROM series WHERE imdb_id = %s ORDER BY instance LIMIT 1
+                SELECT path FROM series WHERE imdb_id = %s ORDER BY instance LIMIT 1
             """, (imdb_id,))
             row = cursor.fetchone()
-            if not row or not row.get('metadata'):
+            if not row or not row.get('path'):
                 return None
-            return row['metadata'].get('title')
+            return extract_title_from_directory_name(Path(row['path']).name)
 
     def add_processing_history(self, imdb_id: str, media_type: str, event_type: str, details: Optional[Dict] = None):
         """Add processing history entry"""
