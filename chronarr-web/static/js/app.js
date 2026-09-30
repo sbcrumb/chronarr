@@ -63,6 +63,7 @@ function switchTab(tabName) {
         case 'tool-stats': loadDetailedStats(); break;
         case 'tool-populate': loadPopulateInstanceOptions(); break;
         case 'tool-logs': loadLogFiles(); break;
+        case 'tool-unresolved': loadUnresolvedLookups(); break;
     }
 }
 
@@ -2063,6 +2064,81 @@ function toggleLogTailAutoRefresh() {
     if (checkbox && checkbox.checked) {
         refreshLogTail();
         logTailAutoRefreshTimer = setInterval(refreshLogTail, 5000);
+    }
+}
+
+// --- Unresolved Lookups (Tools tab) ---
+
+const UNRESOLVED_REASON_LABELS = {
+    no_db_record: 'No DB record',
+    no_resolved_date: 'In DB, no date yet'
+};
+
+async function loadUnresolvedLookups() {
+    const listEl = document.getElementById('unresolved-lookups-list');
+    const showDismissed = document.getElementById('unresolved-show-dismissed');
+    if (!listEl) return;
+
+    try {
+        const includeDismissed = showDismissed && showDismissed.checked;
+        const data = await apiCall(`/api/unresolved-lookups?include_dismissed=${includeDismissed ? 'true' : 'false'}`);
+        const lookups = data.lookups || [];
+
+        if (lookups.length === 0) {
+            listEl.innerHTML = '<p class="empty-note">Nothing unresolved right now.</p>';
+            return;
+        }
+
+        listEl.innerHTML = `
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Title</th>
+                        <th>IMDb ID</th>
+                        <th>Reason</th>
+                        <th>Instance</th>
+                        <th>Misses</th>
+                        <th>Last Seen</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${lookups.map(l => {
+                        const isEpisode = l.media_type === 'episode';
+                        const episodeTag = isEpisode ? ` S${String(l.season).padStart(2, '0')}E${String(l.episode).padStart(2, '0')}` : '';
+                        return `
+                        <tr>
+                            <td>${isEpisode ? 'Episode' : 'Movie'}</td>
+                            <td>${l.title ? escapeHtml(l.title) + episodeTag : '<span class="empty-note">unknown</span>'}</td>
+                            <td><a href="https://www.imdb.com/title/${encodeURIComponent(l.imdb_id)}" target="_blank" rel="noopener">${escapeHtml(l.imdb_id)}</a></td>
+                            <td>${escapeHtml(UNRESOLVED_REASON_LABELS[l.reason] || l.reason)}</td>
+                            <td>${escapeHtml(l.instance || '')}</td>
+                            <td>${l.miss_count}</td>
+                            <td>${formatDateTime(l.last_seen)}</td>
+                            <td>
+                                ${l.dismissed
+                                    ? '<span class="badge">dismissed</span>'
+                                    : `<button class="btn btn-sm btn-secondary" onclick="dismissUnresolvedLookup(${l.id})"><i class="fas fa-eye-slash"></i> Dismiss</button>`
+                                }
+                            </td>
+                        </tr>
+                    `;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        listEl.innerHTML = '<p class="empty-note">Failed to load unresolved lookups.</p>';
+    }
+}
+
+async function dismissUnresolvedLookup(id) {
+    try {
+        await apiCall(`/api/unresolved-lookups/${id}/dismiss`, { method: 'POST' });
+        loadUnresolvedLookups();
+    } catch (error) {
+        // apiCall already surfaces a toast on failure
     }
 }
 

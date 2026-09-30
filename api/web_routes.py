@@ -2572,6 +2572,34 @@ def register_database_admin_routes(app, dependencies):
         except (urllib.error.URLError, socket.timeout) as e:
             raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
 
+    @app.get("/api/unresolved-lookups")
+    async def unresolved_lookups_list(request: Request):
+        """Proxy the unresolved plugin-lookups list from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/unresolved-lookups" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/unresolved-lookups/{lookup_id}/dismiss")
+    async def unresolved_lookups_dismiss(lookup_id: int):
+        """Proxy dismissing an unresolved plugin lookup to the core container."""
+        return await _proxy_post_to_core(f"/api/unresolved-lookups/{lookup_id}/dismiss", {})
+
     @app.get("/setup")
     async def setup_page():
         """Serve the instance setup / webhook URL reference page."""
