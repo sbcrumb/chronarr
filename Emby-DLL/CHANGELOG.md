@@ -1,5 +1,8 @@
 # Chronarr Emby Plugin — Changelog
 
+## v2.0.21 — Library Exclusions Fix
+- Fixed library exclusions not actually excluding anything — the config page saved a library's ID in a different GUID format than the real-time sync and scheduled task compared it against, so a checked-off library still got scanned
+
 ## v2.0.20 — Server Name & Admin Pre-fill
 - Server name field is now read-only and sourced automatically from Emby's configured server name
 - Admin username is pre-filled from the first Emby administrator account at startup
