@@ -1112,6 +1112,19 @@ class ChronarrDatabase:
             conn.commit()
             return cursor.rowcount > 0
 
+    def dismiss_all_unresolved_lookups(self) -> int:
+        """Dismiss every currently-active unresolved lookup in one go. Returns the count dismissed."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE unresolved_lookups
+                SET dismissed = TRUE, dismissed_at = CURRENT_TIMESTAMP
+                WHERE dismissed = FALSE
+            """)
+            count = cursor.rowcount
+            conn.commit()
+            return count
+
     # Scheduled Scans Methods
     
     def create_scheduled_scan(self, name: str, description: str, cron_expression: str, 

@@ -2901,6 +2901,27 @@ async def lookup_movie_by_title(title: str, year: str, dependencies: dict):
         raise HTTPException(status_code=500, detail=f"Movie title lookup failed: {str(e)}")
 
 
+def _movie_title_from_result(result: Optional[dict]) -> Optional[str]:
+    """Best-effort title for a movies-table row for plugin-lookup logging.
+
+    movies.title is only ever set once a title has come back from the
+    date-resolution pipeline (upsert_movie_dates) — a row created by the
+    bare upsert_movie() path (e.g. still waiting on a date) can have a real
+    path but a NULL title. Same situation as episodes/series — fall back to
+    parsing it out of the directory name rather than showing nothing.
+    """
+    if not result:
+        return None
+    title = result.get('title')
+    if title:
+        return title
+    path = result.get('path')
+    if not path or path == 'unknown':
+        return None
+    from utils.file_utils import extract_title_from_directory_name
+    return extract_title_from_directory_name(Path(path).name)
+
+
 async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
     """
     Lookup movie dateadded from Chronarr database for Emby plugin integration
@@ -2957,7 +2978,7 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
             # by hand; clearing any stale miss record means a title that
             # later resolves drops off the Unresolved Lookups page on its
             # own instead of sitting there claiming it's still broken.
-            movie_title = result.get('title')
+            movie_title = _movie_title_from_result(result)
             db.clear_lookup_miss(imdb_id, 'movie')
             title_part = f'"{movie_title}" ' if movie_title else ''
             _log("INFO", f"Plugin lookup: movie {title_part}({imdb_id}) -> found (source={result.get('source', 'database')})")
@@ -2979,7 +3000,7 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
             # get_movie_dates* call above, just without a usable dateadded.
             if result:
                 reason, reason_desc = 'no_resolved_date', 'in DB, no resolved date yet'
-                movie_title = result.get('title')
+                movie_title = _movie_title_from_result(result)
             else:
                 reason, reason_desc = 'no_db_record', 'no DB record'
                 movie_title = None
@@ -3059,22 +3080,24 @@ def _populate_worker_process(media_type: str, status_file: str, instance: str = 
 
         def _merge_movie_stats(all_stats):
             merged = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
-                      'duration': 0.0, 'skipped_items': []}
+                      'duration': 0.0, 'skipped_items': [], 'added_items': []}
             for inst_name, s in all_stats:
                 for k in ('total', 'added', 'updated', 'skipped', 'errors'):
                     merged[k] += s.get(k, 0)
                 merged['duration'] += s.get('duration', 0.0)
                 merged['skipped_items'].extend(s.get('skipped_items', []))
+                merged['added_items'].extend(s.get('added_items', []))
             return merged
 
         def _merge_tv_stats(all_stats):
             merged = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
-                      'skipped': 0, 'errors': 0, 'duration': 0.0, 'skipped_items': []}
+                      'skipped': 0, 'errors': 0, 'duration': 0.0, 'skipped_items': [], 'added_items': []}
             for inst_name, s in all_stats:
                 for k in ('total_series', 'total_episodes', 'added', 'updated', 'skipped', 'errors'):
                     merged[k] += s.get(k, 0)
                 merged['duration'] += s.get('duration', 0.0)
                 merged['skipped_items'].extend(s.get('skipped_items', []))
+                merged['added_items'].extend(s.get('added_items', []))
             return merged
 
         print(f"INFO: [Worker Process] Starting database population: {media_type} (instance: {instance})")
@@ -3797,6 +3820,14 @@ def register_routes(app, dependencies: dict):
         if not dismissed:
             raise HTTPException(status_code=404, detail="Unresolved lookup not found")
         return {"dismissed": True, "id": lookup_id}
+
+    @app.post("/api/unresolved-lookups/dismiss-all")
+    async def _dismiss_all_unresolved_lookups():
+        db = dependencies.get("db")
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        count = db.dismiss_all_unresolved_lookups()
+        return {"dismissed_count": count}
 
         return {
             "restored": True,
