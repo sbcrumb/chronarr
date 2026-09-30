@@ -194,7 +194,34 @@ class ChronarrDatabase:
                 resolved_imdb_id VARCHAR(20)
             )
         """)
-        
+
+        # Plugin lookup misses — a persisted record of "not found" responses
+        # from /api/lookup/movie and /api/lookup/episode (the Emby/Jellyfin
+        # plugin endpoints), so they're reviewable in the web UI instead of
+        # only existing as a line in chronarr.log that scrolls past during a
+        # full-library scan. season/episode default to 0 (not NULL) so the
+        # UNIQUE constraint actually dedupes movie rows — Postgres treats
+        # each NULL as distinct, which would let every movie miss insert a
+        # new row instead of upserting one.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS unresolved_lookups (
+                id SERIAL PRIMARY KEY,
+                imdb_id VARCHAR(20) NOT NULL,
+                media_type VARCHAR(20) NOT NULL,
+                season INTEGER NOT NULL DEFAULT 0,
+                episode INTEGER NOT NULL DEFAULT 0,
+                instance VARCHAR(100),
+                title TEXT,
+                reason VARCHAR(30) NOT NULL,
+                first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                miss_count INTEGER DEFAULT 1,
+                dismissed BOOLEAN DEFAULT FALSE,
+                dismissed_at TIMESTAMP,
+                UNIQUE (imdb_id, media_type, season, episode)
+            )
+        """)
+
         # Scheduled scans table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS scheduled_scans (
@@ -286,6 +313,8 @@ class ChronarrDatabase:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_missing_imdb_type ON missing_imdb(media_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_missing_imdb_resolved ON missing_imdb(resolved)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_missing_imdb_path ON missing_imdb(file_path)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_unresolved_lookups_dismissed ON unresolved_lookups(dismissed)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_unresolved_lookups_type ON unresolved_lookups(media_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_scans_enabled ON scheduled_scans(enabled)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_scans_next_run ON scheduled_scans(next_run_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule ON schedule_executions(schedule_id)")
@@ -487,7 +516,25 @@ class ChronarrDatabase:
             """, (imdb_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
-    
+
+    def get_series_title_any_instance(self, imdb_id: str) -> Optional[str]:
+        """Look up a series' title without knowing which instance owns it.
+
+        series has no plain title column — it lives inside the JSONB
+        metadata blob (see TVProcessor's sync code, which sets
+        metadata['title']). Used to put a show name on episode plugin-lookup
+        log lines / unresolved-lookup rows instead of just an IMDb ID.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT metadata FROM series WHERE imdb_id = %s ORDER BY instance LIMIT 1
+            """, (imdb_id,))
+            row = cursor.fetchone()
+            if not row or not row.get('metadata'):
+                return None
+            return row['metadata'].get('title')
+
     def add_processing_history(self, imdb_id: str, media_type: str, event_type: str, details: Optional[Dict] = None):
         """Add processing history entry"""
         with self.get_connection() as conn:
@@ -987,7 +1034,76 @@ class ChronarrDatabase:
             conn.commit()
             
             return deleted_count > 0
-    
+
+    # Unresolved Plugin Lookups Methods
+
+    def record_lookup_miss(self, imdb_id: str, media_type: str, reason: str,
+                            instance: str = None, title: str = None,
+                            season: int = 0, episode: int = 0):
+        """Record (or bump) a "not found" plugin lookup.
+
+        Upserts on (imdb_id, media_type, season, episode) — a repeat miss
+        (the common case: a full-library scan re-checks everything every
+        run) just bumps miss_count/last_seen rather than piling up rows.
+        Also un-dismisses the row: if something was dismissed as "checked,
+        nothing to do" and it's still missing on a later scan, that's worth
+        surfacing again rather than staying silently hidden forever.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO unresolved_lookups
+                    (imdb_id, media_type, season, episode, instance, title, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (imdb_id, media_type, season, episode) DO UPDATE SET
+                    last_seen = CURRENT_TIMESTAMP,
+                    miss_count = unresolved_lookups.miss_count + 1,
+                    instance = EXCLUDED.instance,
+                    title = EXCLUDED.title,
+                    reason = EXCLUDED.reason,
+                    dismissed = FALSE,
+                    dismissed_at = NULL
+            """, (imdb_id, media_type, season, episode, instance, title, reason))
+            conn.commit()
+
+    def clear_lookup_miss(self, imdb_id: str, media_type: str, season: int = 0, episode: int = 0):
+        """Remove a miss record once the same lookup succeeds — a fixed item should
+        just disappear from the list rather than linger as a stale "resolved" row."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM unresolved_lookups
+                WHERE imdb_id = %s AND media_type = %s AND season = %s AND episode = %s
+            """, (imdb_id, media_type, season, episode))
+            conn.commit()
+
+    def get_unresolved_lookups(self, include_dismissed: bool = False) -> List[Dict]:
+        """Get plugin lookup misses, newest-seen first."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT id, imdb_id, media_type, season, episode, instance, title,
+                       reason, first_seen, last_seen, miss_count, dismissed, dismissed_at
+                FROM unresolved_lookups
+            """
+            if not include_dismissed:
+                query += " WHERE dismissed = FALSE"
+            query += " ORDER BY last_seen DESC"
+            cursor.execute(query)
+            return cursor.fetchall()
+
+    def dismiss_unresolved_lookup(self, lookup_id: int) -> bool:
+        """Mark a lookup miss as dismissed (snoozed — reappears if it misses again)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE unresolved_lookups
+                SET dismissed = TRUE, dismissed_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (lookup_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
     # Scheduled Scans Methods
     
     def create_scheduled_scan(self, name: str, description: str, cron_expression: str, 

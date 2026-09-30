@@ -2671,8 +2671,14 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
             # a plugin scan (scheduled full-library or single-item) never
             # showed up on Chronarr's side at all, only in Emby/Jellyfin's
             # own log — there was no INFO-level line on a normal lookup,
-            # only on an outright error.
-            _log("INFO", f"Plugin lookup: episode {imdb_id} S{season:02d}E{episode:02d} -> found (source={result.get('source', 'database')})")
+            # only on an outright error. Title comes from the series row
+            # (episodes has no title column of its own); clearing the miss
+            # record here means a show that resolves later drops off the
+            # Unresolved Lookups page on its own.
+            series_title = db.get_series_title_any_instance(imdb_id)
+            db.clear_lookup_miss(imdb_id, 'episode', season, episode)
+            title_part = f'"{series_title}" ' if series_title else ''
+            _log("INFO", f"Plugin lookup: episode {title_part}({imdb_id}) S{season:02d}E{episode:02d} -> found (source={result.get('source', 'database')})")
 
             return {
                 "found": True,
@@ -2686,8 +2692,22 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
                 "auto_fixed": False  # Auto-fix functionality disabled
             }
         else:
-            # Not found in database
-            _log("INFO", f"Plugin lookup: episode {imdb_id} S{season:02d}E{episode:02d} -> not found")
+            # Not found — see lookup_movie() for why this distinguishes "no
+            # episode row at all" from "row exists, no resolved date yet".
+            # A series row can exist (with a title) even when this
+            # particular episode row doesn't, so the title lookup is
+            # independent of whether `result` itself is set.
+            series_title = db.get_series_title_any_instance(imdb_id)
+            reason, reason_desc = ('no_resolved_date', 'in DB, no resolved date yet') if result \
+                else ('no_db_record', 'no episode record' if series_title else 'no DB record')
+
+            db.record_lookup_miss(
+                imdb_id, 'episode', reason, instance=instance, title=series_title,
+                season=season, episode=episode
+            )
+
+            title_part = f'"{series_title}" ' if series_title else ''
+            _log("INFO", f"Plugin lookup: episode {title_part}({imdb_id}) S{season:02d}E{episode:02d} -> not found ({reason_desc})")
             return {
                 "found": False,
                 "imdb_id": imdb_id,
@@ -2933,7 +2953,14 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
             # needed: the DEBUG lines above are silent by default now
             # (LOG_LEVEL=INFO), so a plugin scan never showed up on
             # Chronarr's side at all, only in Emby/Jellyfin's own log.
-            _log("INFO", f"Plugin lookup: movie {imdb_id} -> found (source={result.get('source', 'database')})")
+            # Title makes the line useful without cross-referencing the ID
+            # by hand; clearing any stale miss record means a title that
+            # later resolves drops off the Unresolved Lookups page on its
+            # own instead of sitting there claiming it's still broken.
+            movie_title = result.get('title')
+            db.clear_lookup_miss(imdb_id, 'movie')
+            title_part = f'"{movie_title}" ' if movie_title else ''
+            _log("INFO", f"Plugin lookup: movie {title_part}({imdb_id}) -> found (source={result.get('source', 'database')})")
 
             return {
                 "found": True,
@@ -2945,8 +2972,22 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
                 "auto_fixed": False  # Auto-fix functionality disabled
             }
         else:
-            # Not found in database
-            _log("INFO", f"Plugin lookup: movie {imdb_id} -> not found")
+            # Not found — but "not found" means two very different things, and
+            # collapsing them into one log line made it impossible to tell
+            # which one you're looking at without going and checking the DB
+            # by hand. `result` is the movie row (if any) from the
+            # get_movie_dates* call above, just without a usable dateadded.
+            if result:
+                reason, reason_desc = 'no_resolved_date', 'in DB, no resolved date yet'
+                movie_title = result.get('title')
+            else:
+                reason, reason_desc = 'no_db_record', 'no DB record'
+                movie_title = None
+
+            db.record_lookup_miss(imdb_id, 'movie', reason, instance=instance, title=movie_title)
+
+            title_part = f'"{movie_title}" ' if movie_title else ''
+            _log("INFO", f"Plugin lookup: movie {title_part}({imdb_id}) -> not found ({reason_desc})")
             return {
                 "found": False,
                 "imdb_id": imdb_id,
@@ -2954,7 +2995,7 @@ async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
                 "source": None,
                 "released": None
             }
-            
+
     except Exception as e:
         _log("ERROR", f"Movie lookup failed for {imdb_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Movie lookup failed: {str(e)}")
@@ -3730,6 +3771,32 @@ def register_routes(app, dependencies: dict):
         from fastapi.responses import FileResponse
         path = _validated_log_path(filename)
         return FileResponse(path, media_type="text/plain", filename=filename)
+
+    # ---------------------------
+    # Unresolved plugin lookups
+    # ---------------------------
+    # /api/lookup/movie and /api/lookup/episode record a row here every time
+    # they answer "not found" — see lookup_movie()/lookup_episode() above.
+    # These two endpoints let the web UI show and clear that list instead of
+    # it only existing as a line in chronarr.log.
+
+    @app.get("/api/unresolved-lookups")
+    async def _list_unresolved_lookups(include_dismissed: bool = False):
+        db = dependencies.get("db")
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        rows = db.get_unresolved_lookups(include_dismissed=include_dismissed)
+        return {"lookups": [dict(row) for row in rows]}
+
+    @app.post("/api/unresolved-lookups/{lookup_id}/dismiss")
+    async def _dismiss_unresolved_lookup(lookup_id: int):
+        db = dependencies.get("db")
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        dismissed = db.dismiss_unresolved_lookup(lookup_id)
+        if not dismissed:
+            raise HTTPException(status_code=404, detail="Unresolved lookup not found")
+        return {"dismissed": True, "id": lookup_id}
 
         return {
             "restored": True,

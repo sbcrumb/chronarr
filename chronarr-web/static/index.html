@@ -89,6 +89,9 @@
                         <button class="sidebar-sub-item" id="sub-tool-logs" onclick="selectToolsPage('tool-logs')">
                             Log Files
                         </button>
+                        <button class="sidebar-sub-item" id="sub-tool-unresolved" onclick="selectToolsPage('tool-unresolved')">
+                            Unresolved Lookups
+                        </button>
                     </div>
                 </div>
 
@@ -540,6 +543,25 @@
                         </div>
                     </div>
                     <pre id="log-tail-output" style="max-height: 65vh; overflow: auto; background: var(--bg-secondary, #1a1a1a); color: var(--text-primary, #ddd); padding: 0.75rem; border-radius: 4px; font-size: 0.78rem; line-height: 1.4; white-space: pre-wrap; word-break: break-all; margin-top: 0.5rem;">Select a file above and click Refresh.</pre>
+                </div>
+            </div>
+
+            <!-- Tools: Unresolved Lookups -->
+            <div class="tab-content" id="tool-unresolved">
+                <div class="content-header">
+                    <h2><i class="fas fa-magnifying-glass-minus"></i> Unresolved Lookups</h2>
+                </div>
+                <div class="tool-page tool-page-wide">
+                    <p class="tool-page-desc">Movies and episodes the Emby/Jellyfin plugin asked about that Chronarr answered "not found" for — persists across scans so these don't have to be caught live in the logs. Clears itself automatically once a lookup for the same item succeeds.</p>
+                    <div class="form-group" style="margin-top: 0.5rem;">
+                        <label style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.3rem; margin: 0;">
+                            <input type="checkbox" id="unresolved-show-dismissed" onchange="loadUnresolvedLookups()" style="width: auto;">
+                            Show dismissed
+                        </label>
+                    </div>
+                    <div class="stats-display" id="unresolved-lookups-list" style="margin-top: 0.5rem;">
+                        <p>Loading&hellip;</p>
+                    </div>
                 </div>
             </div>
         </main>
