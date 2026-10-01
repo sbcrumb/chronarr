@@ -1,7 +1,7 @@
 # Chronarr Emby Plugin — Changelog
 
-## v2.0.21 — Library Exclusions Fix
-- Fixed library exclusions not actually excluding anything — the config page saved a library's ID in a different GUID format than the real-time sync and scheduled task compared it against, so a checked-off library still got scanned
+## v2.0.22 — Library Exclusions Fix
+- Fixed library exclusions not actually excluding anything — Emby's virtual-folder API exposes three different ID fields for a library (`Guid`, `ItemId`, `Id`), and the config page was capturing the wrong one (`Id`, a short legacy numeric string on some Emby versions, not a GUID at all). That never matched what the real-time sync and scheduled task compare against, so a checked-off library still got scanned regardless of which library it was. Now reads the library's actual `Guid` field — **re-check and re-save Library Exclusions after updating** so the corrected IDs get stored.
 
 ## v2.0.20 — Server Name & Admin Pre-fill
 - Server name field is now read-only and sourced automatically from Emby's configured server name
