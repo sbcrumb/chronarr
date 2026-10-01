@@ -328,6 +328,7 @@ class ChronarrDatabase:
     def upsert_series(self, imdb_id: str, path: str, instance: str = 'sonarr', metadata: Optional[Dict] = None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            self._auto_migrate_series_on_path_match(cursor, imdb_id, path, instance)
             timestamp = datetime.utcnow()
             cursor.execute("""
                 INSERT INTO series (imdb_id, instance, path, last_updated, metadata)
@@ -337,6 +338,50 @@ class ChronarrDatabase:
                     last_updated = EXCLUDED.last_updated,
                     metadata = EXCLUDED.metadata
             """, (imdb_id, instance, path, timestamp, json.dumps(metadata) if metadata else None))
+
+    def _auto_migrate_series_on_path_match(self, cursor, new_imdb_id: str, path: str, instance: str):
+        """Detect Sonarr silently re-mapping a series' IMDb ID and merge instead of duplicating.
+
+        Common for very new/upcoming titles whose metadata hasn't settled on a
+        canonical IMDb ID yet - the next sync reports a different imdb_id for
+        the exact same show. series' PK is (imdb_id, instance), so without
+        this the upsert below would just create a second row for the "new" ID
+        and silently fork the episode history between the two. The series
+        path Sonarr hands us is the stable signal here (it doesn't change
+        just because a metadata ID got corrected), so a path match under the
+        same instance but a different imdb_id is treated as proof it's the
+        same show and merged via the same logic migrate_series_imdb_id() uses
+        manually - episodes move over, any season/episode that already exists
+        under the new ID (a genuine collision between the two, not just
+        happenstance) is dropped rather than left orphaned under a dead ID.
+        """
+        if not path:
+            return
+        cursor.execute(
+            "SELECT imdb_id FROM series WHERE instance = %s AND path = %s AND imdb_id != %s",
+            (instance, path, new_imdb_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return
+        old_imdb_id = row['imdb_id']
+        _log("INFO", f"[{instance}] Series IMDb ID changed: {old_imdb_id} -> {new_imdb_id} (same path: {path}) — auto-migrating episode history")
+
+        cursor.execute("""
+            UPDATE episodes SET imdb_id = %s, skipped = FALSE, skip_reason = NULL
+            WHERE imdb_id = %s AND instance = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM episodes e2
+                  WHERE e2.imdb_id = %s AND e2.instance = %s
+                    AND e2.season = episodes.season AND e2.episode = episodes.episode
+              )
+        """, (new_imdb_id, old_imdb_id, instance, new_imdb_id, instance))
+
+        # Whatever's left under the old ID is a real season/episode collision
+        # with the new ID — can't move it without violating the PK, and the
+        # actively-syncing new ID's data is the one to trust.
+        cursor.execute("DELETE FROM episodes WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
+        cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
     
     def upsert_episode_date(self, imdb_id: str, season: int, episode: int,
                            aired: Optional[str], dateadded: Optional[str],
