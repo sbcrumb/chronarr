@@ -2,15 +2,20 @@
 
 ## Core App
 
-### v3.0.0
+### v2.1.0
 
-- **Multi-instance support** — Configure multiple Radarr and/or Sonarr instances using a `NAME` segment in the env var (e.g., `RADARR_4K_URL`). Each instance is discovered automatically and tracked independently in the database
+- **Multi-instance support** — Configure multiple Radarr and/or Sonarr instances using a `NAME` segment in the env var (e.g., `RADARR_4K_URL`). Each instance is discovered automatically and tracked independently in the database. Single-instance setups are unaffected — existing `.env` files, webhook URLs, and databases keep working unchanged
 - **Sidebar navigation** — Replaced the horizontal tab bar with a collapsible dark sidebar; Movies and TV Shows expand to show per-instance sub-items with colored dots
 - **Instance badges** — Table rows display a colored pill badge identifying which instance the record belongs to; colors are consistent between the sidebar dots and the table badges
 - **Instance-aware edit and smart-fix** — Date edits, smart-fix actions, and skipped-item updates are scoped to the correct instance, preventing cross-instance updates in multi-instance setups
 - **Cold-start populate fix** — Database population triggered at startup now loops all configured Radarr and Sonarr instances instead of only the first
 - **Delete series** — New API endpoint (`DELETE /api/series/{imdb_id}?instance=sonarr`) and UI button to remove an entire TV series and all its episode records in one operation
 - **Series title cleanup** — Series titles sourced from folder paths no longer include media-manager ID suffixes such as `[imdb-tt1234567]`
+- **Setup wizard** — Guided `.env`/`.env.secrets` generation with per-instance connection testing and env backup/restore
+- **Readable logs + web-based log viewer** — Configurable `LOG_LEVEL` (default `INFO`, was always `DEBUG`), compact webhook payload summaries, per-webhook request IDs, and an in-browser log file viewer (Tools tab) with tail/download
+- **Plugin lookup visibility** — Emby/Jellyfin plugin lookups now log a title and a reason when a movie or episode isn't found, instead of just an IMDb ID
+- **Unresolved Lookups page** — Persists "not found" plugin lookups so they can be reviewed and dismissed from the web UI, instead of only existing as a line in the logs
+- **Series IMDb ID auto-migration** — Detects Sonarr re-mapping a series' IMDb ID (common for brand-new titles) and automatically merges episode history instead of silently creating a duplicate entry
 
 ---
 
