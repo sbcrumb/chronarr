@@ -2,11 +2,16 @@
 FastAPI routes for Chronarr - extracted from main chronarr.py for modular architecture
 """
 import os
+import re
 import hmac
 import hashlib
 import json
+import uuid
 import requests
 import asyncio
+import tempfile
+import multiprocessing
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
 from fastapi import HTTPException, BackgroundTasks, Request, Response
@@ -16,7 +21,8 @@ from typing import Optional
 from api.models import (
     SonarrWebhook, RadarrWebhook, MaintainarrWebhook, HealthResponse, TVSeasonRequest, TVEpisodeRequest,
     MovieUpdateRequest, EpisodeUpdateRequest, BulkUpdateRequest, OrphanedCleanupRequest,
-    CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse
+    CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse,
+    WizardConnectionTestRequest, WizardSaveInstanceRequest, WizardEnvRestoreRequest, WizardDeleteInstanceRequest
 )
 # Import logging utility
 from utils.logging import _log
@@ -80,8 +86,8 @@ async def _verify_webhook_signature(request: Request, body: bytes, secret: str, 
 # Route Handlers
 # ---------------------------
 
-async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict):
-    """Handle Sonarr webhooks"""
+async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict, instance: str = "sonarr"):
+    """Handle Sonarr webhooks — instance name comes from the URL path."""
     tv_processor = dependencies["tv_processor"]
     batcher = dependencies["batcher"]
     config = dependencies["config"]
@@ -94,7 +100,13 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
             raise HTTPException(status_code=422, detail="Empty Sonarr payload")
         
         webhook = SonarrWebhook(**payload)
-        _log("INFO", f"Received Sonarr webhook: {webhook.eventType}")
+        # Short id so related log lines across the async receive -> batch ->
+        # background-thread processing hop can be told apart from other
+        # webhooks landing around the same time, without needing to thread it
+        # through every internal call — see it again at the batch/process
+        # boundaries in webhooks/webhook_batcher.py.
+        req_id = uuid.uuid4().hex[:6]
+        _log("INFO", f"[{instance}:{req_id}] Received Sonarr webhook: {webhook.eventType}")
         
         if webhook.eventType not in ["Download", "Upgrade", "Rename"]:
             return {"status": "ignored", "reason": f"Event type {webhook.eventType} not processed"}
@@ -110,24 +122,25 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         sonarr_path = series_info.get("path", "")
         
         if not imdb_id:
-            _log("ERROR", f"No IMDb ID for series: {series_title}")
+            _log("ERROR", f"[{instance}:{req_id}] No IMDb ID for series: {series_title}")
             return {"status": "error", "reason": "No IMDb ID"}
-        
-        # Find series path
-        series_path = tv_processor.find_series_path(series_title, imdb_id, sonarr_path)
+
+        # Find series path — instance-aware so a named instance's own root
+        # folder mapping is used, not always the default instance's.
+        series_path = tv_processor.find_series_path(series_title, imdb_id, sonarr_path, instance=instance)
         if not series_path:
-            print(f"ERROR: Could not find series directory: {series_title} ({imdb_id})")
+            _log("ERROR", f"[{instance}:{req_id}] Could not find series directory: {series_title} ({imdb_id})")
             return {"status": "error", "reason": "Series directory not found"}
-        
+
         # Extract episode data for targeted processing
         episodes_data = webhook.episodes or []
-        _log("DEBUG", f"Initial episodes_data from webhook.episodes: {len(episodes_data)} episodes")
+        _log("DEBUG", f"[{instance}:{req_id}] Initial episodes_data from webhook.episodes: {len(episodes_data)} episodes")
         
         # For all webhook events, if no episodes in webhook.episodes, try to extract from episodeFile
         # This ensures targeted processing for single episode operations (Download, Rename, Upgrade)
-        _log("DEBUG", f"webhook.episodeFile present: {webhook.episodeFile is not None}")
+        _log("DEBUG", f"[{instance}:{req_id}] webhook.episodeFile present: {webhook.episodeFile is not None}")
         if webhook.episodeFile:
-            _log("DEBUG", f"episodeFile content: {webhook.episodeFile}")
+            _log("DEBUG", f"[{instance}:{req_id}] episodeFile content: {webhook.episodeFile}")
         
         if not episodes_data and webhook.episodeFile:
             episode_file = webhook.episodeFile
@@ -141,17 +154,17 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                 
                 # Try relativePath first, then path
                 file_path = episode_file.get("relativePath") or episode_file.get("path", "")
-                _log("DEBUG", f"Parsing episode info from path: {file_path}")
+                _log("DEBUG", f"[{instance}:{req_id}] Parsing episode info from path: {file_path}")
                 
                 episode_info = extract_episode_info_from_filename(file_path)
                 if episode_info:
                     season_num = episode_info["season"]
                     episode_num = episode_info["episode"]
-                    _log("DEBUG", f"Extracted from filename - Season: {season_num}, Episode: {episode_num}")
+                    _log("DEBUG", f"[{instance}:{req_id}] Extracted from filename - Season: {season_num}, Episode: {episode_num}")
                 else:
-                    _log("DEBUG", f"Could not extract season/episode from filename: {file_path}")
+                    _log("DEBUG", f"[{instance}:{req_id}] Could not extract season/episode from filename: {file_path}")
             
-            _log("DEBUG", f"episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
+            _log("DEBUG", f"[{instance}:{req_id}] episodeFile seasonNumber: {season_num}, episodeNumber: {episode_num}")
             if season_num and episode_num:
                 # Create episode data structure that matches what process_webhook_episodes expects
                 episodes_data = [{
@@ -161,37 +174,37 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                     "title": episode_file.get("title")
                     # Note: Not including dateAdded - we use database-first approach with Sonarr fallback
                 }]
-                _log("INFO", f"Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
+                _log("INFO", f"[{instance}:{req_id}] Extracted episode info from episodeFile for {webhook.eventType}: S{season_num:02d}E{episode_num:02d}")
             else:
-                _log("DEBUG", f"Missing season/episode numbers in episodeFile for {webhook.eventType}")
+                _log("DEBUG", f"[{instance}:{req_id}] Missing season/episode numbers in episodeFile for {webhook.eventType}")
         
         # Special handling for Rename events - Sonarr doesn't include episodeFile for renames
         # Try to find recently renamed episodes using Sonarr history API
         if not episodes_data and webhook.eventType == "Rename":
-            _log("DEBUG", f"Attempting to find recently renamed episode for series {imdb_id}")
+            _log("DEBUG", f"[{instance}:{req_id}] Attempting to find recently renamed episode for series {imdb_id}")
             try:
                 # Get series info from Sonarr to find series ID
                 series_lookup_url = f"{config.sonarr_url}/api/v3/series/lookup?term=imdbid:{imdb_id}"
-                _log("DEBUG", f"Sonarr lookup for rename: {series_lookup_url}")
+                _log("DEBUG", f"[{instance}:{req_id}] Sonarr lookup for rename: {series_lookup_url}")
                 
                 response = requests.get(series_lookup_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                 if response.status_code == 200:
                     series_results = response.json()
                     if series_results:
                         series_id = series_results[0].get("id")
-                        _log("DEBUG", f"Found series ID {series_id} for rename lookup")
+                        _log("DEBUG", f"[{instance}:{req_id}] Found series ID {series_id} for rename lookup")
                         
                         # Get recent history for the series and filter for rename events
                         from datetime import datetime, timedelta
                         since_date = (datetime.utcnow() - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
                         history_url = f"{config.sonarr_url}/api/v3/history?seriesId={series_id}&sortKey=date&sortDir=desc&page=1&pageSize=50"
-                        _log("DEBUG", f"Checking recent rename history: {history_url}")
+                        _log("DEBUG", f"[{instance}:{req_id}] Checking recent rename history: {history_url}")
                         
                         history_response = requests.get(history_url, headers={"X-Api-Key": os.environ.get("SONARR_API_KEY", "")}, timeout=10)
                         if history_response.status_code == 200:
                             history_data = history_response.json()
                             all_records = history_data.get("records", [])
-                            _log("DEBUG", f"Got {len(all_records)} total history records")
+                            _log("DEBUG", f"[{instance}:{req_id}] Got {len(all_records)} total history records")
                             
                             # Filter for recent rename events
                             since_timestamp = datetime.utcnow() - timedelta(hours=1)
@@ -211,16 +224,16 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         # If datetime parsing fails, include it anyway
                                         recent_renames.append(record)
                             
-                            _log("DEBUG", f"Found {len(recent_renames)} recent rename events")
+                            _log("DEBUG", f"[{instance}:{req_id}] Found {len(recent_renames)} recent rename events")
                             
                             if recent_renames:
                                 # Take the most recent rename event
                                 latest_rename = recent_renames[0]
-                                _log("DEBUG", f"Processing latest rename event")
+                                _log("DEBUG", f"[{instance}:{req_id}] Processing latest rename event")
                                 
                                 # Extract episodeId directly from the rename event
                                 episode_id = latest_rename.get("episodeId")
-                                _log("DEBUG", f"Found episodeId {episode_id} in rename event")
+                                _log("DEBUG", f"[{instance}:{req_id}] Found episodeId {episode_id} in rename event")
                                 
                                 if episode_id:
                                     # Fetch episode details using the episodeId
@@ -233,7 +246,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                         episode_num = episode_detail.get("episodeNumber")
                                         episode_title = episode_detail.get("title")
                                         
-                                        _log("DEBUG", f"Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
+                                        _log("DEBUG", f"[{instance}:{req_id}] Episode details - Season: {season_num}, Episode: {episode_num}, Title: {episode_title}")
                                         
                                         if season_num is not None and episode_num is not None:
                                             episodes_data = [{
@@ -242,52 +255,54 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks, de
                                                 "id": episode_id,
                                                 "title": episode_title
                                             }]
-                                            print(f"INFO: Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
+                                            _log("INFO", f"[{instance}:{req_id}] Successfully identified renamed episode: S{season_num:02d}E{episode_num:02d} - {episode_title}")
                                         else:
-                                            _log("DEBUG", f"Episode details missing season/episode numbers")
+                                            _log("DEBUG", f"[{instance}:{req_id}] Episode details missing season/episode numbers")
                                     else:
-                                        _log("DEBUG", f"Failed to fetch episode details: {episode_response.status_code}")
+                                        _log("DEBUG", f"[{instance}:{req_id}] Failed to fetch episode details: {episode_response.status_code}")
                                 else:
-                                    _log("DEBUG", f"No episodeId found in rename event")
+                                    _log("DEBUG", f"[{instance}:{req_id}] No episodeId found in rename event")
                             else:
-                                _log("DEBUG", f"No recent rename events found in last hour")
+                                _log("DEBUG", f"[{instance}:{req_id}] No recent rename events found in last hour")
                         else:
-                            _log("DEBUG", f"Failed to get rename history: {history_response.status_code}")
+                            _log("DEBUG", f"[{instance}:{req_id}] Failed to get rename history: {history_response.status_code}")
                     else:
-                        _log("DEBUG", f"No series found for IMDb {imdb_id}")
+                        _log("DEBUG", f"[{instance}:{req_id}] No series found for IMDb {imdb_id}")
                 else:
-                    _log("DEBUG", f"Series lookup failed: {response.status_code}")
+                    _log("DEBUG", f"[{instance}:{req_id}] Series lookup failed: {response.status_code}")
             except Exception as e:
-                _log("DEBUG", f"Error finding renamed episode: {e}")
+                _log("DEBUG", f"[{instance}:{req_id}] Error finding renamed episode: {e}")
                 # Continue with series processing as fallback
         
         # Force targeted mode for single-episode webhooks to prevent full series processing
         processing_mode = config.tv_webhook_processing_mode
         if episodes_data and len(episodes_data) <= 3:  # Single episode or small batch
             processing_mode = "targeted"
-            _log("INFO", f"Forcing targeted mode for {len(episodes_data)} episode(s)")
+            _log("INFO", f"[{instance}:{req_id}] Forcing targeted mode for {len(episodes_data)} episode(s)")
         
-        # Add to batch queue with TV-prefixed key to avoid movie conflicts
         tv_batch_key = f"tv:{imdb_id}"
         webhook_dict = {
             'path': str(series_path),
             'series_info': series_info,
             'event_type': webhook.eventType,
-            'episodes': episodes_data,  # Include enhanced episode data for targeted processing
-            'processing_mode': processing_mode  # Use forced targeted mode when appropriate
+            'episodes': episodes_data,
+            'processing_mode': processing_mode,
+            'instance': instance,
+            'req_id': req_id,
         }
         batcher.add_webhook(tv_batch_key, webhook_dict, 'tv')
         
         return {"status": "accepted", "message": f"Sonarr webhook queued for {tv_batch_key}"}
-        
+
     except Exception as e:
-        _log("ERROR", f"Sonarr webhook error: {e}")
+        _log("ERROR", f"[{instance}:{req_id}] Sonarr webhook error: {e}")
         raise HTTPException(status_code=422, detail=f"Invalid webhook: {e}")
 
 
-async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict):
-    """Handle Radarr webhooks"""
-    path_mapper = dependencies["path_mapper"]
+async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, dependencies: dict, instance: str = "radarr"):
+    """Handle Radarr webhooks — instance name comes from the URL path."""
+    registry = dependencies.get("registry")
+    path_mapper = registry.radarr_mapper(instance) if registry else dependencies.get("path_mapper")
     batcher = dependencies["batcher"]
     config = dependencies["config"]
 
@@ -295,9 +310,25 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         body = await request.body()
         await _verify_webhook_signature(request, body, config.radarr_webhook_secret, "X-Radarr-Signature")
         payload = await _read_payload(request)
-        _log("INFO", f"Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
-        _log("DEBUG", f"Full Radarr webhook payload: {payload}")
-        
+        # Short id so related log lines across the async receive -> batch ->
+        # background-thread processing hop can be told apart from other
+        # webhooks landing around the same time — see it again at the
+        # batch/process boundaries in webhooks/webhook_batcher.py.
+        req_id = uuid.uuid4().hex[:6]
+        _log("INFO", f"[{instance}:{req_id}] Received Radarr webhook: {payload.get('eventType', 'Unknown')}")
+        # A compact summary by default — the full payload is a multi-KB blob that
+        # drowns out everything around it. Set LOG_RAW_WEBHOOK_PAYLOADS=true for
+        # the old full-dump behavior when deep-debugging a specific webhook.
+        _movie = payload.get('movie', {}) or {}
+        _movie_file = payload.get('movieFile', {}) or {}
+        _log("DEBUG", (
+            f"[{instance}:{req_id}] Radarr webhook summary: title={_movie.get('title')!r} "
+            f"imdb={_movie.get('imdbId')} year={_movie.get('year')} "
+            f"path={_movie_file.get('path') or _movie.get('folderPath')}"
+        ))
+        if os.environ.get("LOG_RAW_WEBHOOK_PAYLOADS", "false").lower() == "true":
+            _log("DEBUG", f"[{instance}:{req_id}] Full Radarr webhook payload: {payload}")
+
         # Filter supported event types (same as Sonarr: Download, Upgrade, Rename)
         event_type = payload.get('eventType', '')
         if event_type not in ["Download", "Upgrade", "Rename"]:
@@ -306,50 +337,50 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         # Extract movie info
         movie_data = payload.get("movie", {})
         if not movie_data:
-            _log("WARNING", "No movie data in Radarr webhook")
+            _log("WARNING", f"[{instance}:{req_id}] No movie data in Radarr webhook")
             return {"status": "error", "message": "No movie data"}
         
         # Get IMDb ID for batching key
         imdb_id = movie_data.get("imdbId", "").lower()
         if not imdb_id:
-            _log("WARNING", "No IMDb ID in Radarr webhook movie data")
+            _log("WARNING", f"[{instance}:{req_id}] No IMDb ID in Radarr webhook movie data")
             return {"status": "error", "message": "No IMDb ID"}
         
         # Get movie path and map it
         movie_path = movie_data.get("folderPath") or movie_data.get("path", "")
         if not movie_path:
-            _log("ERROR", "No movie path in Radarr webhook")
+            _log("ERROR", f"[{instance}:{req_id}] No movie path in Radarr webhook")
             return {"status": "error", "message": "No movie path provided"}
         
         # Map the path to container path
         container_path = path_mapper.radarr_path_to_container_path(movie_path)
-        _log("DEBUG", f"Mapped Radarr path {movie_path} -> {container_path}")
+        _log("DEBUG", f"[{instance}:{req_id}] Mapped Radarr path {movie_path} -> {container_path}")
         
         # CRITICAL: Verify the mapped path actually exists
         if not Path(container_path).exists():
-            _log("ERROR", f"RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
-            _log("ERROR", "This prevents processing wrong movies due to path mapping issues")
+            _log("ERROR", f"[{instance}:{req_id}] RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
+            _log("ERROR", f"[{instance}:{req_id}] This prevents processing wrong movies due to path mapping issues")
             return {"status": "error", "message": f"Mapped movie path does not exist: {container_path}"}
         
         # IMDb ID won't be in the path for standard Radarr folder naming — omit the check
         
-        # Create movie-specific webhook data with proper path validation
         movie_webhook_data = {
-            'path': container_path,  # Use verified container path
+            'path': container_path,
             'movie_info': movie_data,
             'event_type': payload.get('eventType'),
-            'original_payload': payload
+            'original_payload': payload,
+            'instance': instance,
+            'req_id': req_id,
         }
-        
-        # Add to batch queue with movie-prefixed key to avoid TV conflicts
+
         movie_batch_key = f"movie:{imdb_id}"
-        _log("DEBUG", f"Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}")
+        _log("DEBUG", f"[{instance}:{req_id}] Adding Radarr webhook to batch: key={movie_batch_key}, movie_title={movie_data.get('title', 'Unknown')}, instance={instance}")
         batcher.add_webhook(movie_batch_key, movie_webhook_data, "movie")
         
         return {"status": "success", "message": f"Radarr webhook queued for {movie_batch_key}"}
         
     except Exception as e:
-        _log("ERROR", f"Radarr webhook error: {e}")
+        _log("ERROR", f"[{instance}:{req_id}] Radarr webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -568,13 +599,27 @@ async def health(dependencies: dict) -> HealthResponse:
     except Exception as e:
         # If movie processor isn't available, skip database health check
         _log("DEBUG", f"Skipping Radarr database health check: {e}")
-    
+
+    # Per-instance status for every configured Radarr/Sonarr — not just the
+    # default instance the block above checks. This is what /setup already
+    # shows as connected/disconnected badges; /health was never updated to
+    # report the same thing when multi-instance landed, so a dual-instance
+    # user had no way to see a second instance's connection state from here.
+    registry = dependencies.get("registry")
+    instances = None
+    if registry:
+        instances = {
+            "radarr": registry.all_radarr_statuses(),
+            "sonarr": registry.all_sonarr_statuses(),
+        }
+
     return HealthResponse(
         status=overall_status,
         version=version,
         uptime=str(uptime),
         database_status=db_status,
-        radarr_database=radarr_db_health
+        radarr_database=radarr_db_health,
+        instances=instances,
     )
 
 
@@ -818,7 +863,7 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
         sonarr_path_index = {}
 
         def _unc_basename(p):
-            """Return the last path component of p, handling both POSIX and
+            r"""Return the last path component of p, handling both POSIX and
             Windows/UNC paths (pathlib on Linux treats backslash as a literal
             character, so Path(r'\\NAS\share\Movie (2013)').name returns the
             whole string rather than 'Movie (2013)')."""
@@ -1635,24 +1680,29 @@ async def cleanup_orphaned_records_hybrid(request: OrphanedCleanupRequest, depen
     from utils.orphaned_cleanup import OrphanedRecordCleaner
 
     db = dependencies["db"]
-    radarr_db_client = dependencies.get("radarr_db_client")
-    sonarr_db_client = dependencies.get("sonarr_db_client")
+    registry = dependencies.get("registry")
 
     try:
-        # Initialize the cleaner with available database clients
+        # Initialize the cleaner — registry lets it resolve the right
+        # Radarr/Sonarr client per row's own instance instead of a single
+        # fixed client (the old radarr_db_client/sonarr_db_client keys were
+        # never actually populated in dependencies, so check_database was
+        # silently inert before this).
         cleaner = OrphanedRecordCleaner(
             chronarr_db=db,
-            radarr_db_client=radarr_db_client,
-            sonarr_db_client=sonarr_db_client
+            registry=registry
         )
 
         # Validate that we can perform the requested checks
         warnings = []
         if request.check_database:
-            if request.check_movies and not radarr_db_client:
-                warnings.append("Radarr database client not configured - movie database validation disabled")
-            if request.check_series and not sonarr_db_client:
-                warnings.append("Sonarr database client not configured - series database validation disabled")
+            if not registry:
+                warnings.append("Instance registry not available - database validation disabled")
+            else:
+                if request.check_movies and not registry.radarr_names:
+                    warnings.append("No Radarr instances configured - movie database validation disabled")
+                if request.check_series and not registry.sonarr_names:
+                    warnings.append("No Sonarr instances configured - series database validation disabled")
 
         _log("INFO", f"Starting hybrid orphaned record cleanup (dry_run={request.dry_run})")
 
@@ -2569,44 +2619,67 @@ async def update_episode_nfo(imdb_id: str, season: int, episode: int, request: R
 # Emby Plugin Lookup Functions
 # ---------------------------
 
-async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: dict):
+async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: dict, instance: str = None):
     """
     Lookup episode dateadded from Chronarr database for Emby plugin integration
-    
+
     Returns dateadded information if found, or null if not available.
     Used by Emby plugin to populate missing dateadded elements in NFO files.
+
+    The plugin's request has no concept of instance (it predates multi-instance
+    support) — when instance isn't given, search across every instance sharing
+    this imdb_id/season/episode instead of silently defaulting to 'sonarr' only,
+    which would miss any row that exists solely under a named instance.
     """
     try:
-        _log("DEBUG", f"Episode lookup called for {imdb_id} S{season:02d}E{episode:02d}")
-        
+        _log("DEBUG", f"Episode lookup called for {imdb_id} S{season:02d}E{episode:02d} (instance: {instance or 'any'})")
+
         db = dependencies.get("db")
         if not db:
             print(f"ERROR: Database not available in dependencies")
             raise HTTPException(status_code=500, detail="Database not available")
-        
+
         # Normalize IMDb ID (ensure tt prefix)
         if not imdb_id.startswith('tt'):
             imdb_id = f"tt{imdb_id}"
-        
+
         _log("DEBUG", f"Querying database for episode {imdb_id} S{season:02d}E{episode:02d}")
-        
+
         # Query database for episode
-        result = db.get_episode_date(imdb_id, season, episode)
-        
+        if instance:
+            result = db.get_episode_date(imdb_id, season, episode, instance)
+        else:
+            result = db.get_episode_date_any_instance(imdb_id, season, episode)
+
         _log("DEBUG", f"Database query result: {result}")
         
         if result and result.get('dateadded'):
             # Format response for Emby plugin
             dateadded = result['dateadded']
-            
+
             # Convert datetime to ISO string if needed
             if hasattr(dateadded, 'isoformat'):
                 dateadded_str = dateadded.isoformat()
             else:
                 dateadded_str = str(dateadded)
-            
+
             # NOTE: Auto-fix functionality removed - just return database data
-            
+
+            # One INFO line per lookup — same convention as the webhook
+            # handlers ("Received Sonarr webhook..."). The DEBUG lines above
+            # are silent by default now (LOG_LEVEL=INFO), so without this,
+            # a plugin scan (scheduled full-library or single-item) never
+            # showed up on Chronarr's side at all, only in Emby/Jellyfin's
+            # own log — there was no INFO-level line on a normal lookup,
+            # only on an outright error. Title comes from the series row
+            # (episodes has no title column of its own); clearing the miss
+            # record here means a show that resolves later drops off the
+            # Unresolved Lookups page on its own.
+            series_title = db.get_series_title_any_instance(imdb_id)
+            db.clear_lookup_miss(imdb_id, 'episode', season, episode)
+            title_part = f'"{series_title}" ' if series_title else ''
+            _log("INFO", f"Plugin lookup: episode {title_part}({imdb_id}) S{season:02d}E{episode:02d} -> found (source={result.get('source', 'database')})")
+
             return {
                 "found": True,
                 "imdb_id": imdb_id,
@@ -2615,10 +2688,26 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
                 "dateadded": dateadded_str,
                 "source": result.get('source', 'database'),
                 "air_date": result.get('air_date') if result.get('air_date') else None,
+                "instance": result.get('instance'),
                 "auto_fixed": False  # Auto-fix functionality disabled
             }
         else:
-            # Not found in database
+            # Not found — see lookup_movie() for why this distinguishes "no
+            # episode row at all" from "row exists, no resolved date yet".
+            # A series row can exist (with a title) even when this
+            # particular episode row doesn't, so the title lookup is
+            # independent of whether `result` itself is set.
+            series_title = db.get_series_title_any_instance(imdb_id)
+            reason, reason_desc = ('no_resolved_date', 'in DB, no resolved date yet') if result \
+                else ('no_db_record', 'no episode record' if series_title else 'no DB record')
+
+            db.record_lookup_miss(
+                imdb_id, 'episode', reason, instance=instance, title=series_title,
+                season=season, episode=episode
+            )
+
+            title_part = f'"{series_title}" ' if series_title else ''
+            _log("INFO", f"Plugin lookup: episode {title_part}({imdb_id}) S{season:02d}E{episode:02d} -> not found ({reason_desc})")
             return {
                 "found": False,
                 "imdb_id": imdb_id,
@@ -2628,7 +2717,7 @@ async def lookup_episode(imdb_id: str, season: int, episode: int, dependencies: 
                 "source": None,
                 "air_date": None
             }
-            
+
     except Exception as e:
         _log("ERROR", f"Episode lookup failed for {imdb_id} S{season:02d}E{episode:02d}: {e}")
         raise HTTPException(status_code=500, detail=f"Episode lookup failed: {str(e)}")
@@ -2812,28 +2901,52 @@ async def lookup_movie_by_title(title: str, year: str, dependencies: dict):
         raise HTTPException(status_code=500, detail=f"Movie title lookup failed: {str(e)}")
 
 
-async def lookup_movie(imdb_id: str, dependencies: dict):
+def _movie_title_from_result(result: Optional[dict]) -> Optional[str]:
+    """Best-effort title for a movies-table row for plugin-lookup logging.
+
+    movies.title is only ever set once a title has come back from the
+    date-resolution pipeline (upsert_movie_dates) — a row created by the
+    bare upsert_movie() path (e.g. still waiting on a date) can have a real
+    path but a NULL title. Same situation as episodes/series — fall back to
+    parsing it out of the directory name rather than showing nothing.
+    """
+    if not result:
+        return None
+    title = result.get('title')
+    if title:
+        return title
+    path = result.get('path')
+    if not path or path == 'unknown':
+        return None
+    from utils.file_utils import extract_title_from_directory_name
+    return extract_title_from_directory_name(Path(path).name)
+
+
+async def lookup_movie(imdb_id: str, dependencies: dict, instance: str = None):
     """
     Lookup movie dateadded from Chronarr database for Emby plugin integration
-    
-    Returns dateadded information if found, or null if not available.  
+
+    Returns dateadded information if found, or null if not available.
     Used by Emby plugin to populate missing dateadded elements in NFO files.
+
+    See lookup_episode() for why instance is optional and how it's resolved
+    when the caller (the plugin, which predates multi-instance) doesn't send one.
     """
     try:
         db = dependencies.get("db")
         if not db:
             raise HTTPException(status_code=500, detail="Database not available")
-        
-        _log("DEBUG", f"Movie lookup called for IMDb ID: {imdb_id}")
-        
+
+        _log("DEBUG", f"Movie lookup called for IMDb ID: {imdb_id} (instance: {instance or 'any'})")
+
         # Normalize IMDb ID (ensure tt prefix)
         if not imdb_id.startswith('tt'):
             imdb_id = f"tt{imdb_id}"
-        
+
         _log("DEBUG", f"Normalized IMDb ID: {imdb_id}")
-        
+
         # Query database for movie
-        result = db.get_movie_dates(imdb_id)
+        result = db.get_movie_dates(imdb_id, instance) if instance else db.get_movie_dates_any_instance(imdb_id)
         _log("DEBUG", f"Movie lookup for {imdb_id}: database result = {result}")
         
         # If not found, let's see what movies we DO have in the database
@@ -2848,25 +2961,54 @@ async def lookup_movie(imdb_id: str, dependencies: dict):
         if result and result.get('dateadded'):
             # Format response for Emby plugin
             dateadded = result['dateadded']
-            
+
             # Convert datetime to ISO string if needed
             if hasattr(dateadded, 'isoformat'):
                 dateadded_str = dateadded.isoformat()
             else:
                 dateadded_str = str(dateadded)
-            
+
             # NOTE: Auto-fix functionality removed - just return database data
-            
+
+            # One INFO line per lookup — see lookup_episode() for why this is
+            # needed: the DEBUG lines above are silent by default now
+            # (LOG_LEVEL=INFO), so a plugin scan never showed up on
+            # Chronarr's side at all, only in Emby/Jellyfin's own log.
+            # Title makes the line useful without cross-referencing the ID
+            # by hand; clearing any stale miss record means a title that
+            # later resolves drops off the Unresolved Lookups page on its
+            # own instead of sitting there claiming it's still broken.
+            movie_title = _movie_title_from_result(result)
+            db.clear_lookup_miss(imdb_id, 'movie')
+            title_part = f'"{movie_title}" ' if movie_title else ''
+            _log("INFO", f"Plugin lookup: movie {title_part}({imdb_id}) -> found (source={result.get('source', 'database')})")
+
             return {
                 "found": True,
                 "imdb_id": imdb_id,
                 "dateadded": dateadded_str,
                 "source": result.get('source', 'database'),
                 "released": result.get('released') if result.get('released') else None,
+                "instance": result.get('instance'),
                 "auto_fixed": False  # Auto-fix functionality disabled
             }
         else:
-            # Not found in database
+            # Not found — but "not found" means two very different things, and
+            # collapsing them into one log line made it impossible to tell
+            # which one you're looking at without going and checking the DB
+            # by hand. `result` is the movie row (if any) from the
+            # get_movie_dates* call above, just without a usable dateadded.
+            if result:
+                reason, reason_desc = 'no_resolved_date', 'in DB, no resolved date yet'
+                movie_title = _movie_title_from_result(result)
+            else:
+                reason, reason_desc = 'no_db_record', 'no DB record'
+                movie_title = None
+
+            db.record_lookup_miss(imdb_id, 'movie', reason, instance=instance, title=movie_title)
+
+            title_part = f'"{movie_title}" ' if movie_title else ''
+            _log("INFO", f"Plugin lookup: movie {title_part}({imdb_id}) -> not found ({reason_desc})")
             return {
                 "found": False,
                 "imdb_id": imdb_id,
@@ -2874,43 +3016,223 @@ async def lookup_movie(imdb_id: str, dependencies: dict):
                 "source": None,
                 "released": None
             }
-            
+
     except Exception as e:
         _log("ERROR", f"Movie lookup failed for {imdb_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Movie lookup failed: {str(e)}")
 
 
-async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None):
+# Populate Database — runs in a separate OS process (not an asyncio background
+# task) so a large populate doesn't block this container's event loop, and
+# writes its status to a file both this process and the worker process can
+# see. Moved here from chronarr-web (2026-09-15): it was previously running
+# entirely inside the web container, which has no LOG_DIR volume mount, so
+# every _log() call DatabasePopulator makes went to a path invisible on the
+# host and lost on restart — docker logs showed it live (print() doesn't care
+# about mounts) but chronarr.log itself never got it. This container is the
+# one with the log volume, so this is where the actual work belongs; web now
+# proxies to here the same way it already does for /manual/scan.
+POPULATE_STATUS_FILE = os.path.join(tempfile.gettempdir(), "chronarr_populate_status.json")
+_populate_process = None
+
+
+def _populate_worker_process(media_type: str, status_file: str, instance: str = "all"):
     """
-    Populate Chronarr database from Radarr/Sonarr sources
+    Worker process that runs database population in complete isolation.
+    Runs in a separate process - keeps this container's API responsive.
+    """
+    import os
+    import sys
+    import json
+    from datetime import datetime
+
+    # Add parent directory to path for imports
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def update_status(status_data):
+        """Write status to file for main process to read"""
+        try:
+            with open(status_file, 'w') as f:
+                json.dump(status_data, f)
+        except Exception as e:
+            print(f"ERROR: Failed to update status file: {e}")
+
+    # Initialize status
+    status = {
+        "running": True,
+        "media_type": media_type,
+        "instance": instance,
+        "start_time": datetime.now().isoformat(),
+        "movies": {"status": "pending", "stats": None},
+        "tv": {"status": "pending", "stats": None},
+        "completed": False,
+        "error": None
+    }
+    update_status(status)
+
+    try:
+        # Import here (inside process) to avoid pickling issues
+        from core.database import ChronarrDatabase
+        from core.database_populator import DatabasePopulator
+        from config.settings import config
+
+        db = ChronarrDatabase(config)
+
+        def _merge_movie_stats(all_stats):
+            merged = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
+                      'duration': 0.0, 'skipped_items': [], 'added_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+                merged['added_items'].extend(s.get('added_items', []))
+            return merged
+
+        def _merge_tv_stats(all_stats):
+            merged = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                      'skipped': 0, 'errors': 0, 'duration': 0.0, 'skipped_items': [], 'added_items': []}
+            for inst_name, s in all_stats:
+                for k in ('total_series', 'total_episodes', 'added', 'updated', 'skipped', 'errors'):
+                    merged[k] += s.get(k, 0)
+                merged['duration'] += s.get('duration', 0.0)
+                merged['skipped_items'].extend(s.get('skipped_items', []))
+                merged['added_items'].extend(s.get('added_items', []))
+            return merged
+
+        print(f"INFO: [Worker Process] Starting database population: {media_type} (instance: {instance})")
+        radarr_instances = config.radarr_instances
+        sonarr_instances = config.sonarr_instances
+
+        # A specific instance narrows the run to just that one, regardless of
+        # which media_type was picked — the instance's own type (it can only
+        # be a Radarr or a Sonarr instance) decides what actually runs. "all"
+        # (the default) keeps the original behavior: every configured
+        # instance of whichever media_type was selected.
+        if instance and instance != "all":
+            matched_radarr = [i for i in radarr_instances if i.name == instance]
+            matched_sonarr = [i for i in sonarr_instances if i.name == instance]
+            if not matched_radarr and not matched_sonarr:
+                known = [i.name for i in radarr_instances] + [i.name for i in sonarr_instances]
+                raise ValueError(f"Instance '{instance}' not found. Configured instances: {known}")
+            radarr_instances = matched_radarr
+            sonarr_instances = matched_sonarr
+            # The instance's own type is authoritative — a Radarr instance can
+            # only ever mean movies, a Sonarr instance only TV. Override
+            # whatever media_type the caller sent so a stale/mismatched value
+            # (e.g. the UI's Media Type dropdown left on the wrong setting)
+            # can't silently produce a no-op run: without this, an instance
+            # narrowed to (say) only Sonarr combined with media_type="movies"
+            # would iterate an empty radarr_instances list, skip the tv block
+            # entirely, and finish "successfully" having populated nothing.
+            effective_media_type = "movies" if matched_radarr else "tv"
+            if effective_media_type != media_type:
+                print(f"INFO: [Worker Process] media_type '{media_type}' overridden to '{effective_media_type}' — instance '{instance}' determines its own type")
+            media_type = effective_media_type
+            status["media_type"] = media_type
+            print(f"INFO: [Worker Process] Narrowed to instance '{instance}'")
+
+        print(f"INFO: [Worker Process] Radarr instances: {[i.name for i in radarr_instances]}")
+        print(f"INFO: [Worker Process] Sonarr instances: {[i.name for i in sonarr_instances]}")
+
+        # Run population based on media type
+        if media_type in ["movies", "both"]:
+            all_movie_stats = []
+            for inst in radarr_instances:
+                status["movies"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating movies for instance '{inst.name}'")
+
+                try:
+                    pop = DatabasePopulator.from_radarr_instance(inst, db)
+                    inst_stats = pop.populate_movies(instance=inst.name)
+                except Exception as e:
+                    print(f"ERROR: [Worker Process] Movies failed for instance '{inst.name}': {e}")
+                    inst_stats = {'total': 0, 'added': 0, 'updated': 0, 'skipped': 0, 'errors': 1,
+                                  'duration': 0.0,
+                                  'skipped_items': [f"Instance '{inst.name}' failed: {e}"]}
+                all_movie_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] Movies done for '{inst.name}': {inst_stats}")
+
+            movie_stats = _merge_movie_stats(all_movie_stats)
+            status["movies"]["status"] = "completed"
+            status["movies"]["stats"] = movie_stats
+            update_status(status)
+            print(f"INFO: [Worker Process] All movie population complete: {movie_stats}")
+
+        if media_type in ["tv", "both"]:
+            all_tv_stats = []
+            for inst in sonarr_instances:
+                status["tv"]["status"] = f"running ({inst.name})"
+                update_status(status)
+                print(f"INFO: [Worker Process] Populating TV for instance '{inst.name}'")
+
+                try:
+                    pop = DatabasePopulator.from_sonarr_instance(inst, db)
+                    inst_stats = pop.populate_tv_episodes(instance=inst.name)
+                except Exception as e:
+                    print(f"ERROR: [Worker Process] TV failed for instance '{inst.name}': {e}")
+                    inst_stats = {'total_series': 0, 'total_episodes': 0, 'added': 0, 'updated': 0,
+                                  'skipped': 0, 'errors': 1, 'duration': 0.0,
+                                  'skipped_items': [f"Instance '{inst.name}' failed: {e}"]}
+                all_tv_stats.append((inst.name, inst_stats))
+                print(f"INFO: [Worker Process] TV done for '{inst.name}': {inst_stats}")
+
+            tv_stats = _merge_tv_stats(all_tv_stats)
+            status["tv"]["status"] = "completed"
+            status["tv"]["stats"] = tv_stats
+            update_status(status)
+            print(f"INFO: [Worker Process] All TV population complete: {tv_stats}")
+
+        # Mark as completed
+        status["completed"] = True
+        status["running"] = False
+        update_status(status)
+        print("INFO: [Worker Process] Database population completed successfully")
+
+    except Exception as e:
+        print(f"ERROR: [Worker Process] Database population failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+        status["error"] = str(e)
+        status["running"] = False
+        status["completed"] = True
+        update_status(status)
+
+
+async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None, instance: str = "all"):
+    """
+    Populate Chronarr database from Radarr/Sonarr sources in a separate process.
+    This keeps this container's API responsive during population.
 
     Args:
-        background_tasks: FastAPI background tasks
+        background_tasks: FastAPI background tasks (not used - kept for compatibility)
         media_type: Type of media to populate ("movies", "tv", or "both")
-        dependencies: Dictionary with db, radarr_client, sonarr_client
+        dependencies: Dictionary with dependencies (not used in multiprocessing mode)
+        instance: Specific instance name to populate (e.g. "sonarr_4k"), or "all"
+            (default) for every configured instance of the given media_type
 
     Returns:
         Status message indicating population has started
     """
-    from core.database_populator import DatabasePopulator
-
-    db = dependencies["db"]
-    config = dependencies["config"]
-
-    # Get Radarr and Sonarr clients
-    from clients.radarr_client import RadarrClient
-    from clients.sonarr_client import SonarrClient
-
-    radarr_client = RadarrClient(config)
-    sonarr_client = SonarrClient(config)
+    global _populate_process
 
     if media_type not in ["both", "movies", "tv"]:
         raise HTTPException(status_code=400, detail="media_type must be 'both', 'movies', or 'tv'")
 
-    # Create global status tracking
-    populate_status = {
+    # Check if process is already running
+    if _populate_process and _populate_process.is_alive():
+        return {
+            "status": "already_running",
+            "message": "Database population is already in progress"
+        }
+
+    # Initialize status file
+    initial_status = {
         "running": True,
         "media_type": media_type,
+        "instance": instance,
         "start_time": datetime.now().isoformat(),
         "movies": {"status": "pending", "stats": None},
         "tv": {"status": "pending", "stats": None},
@@ -2918,111 +3240,608 @@ async def populate_database(background_tasks: BackgroundTasks, media_type: str =
         "error": None
     }
 
-    # Store status globally so it can be queried
-    global _populate_status
-    _populate_status = populate_status
+    try:
+        with open(POPULATE_STATUS_FILE, 'w') as f:
+            json.dump(initial_status, f)
+    except Exception as e:
+        print(f"ERROR: Failed to initialize status file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize status tracking: {e}")
 
-    async def run_population():
-        """Background task to populate the database"""
-        try:
-            populator = DatabasePopulator(db, radarr_client, sonarr_client)
+    # Start population in separate process
+    _populate_process = multiprocessing.Process(
+        target=_populate_worker_process,
+        args=(media_type, POPULATE_STATUS_FILE, instance),
+        daemon=False  # Keep process alive even if parent exits
+    )
+    _populate_process.start()
 
-            _log("INFO", f"Starting database population: {media_type}")
-
-            if media_type == "movies":
-                populate_status["movies"]["status"] = "running"
-                movie_stats = populator.populate_movies()
-                populate_status["movies"]["status"] = "completed"
-                populate_status["movies"]["stats"] = movie_stats
-                _log("INFO", f"Movie population completed: {movie_stats}")
-
-            elif media_type == "tv":
-                populate_status["tv"]["status"] = "running"
-                tv_stats = populator.populate_tv_episodes()
-                populate_status["tv"]["status"] = "completed"
-                populate_status["tv"]["stats"] = tv_stats
-                _log("INFO", f"TV population completed: {tv_stats}")
-
-            elif media_type == "both":
-                populate_status["movies"]["status"] = "running"
-                movie_stats = populator.populate_movies()
-                populate_status["movies"]["status"] = "completed"
-                populate_status["movies"]["stats"] = movie_stats
-                _log("INFO", f"Movie population completed: {movie_stats}")
-
-                populate_status["tv"]["status"] = "running"
-                tv_stats = populator.populate_tv_episodes()
-                populate_status["tv"]["status"] = "completed"
-                populate_status["tv"]["stats"] = tv_stats
-                _log("INFO", f"TV population completed: {tv_stats}")
-
-            populate_status["completed"] = True
-            populate_status["running"] = False
-            _log("INFO", "Database population completed successfully")
-
-        except Exception as e:
-            _log("ERROR", f"Database population failed: {e}")
-            populate_status["error"] = str(e)
-            populate_status["running"] = False
-            populate_status["completed"] = True
-
-    # Add task to background
-    background_tasks.add_task(run_population)
-
-    _log("INFO", f"Database population started for: {media_type}")
+    _log("INFO", f"Database population process started for: {media_type} (instance: {instance})")
     return {
         "status": "started",
         "media_type": media_type,
-        "message": f"Database population started for {media_type}"
+        "instance": instance,
+        "message": f"Database population started for {media_type}" + (f" ({instance})" if instance != "all" else "")
     }
 
 
 async def get_populate_status():
-    """Get the current status of database population"""
-    global _populate_status
-    if '_populate_status' not in globals():
+    """Get the current status of database population from status file"""
+    global _populate_process
+
+    # Check if status file exists
+    if not os.path.exists(POPULATE_STATUS_FILE):
         return {"running": False, "completed": False}
-    return _populate_status
+
+    # Read status from file
+    try:
+        with open(POPULATE_STATUS_FILE, 'r') as f:
+            status = json.load(f)
+
+        # Check if process is still alive
+        if _populate_process:
+            status["process_alive"] = _populate_process.is_alive()
+            if not _populate_process.is_alive() and status.get("running"):
+                # Process died unexpectedly
+                status["running"] = False
+                status["completed"] = True
+                if not status.get("error"):
+                    status["error"] = "Process terminated unexpectedly"
+
+        return status
+
+    except Exception as e:
+        print(f"ERROR: Failed to read status file: {e}")
+        return {
+            "running": False,
+            "completed": True,
+            "error": f"Failed to read status: {e}"
+        }
+
+# Instance names the wizard has written to .env this process, but that aren't
+# live yet because chronarr-core hasn't been restarted to pick them up. The
+# InstanceRegistry alone can't catch "save the same new instance twice" —
+# from its point of view neither save happened. This resets naturally on the
+# next real restart, which is exactly when it should, since by then the
+# registry knows about them for real.
+_pending_wizard_instances: set = set()
 
 
-# Initialize global populate status
-_populate_status = {"running": False, "completed": False}
+def _wizard_test_api(url: str, api_key: str) -> dict:
+    """Hit Radarr/Sonarr's system status endpoint to check the URL+key work.
+
+    Both apps expose the same path, so one function covers either. Returns
+    {"success": True} or {"success": False, "error": "..."} — never raises,
+    the wizard endpoints turn a failure into an HTTP error themselves.
+    """
+    try:
+        base = url.rstrip("/")
+        resp = requests.get(f"{base}/api/v3/system/status", headers={"X-Api-Key": api_key}, timeout=10)
+        resp.raise_for_status()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _wizard_fetch_root_folders(url: str, api_key: str) -> list:
+    """Ask Radarr/Sonarr for its configured root folders.
+
+    Both apps expose the same path. Only called once the API test above has
+    already passed, so a failure here is worth logging but not worth
+    failing the whole test over — the user typed a working URL+key, root
+    folders are a convenience on top of that, not a requirement.
+    """
+    try:
+        base = url.rstrip("/")
+        resp = requests.get(f"{base}/api/v3/rootfolder", headers={"X-Api-Key": api_key}, timeout=10)
+        resp.raise_for_status()
+        return [rf["path"] for rf in resp.json() if rf.get("path")]
+    except Exception as e:
+        _log("WARNING", f"Setup wizard: could not fetch root folders from {url}: {e}")
+        return []
+
+
+def _wizard_test_db(media_type, db_type, db_host, db_port, db_name, db_user, db_password, db_path, label="") -> dict:
+    """Try building a direct DB client — its constructor tests the connection itself.
+
+    Same {"success": ...} shape as _wizard_test_api(). The client is thrown
+    away either way; this only exists to find out if it *would* connect.
+    `label` (e.g. "sonarr_strm (testing)") is just for the log lines this
+    produces — the instance doesn't exist yet, so there's nothing to look up.
+    """
+    try:
+        if media_type == "radarr":
+            from clients.radarr_db_client import RadarrDbClient as DbClient
+        else:
+            from clients.sonarr_db_client import SonarrDbClient as DbClient
+
+        if db_type == "sqlite":
+            DbClient(db_type="sqlite", db_path=db_path, instance_name=label)
+        else:
+            DbClient(
+                db_type=db_type,
+                db_host=db_host,
+                db_port=db_port or 5432,
+                db_name=db_name,
+                db_user=db_user,
+                db_password=db_password,
+                instance_name=label,
+            )
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def register_routes(app, dependencies: dict):
-    """
-    Register all routes with the FastAPI app
-    
-    Args:
-        app: FastAPI application instance
-        dependencies: Dictionary containing:
-            - db: ChronarrDatabase instance
-            - nfo_manager: NFOManager instance
-            - path_mapper: PathMapper instance
-            - tv_processor: TVProcessor instance
-            - movie_processor: MovieProcessor instance
-            - batcher: WebhookBatcher instance
-            - start_time: Application start time
-            - config: ChronarrConfig instance
-            - version: Application version string
-    """
-    
-    @app.post("/webhook/sonarr")
-    async def _sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
-        return await sonarr_webhook(request, background_tasks, dependencies)
+    """Register all routes. Webhook routes are registered per-instance dynamically."""
 
-    @app.post("/webhook/radarr") 
-    async def _radarr_webhook(request: Request, background_tasks: BackgroundTasks):
-        return await radarr_webhook(request, background_tasks, dependencies)
+    # Backward-compat aliases for single-instance users: /webhook/sonarr, /webhook/radarr
+    @app.post("/webhook/sonarr")
+    async def _sonarr_webhook_default(request: Request, background_tasks: BackgroundTasks):
+        return await sonarr_webhook(request, background_tasks, dependencies, instance="sonarr")
+
+    @app.post("/webhook/radarr")
+    async def _radarr_webhook_default(request: Request, background_tasks: BackgroundTasks):
+        return await radarr_webhook(request, background_tasks, dependencies, instance="radarr")
+
+    # Per-instance webhook routes derived from discovered instance names.
+    # Each instance named "radarr_4k" gets /radarr_4k/webhook; the default "radarr"
+    # instance gets /radarr/webhook in addition to the /webhook/radarr alias above.
+    registry = dependencies.get("registry")
+    if registry:
+        for name in registry.radarr_names:
+            _inst = name  # capture for closure
+
+            async def _radarr_instance_handler(request: Request, background_tasks: BackgroundTasks, _n=_inst):
+                return await radarr_webhook(request, background_tasks, dependencies, instance=_n)
+
+            app.add_api_route(
+                f"/{name}/webhook",
+                _radarr_instance_handler,
+                methods=["POST"],
+                name=f"radarr_webhook_{name}",
+            )
+
+        for name in registry.sonarr_names:
+            _inst = name
+
+            async def _sonarr_instance_handler(request: Request, background_tasks: BackgroundTasks, _n=_inst):
+                return await sonarr_webhook(request, background_tasks, dependencies, instance=_n)
+
+            app.add_api_route(
+                f"/{name}/webhook",
+                _sonarr_instance_handler,
+                methods=["POST"],
+                name=f"sonarr_webhook_{name}",
+            )
 
     @app.post("/webhook/maintainarr")
     async def _maintainarr_webhook(request: Request, background_tasks: BackgroundTasks):
         return await maintainarr_webhook(request, background_tasks, dependencies)
 
+    @app.get("/api/instances")
+    async def _api_instances():
+        """Return all configured instances with their webhook paths and connection status."""
+        registry = dependencies.get("registry")
+        cfg = dependencies.get("config")
+        if not registry or not cfg:
+            raise HTTPException(status_code=503, detail="Registry not initialised")
+
+        radarr_list = [
+            {
+                "name": inst.name,
+                "webhook_path": f"/{inst.name}/webhook",
+                "connected": registry.radarr_status(inst.name).get("connected", False),
+                "method": registry.radarr_status(inst.name).get("method"),
+            }
+            for inst in cfg.radarr_instances
+        ]
+        sonarr_list = [
+            {
+                "name": inst.name,
+                "webhook_path": f"/{inst.name}/webhook",
+                "connected": registry.sonarr_status(inst.name).get("connected", False),
+                "method": registry.sonarr_status(inst.name).get("method"),
+            }
+            for inst in cfg.sonarr_instances
+        ]
+        return {"radarr": radarr_list, "sonarr": sonarr_list}
+
+    @app.get("/api/wizard/instance-details")
+    async def _wizard_instance_details(media_type: str, name: str = ""):
+        """Look up one instance's full config, for pre-filling the wizard's Edit form.
+
+        Returns the same fields the wizard form collects (url, api_key,
+        root_folders, paths, DB block) straight from the live config object
+        — no need to re-read or re-parse the env files, config already has
+        it resolved. Includes the API key and DB password: this endpoint
+        exists specifically so Edit doesn't make someone retype secrets
+        they've already set, and they're already visible to anyone who can
+        reach /api/wizard/env-backup anyway.
+        """
+        cfg = dependencies.get("config")
+        if not cfg:
+            raise HTTPException(status_code=503, detail="Config not initialised")
+
+        if media_type not in ("radarr", "sonarr"):
+            raise HTTPException(status_code=400, detail="media_type must be 'radarr' or 'sonarr'")
+
+        instance_name = f"{media_type}_{name.lower()}" if name else media_type
+        instances = cfg.radarr_instances if media_type == "radarr" else cfg.sonarr_instances
+        match = next((i for i in instances if i.name == instance_name), None)
+        if not match:
+            raise HTTPException(status_code=404, detail=f"No instance named '{instance_name}' found")
+
+        return {
+            "media_type": media_type,
+            "name": name,
+            "url": match.url,
+            "api_key": match.api_key,
+            "root_folders": match.root_folders,
+            "movie_paths": getattr(match, "movie_paths", None),
+            "tv_paths": getattr(match, "tv_paths", None),
+            "db_type": match.db_type or None,
+            "db_host": match.db_host or None,
+            "db_port": match.db_port or None,
+            "db_name": match.db_name or None,
+            "db_user": match.db_user or None,
+            "db_password": match.db_password or None,
+            "db_path": match.db_path or None,
+        }
+
+    @app.post("/api/wizard/test-connection")
+    async def _wizard_test_connection(payload: WizardConnectionTestRequest):
+        """Setup wizard: try connecting with whatever the user has typed so far.
+
+        Doesn't write anything or touch the registry — just reports whether
+        the API URL+key and/or the DB block actually work, so the wizard
+        can show a real pass/fail before the user hits Save.
+        """
+        label = f"{payload.media_type}_{payload.name.lower()} (testing)" if payload.name else f"{payload.media_type} (testing)"
+        result = {}
+        if payload.url and payload.api_key:
+            result["api"] = _wizard_test_api(payload.url, payload.api_key)
+            if result["api"]["success"]:
+                result["api"]["root_folders"] = _wizard_fetch_root_folders(payload.url, payload.api_key)
+        if payload.db_type:
+            result["db"] = _wizard_test_db(
+                payload.media_type, payload.db_type, payload.db_host, payload.db_port,
+                payload.db_name, payload.db_user, payload.db_password, payload.db_path,
+                label=label,
+            )
+        return result
+
+    @app.post("/api/wizard/save-instance")
+    async def _wizard_save_instance(payload: WizardSaveInstanceRequest):
+        """Setup wizard: validate, then write one instance to .env / .env.secrets.
+
+        Either every check below passes and both files get written, or
+        nothing gets written at all — no half-applied instance sitting in
+        the config. Restarting chronarr-core is still required to actually
+        pick the new instance up; that limitation is explained in the docs
+        rather than hidden from the caller.
+        """
+        from config.env_writer import (
+            build_env_updates, upsert_env_file, validate_name_segment, InstanceNameError, backup_env_files,
+        )
+
+        registry = dependencies.get("registry")
+        if not registry:
+            raise HTTPException(status_code=503, detail="Registry not initialised")
+
+        if payload.media_type not in ("radarr", "sonarr"):
+            raise HTTPException(status_code=400, detail="media_type must be 'radarr' or 'sonarr'")
+
+        # Check against what's actually running, not just what's in the file —
+        # someone may have hand-edited .env since the last restart.
+        existing_names = set(registry.radarr_names) | set(registry.sonarr_names)
+
+        if payload.name:
+            try:
+                name_segment = validate_name_segment(
+                    payload.name, existing_names, payload.media_type, require_exists=payload.edit_existing
+                )
+            except InstanceNameError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        else:
+            # Empty name means "the default instance" — still needs the same
+            # existence check as a named one, just inline since there's no
+            # segment to run through validate_name_segment for.
+            name_segment = ""
+            default_exists = payload.media_type in existing_names
+            if payload.edit_existing and not default_exists:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No default {payload.media_type} instance exists to edit.",
+                )
+            if not payload.edit_existing and default_exists:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"The default {payload.media_type} instance is already configured. "
+                        "Give this one a name to add it as an additional instance instead."
+                    ),
+                )
+
+        instance_name = f"{payload.media_type}_{name_segment.lower()}" if name_segment else payload.media_type
+        # The pending-instance guard only matters for adds — it exists to
+        # stop the same brand-new name being saved twice before a restart.
+        # Editing an already-live instance repeatedly before restarting is
+        # the normal workflow (fix a typo, test again), not a collision.
+        if not payload.edit_existing and instance_name in _pending_wizard_instances:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{instance_name}' was already saved by the wizard this session but hasn't "
+                    "gone live yet — restart chronarr-core to pick it up before adding it again."
+                ),
+            )
+
+        if payload.db_type == "sqlite" and payload.db_path and not Path(payload.db_path).exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"SQLite path '{payload.db_path}' doesn't exist in this container — check the volume mount",
+            )
+
+        if not payload.force:
+            api_result = _wizard_test_api(payload.url, payload.api_key)
+            if not api_result["success"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Connection test failed: {api_result['error']}. Save again with force=true to skip this check.",
+                )
+            if payload.db_type:
+                db_result = _wizard_test_db(
+                    payload.media_type, payload.db_type, payload.db_host, payload.db_port,
+                    payload.db_name, payload.db_user, payload.db_password, payload.db_path,
+                    label=f"{instance_name} (pre-save test)",
+                )
+                if not db_result["success"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Database connection test failed: {db_result['error']}. Save again with force=true to skip this check.",
+                    )
+
+        fields = payload.dict(exclude={"media_type", "name", "force", "edit_existing"})
+        env_updates, secret_updates = build_env_updates(payload.media_type, name_segment, fields)
+
+        # Cheap insurance — every wizard write gets a snapshot of what the
+        # files looked like just before, so a bad save is never a dead end.
+        # Same format /api/wizard/env-backup produces, restorable the same way.
+        backup_env_files(Path(".env"), Path(".env.secrets"), Path("backups"))
+
+        env_changed = upsert_env_file(Path(".env"), env_updates, instance_label=instance_name)
+        secrets_changed = upsert_env_file(Path(".env.secrets"), secret_updates, instance_label=instance_name)
+        _pending_wizard_instances.add(instance_name)
+
+        _log("INFO", f"Setup wizard: wrote instance '{instance_name}' to .env/.env.secrets — restart required to apply")
+
+        return {
+            "instance_name": instance_name,
+            "webhook_path": f"/{instance_name}/webhook",
+            "env_changed": env_changed,
+            "secrets_changed": secrets_changed,
+            "restart_required": True,
+            "restart_reason": (
+                "chronarr-core builds its instance registry once at startup — "
+                "restart it to pick up this instance."
+            ),
+        }
+
+    @app.post("/api/wizard/delete-instance")
+    async def _wizard_delete_instance(payload: WizardDeleteInstanceRequest):
+        """Setup wizard: remove one instance's env vars from .env / .env.secrets.
+
+        Same "must exist" name validation as editing, same automatic
+        pre-write snapshot as every other wizard write. Removing the vars
+        doesn't remove the instance from Docker's own baked-in environment
+        (if it was there before, e.g. present when the container was
+        created) — restart_reason says so explicitly rather than implying
+        a restart alone is always enough.
+        """
+        from config.env_writer import (
+            remove_instance_keys, validate_name_segment, InstanceNameError, backup_env_files,
+        )
+
+        registry = dependencies.get("registry")
+        if not registry:
+            raise HTTPException(status_code=503, detail="Registry not initialised")
+
+        if payload.media_type not in ("radarr", "sonarr"):
+            raise HTTPException(status_code=400, detail="media_type must be 'radarr' or 'sonarr'")
+
+        existing_names = set(registry.radarr_names) | set(registry.sonarr_names)
+
+        if payload.name:
+            try:
+                name_segment = validate_name_segment(payload.name, existing_names, payload.media_type, require_exists=True)
+            except InstanceNameError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        else:
+            name_segment = ""
+            if payload.media_type not in existing_names:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No default {payload.media_type} instance exists to delete.",
+                )
+
+        instance_name = f"{payload.media_type}_{name_segment.lower()}" if name_segment else payload.media_type
+        prefix = f"{payload.media_type.upper()}_{name_segment}_" if name_segment else f"{payload.media_type.upper()}_"
+
+        backup_env_files(Path(".env"), Path(".env.secrets"), Path("backups"))
+
+        env_changed = remove_instance_keys(Path(".env"), prefix, instance_label=instance_name)
+        secrets_changed = remove_instance_keys(Path(".env.secrets"), prefix, instance_label=instance_name)
+        _pending_wizard_instances.discard(instance_name)
+
+        _log("INFO", f"Setup wizard: removed instance '{instance_name}' from .env/.env.secrets — restart required to apply")
+
+        return {
+            "instance_name": instance_name,
+            "env_changed": env_changed,
+            "secrets_changed": secrets_changed,
+            "restart_required": True,
+            "restart_reason": (
+                "chronarr-core builds its instance registry once at startup. A plain restart "
+                "isn't always enough — if this instance's env vars were present when the "
+                "container was first created, Docker's own env_file injection baked them into "
+                "the container and a restart alone won't drop them. Recreate the container "
+                "(docker compose up -d --force-recreate, or down + up) to be sure they're gone."
+            ),
+        }
+
+    @app.get("/api/wizard/env-backup")
+    async def _wizard_env_backup():
+        """Download the current .env + .env.secrets as one backup file.
+
+        A literal snapshot of both files' raw text, comments and all —
+        restoring it writes them back byte-for-byte. This file contains real
+        API keys and database passwords in plain text, same as .env.secrets
+        itself does; store it somewhere as secure as that file.
+        """
+        from config.env_writer import read_env_files
+        from version_utils import get_version
+
+        content = read_env_files(Path(".env"), Path(".env.secrets"))
+        payload = {
+            "chronarr_version": get_version(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            **content,
+        }
+        filename = f"chronarr-env-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+        return Response(
+            content=json.dumps(payload, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/api/wizard/env-restore")
+    async def _wizard_env_restore(payload: WizardEnvRestoreRequest):
+        """Restore .env + .env.secrets from a backup produced by /api/wizard/env-backup.
+
+        The current files are snapshotted first, the same as every wizard
+        save already does — restoring the wrong file, or one from an
+        incompatible version, isn't a dead end either.
+        """
+        from config.env_writer import write_env_files, backup_env_files
+
+        pre_restore_backup = backup_env_files(Path(".env"), Path(".env.secrets"), Path("backups"))
+        write_env_files(Path(".env"), Path(".env.secrets"), payload.env, payload.env_secrets)
+
+        _log("INFO", f"Setup wizard: restored .env/.env.secrets from an uploaded backup (pre-restore snapshot: {pre_restore_backup})")
+
+    # ---------------------------
+    # Log file endpoints
+    # ---------------------------
+    # Only chronarr.log (current) and its rotated backups (chronarr.log.1/.2/.3)
+    # ever exist in LOG_DIR — validate every filename against this before
+    # touching the filesystem so a request can't read/download anything else.
+    _LOG_FILENAME_RE = re.compile(r"^chronarr\.log(\.\d+)?$")
+
+    def _log_dir() -> Path:
+        return Path(os.environ.get("LOG_DIR", "/app/data/logs"))
+
+    def _validated_log_path(filename: str) -> Path:
+        if not _LOG_FILENAME_RE.match(filename):
+            raise HTTPException(status_code=404, detail="Log file not found")
+        path = _log_dir() / filename
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Log file not found")
+        return path
+
+    @app.get("/api/logs")
+    async def _list_logs():
+        """List the current log file and any rotated backups, newest first."""
+        log_dir = _log_dir()
+        files = []
+        if log_dir.is_dir():
+            for path in log_dir.iterdir():
+                if _LOG_FILENAME_RE.match(path.name):
+                    stat = path.stat()
+                    files.append({
+                        "filename": path.name,
+                        "size_bytes": stat.st_size,
+                        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                        "is_current": path.name == "chronarr.log",
+                    })
+        # Current log first, then rotated backups oldest-suffix-last (.1 before .2, etc.)
+        files.sort(key=lambda f: (not f["is_current"], f["filename"]))
+        return {"files": files}
+
+    @app.get("/api/logs/{filename}/tail")
+    async def _tail_log(filename: str, lines: int = 200):
+        """Return the last N lines of a log file as JSON, for the in-browser viewer.
+
+        Reads the whole file to get an accurate tail (these files cap at 50MB
+        per the rotation policy — fast enough for occasional viewing) rather
+        than an approximate byte-offset seek.
+        """
+        lines = max(1, min(lines, 5000))  # keep the response itself reasonable
+        path = _validated_log_path(filename)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                tail = list(deque(f, maxlen=lines))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read log file: {e}")
+        return {
+            "filename": filename,
+            "lines": [line.rstrip("\n") for line in tail],
+            "returned_count": len(tail),
+        }
+
+    @app.get("/api/logs/{filename}/download")
+    async def _download_log(filename: str):
+        """Download a log file as-is."""
+        from fastapi.responses import FileResponse
+        path = _validated_log_path(filename)
+        return FileResponse(path, media_type="text/plain", filename=filename)
+
+    # ---------------------------
+    # Unresolved plugin lookups
+    # ---------------------------
+    # /api/lookup/movie and /api/lookup/episode record a row here every time
+    # they answer "not found" — see lookup_movie()/lookup_episode() above.
+    # These two endpoints let the web UI show and clear that list instead of
+    # it only existing as a line in chronarr.log.
+
+    @app.get("/api/unresolved-lookups")
+    async def _list_unresolved_lookups(include_dismissed: bool = False):
+        db = dependencies.get("db")
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        rows = db.get_unresolved_lookups(include_dismissed=include_dismissed)
+        return {"lookups": [dict(row) for row in rows]}
+
+    @app.post("/api/unresolved-lookups/{lookup_id}/dismiss")
+    async def _dismiss_unresolved_lookup(lookup_id: int):
+        db = dependencies.get("db")
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        dismissed = db.dismiss_unresolved_lookup(lookup_id)
+        if not dismissed:
+            raise HTTPException(status_code=404, detail="Unresolved lookup not found")
+        return {"dismissed": True, "id": lookup_id}
+
+    @app.post("/api/unresolved-lookups/dismiss-all")
+    async def _dismiss_all_unresolved_lookups():
+        db = dependencies.get("db")
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        count = db.dismiss_all_unresolved_lookups()
+        return {"dismissed_count": count}
+
+        return {
+            "restored": True,
+            "pre_restore_backup": str(pre_restore_backup) if pre_restore_backup else None,
+            "restart_required": True,
+            "restart_reason": (
+                "Restored files only take effect after chronarr-core restarts and reloads its environment."
+            ),
+        }
+
     @app.get("/health")
     async def _health() -> HealthResponse:
         return await health(dependencies)
-    
+
     @app.get("/health/simple")
     async def _health_simple():
         """Simple health check for Docker without external dependencies"""
@@ -3126,8 +3945,8 @@ def register_routes(app, dependencies: dict):
         return await get_scan_status()
 
     @app.post("/admin/populate-database")
-    async def _populate_database(background_tasks: BackgroundTasks, media_type: str = "both"):
-        return await populate_database(background_tasks, media_type, dependencies)
+    async def _populate_database(background_tasks: BackgroundTasks, media_type: str = "both", instance: str = "all"):
+        return await populate_database(background_tasks, media_type, dependencies, instance)
 
     @app.get("/api/populate/status")
     async def _populate_status():
@@ -3166,12 +3985,12 @@ def register_routes(app, dependencies: dict):
     # ---------------------------
     
     @app.get("/api/lookup/episode/{imdb_id}/{season}/{episode}")
-    async def _lookup_episode(imdb_id: str, season: int, episode: int):
-        return await lookup_episode(imdb_id, season, episode, dependencies)
-    
+    async def _lookup_episode(imdb_id: str, season: int, episode: int, instance: str = None):
+        return await lookup_episode(imdb_id, season, episode, dependencies, instance)
+
     @app.get("/api/lookup/movie/{imdb_id}")
-    async def _lookup_movie(imdb_id: str):
-        return await lookup_movie(imdb_id, dependencies)
+    async def _lookup_movie(imdb_id: str, instance: str = None):
+        return await lookup_movie(imdb_id, dependencies, instance)
     
     @app.get("/api/lookup/movie/title/{title}")
     async def _lookup_movie_by_title(title: str, year: str = None):
@@ -4009,9 +4828,26 @@ def register_routes(app, dependencies: dict):
             }
 
     # ---------------------------
+    # Emby Plugin Support
+    # ---------------------------
+
+    @app.get("/emby/changelog")
+    async def _emby_changelog():
+        """Serve the Emby plugin changelog from the bundled CHANGELOG.md."""
+        import os
+        from fastapi.responses import PlainTextResponse
+        changelog_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "Emby-DLL", "CHANGELOG.md"
+        )
+        if os.path.exists(changelog_path):
+            with open(changelog_path, "r", encoding="utf-8") as f:
+                return PlainTextResponse(f.read(), media_type="text/markdown; charset=utf-8")
+        return PlainTextResponse("Changelog not found.", status_code=404)
+
+    # ---------------------------
     # Core API - No Web Interface
     # ---------------------------
-    
+
     @app.get("/")
     async def _core_info():
         """Core container API information - Web interface on separate container"""

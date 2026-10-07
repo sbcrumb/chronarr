@@ -49,7 +49,8 @@ class HealthResponse(BaseModel):
     version: str
     uptime: str
     database_status: str
-    radarr_database: Optional[Dict[str, Any]] = None
+    radarr_database: Optional[Dict[str, Any]] = None  # legacy — default Radarr instance only, kept for back-compat
+    instances: Optional[Dict[str, Dict[str, Any]]] = None  # {"radarr": {name: {connected, method}}, "sonarr": {...}} — every configured instance
 
 
 class TVSeasonRequest(BaseModel):
@@ -252,3 +253,77 @@ class CleanupExecutionResponse(BaseModel):
     error_message: Optional[str]
     report_json: Optional[str]
     triggered_by: Optional[str]
+
+
+class WizardConnectionTestRequest(BaseModel):
+    """Setup wizard: test a Radarr/Sonarr URL+API key or a direct DB connection.
+
+    Send either url+api_key, or a db_type block, or both — whatever the
+    form has filled in so far. Doesn't touch any files.
+    """
+    media_type: str  # "radarr" or "sonarr"
+    name: Optional[str] = None  # not validated here — just used to label log lines during the test
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+    db_type: Optional[str] = None  # "sqlite" or "postgresql"
+    db_host: Optional[str] = None
+    db_port: Optional[int] = None
+    db_name: Optional[str] = None
+    db_user: Optional[str] = None
+    db_password: Optional[str] = None
+    db_path: Optional[str] = None
+
+
+class WizardSaveInstanceRequest(BaseModel):
+    """Setup wizard: write a Radarr/Sonarr instance to .env / .env.secrets.
+
+    `name` is the user-typed instance name (e.g. "4k" or "strm") — leave it
+    empty to configure the default instance. `force` skips the connection
+    test failing being a hard stop, for someone who knows the service is
+    just down right now and wants to save the config anyway. `edit_existing`
+    flips the name check: normally a name must NOT already exist (adding a
+    new instance); with edit_existing=True it must ALREADY exist instead —
+    editing something that was never configured isn't a valid request either.
+    """
+    media_type: str  # "radarr" or "sonarr"
+    name: str = ""
+    url: str
+    api_key: str
+    root_folders: Optional[List[str]] = None
+    movie_paths: Optional[List[str]] = None  # radarr instances only
+    tv_paths: Optional[List[str]] = None     # sonarr instances only
+    db_type: Optional[str] = None
+    db_host: Optional[str] = None
+    db_port: Optional[int] = None
+    db_name: Optional[str] = None
+    db_user: Optional[str] = None
+    db_password: Optional[str] = None
+    db_path: Optional[str] = None
+    force: bool = False
+    edit_existing: bool = False
+
+
+class WizardDeleteInstanceRequest(BaseModel):
+    """Setup wizard: remove a Radarr/Sonarr instance from .env / .env.secrets.
+
+    Removes every env var this instance's name segment owns. Same automatic
+    pre-write snapshot every other wizard write already takes.
+    """
+    media_type: str  # "radarr" or "sonarr"
+    name: str = ""   # "" targets the default (unprefixed) instance
+
+
+class WizardEnvRestoreRequest(BaseModel):
+    """Setup wizard: restore .env / .env.secrets from a backup file's contents.
+
+    `env` and `env_secrets` are the raw file text, exactly as
+    GET /api/wizard/env-backup produced them — this overwrites both files
+    verbatim, not a merge. `chronarr_version`/`exported_at` are informational
+    only, from the backup's own header; nothing currently rejects a restore
+    over a version mismatch, but they're captured in case that's worth
+    warning about later.
+    """
+    env: str
+    env_secrets: str
+    chronarr_version: Optional[str] = None
+    exported_at: Optional[str] = None

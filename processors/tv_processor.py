@@ -1,7 +1,4 @@
-"""
-TV Series Processor for Chronarr
-Handles TV series processing and episode management with async I/O support
-"""
+"""TV series processing — episode date discovery and DB writes for Sonarr-managed series."""
 import os
 import re
 import time
@@ -21,7 +18,8 @@ from utils.imdb_utils import parse_imdb_from_path  # Phase 3: Replaced NFOManage
 from utils.file_utils import (
     find_media_path_by_imdb_and_title,
     find_episodes_on_disk,
-    extract_title_from_directory_name
+    extract_title_from_directory_name,
+    list_video_files_with_retry
 )
 from utils.async_file_utils import (
     async_find_episodes_on_disk,
@@ -30,155 +28,138 @@ from utils.async_file_utils import (
 
 
 class TVProcessor:
-    """Handles TV series processing"""
 
-    def __init__(self, db: ChronarrDatabase, nfo_manager, path_mapper: PathMapper):
-        # nfo_manager parameter kept for backward compatibility but no longer used (Phase 3)
+    def __init__(self, db: ChronarrDatabase, nfo_manager, path_mapper: PathMapper, sonarr_client=None, registry=None):
+        # nfo_manager kept for call-site compat but is unused
         self.db = db
         self.path_mapper = path_mapper
+        # InstanceRegistry — lets per-call `instance` params resolve the right
+        # client/mapper instead of always using the default instance below.
+        # None in the legacy single-instance/test construction path.
+        self.registry = registry
 
-        # Try database client first, fall back to API client
-        self.sonarr_db = None
-        self.sonarr_api = None
-        self.using_db = False
-
-        try:
-            self.sonarr_db = SonarrDbClient.from_env()
-            if self.sonarr_db:
-                _log("INFO", "Using Sonarr direct database access")
-                self.sonarr = self.sonarr_db  # Primary client
+        if sonarr_client:
+            # Pre-built client from InstanceRegistry (preferred path)
+            self.sonarr = sonarr_client
+            self.sonarr_db = sonarr_client if isinstance(sonarr_client, SonarrDbClient) else None
+            self.sonarr_api = sonarr_client if isinstance(sonarr_client, SonarrClient) else None
+            self.using_db = isinstance(sonarr_client, SonarrDbClient)
+        else:
+            # Fallback: construct from env vars (single-instance legacy path)
+            self.sonarr_db = None
+            self.sonarr_api = None
+            self.using_db = False
+            try:
+                self.sonarr_db = SonarrDbClient.from_env()
+                if not self.sonarr_db:
+                    raise Exception("Database not configured")
+                self.sonarr = self.sonarr_db
                 self.using_db = True
-            else:
-                raise Exception("Database not configured")
-        except Exception:
-            # Fall back to API client
-            self.sonarr_api = SonarrClient(
-                os.environ.get("SONARR_URL", ""),
-                os.environ.get("SONARR_API_KEY", "")
-            )
-            self.sonarr = self.sonarr_api  # Primary client
-            _log("INFO", "Using Sonarr API client (database not configured)")
+                _log("INFO", "Using Sonarr direct database access")
+            except Exception:
+                self.sonarr_api = SonarrClient(
+                    os.environ.get("SONARR_URL", ""),
+                    os.environ.get("SONARR_API_KEY", "")
+                )
+                self.sonarr = self.sonarr_api
+                _log("INFO", "Using Sonarr API client (database not configured)")
 
         self.external_clients = ExternalClientManager()
 
-    def get_episode_import_history(self, episode_id: int) -> Optional[str]:
+    def _resolve_sonarr(self, instance: str):
+        """Return (client, using_db, path_mapper) for a named instance.
+
+        Looks the instance up in the InstanceRegistry so per-call `instance`
+        params actually pick the right Sonarr server instead of every call
+        silently using whichever instance was wired in at construction time.
+        Falls back to the default-instance attributes when there's no
+        registry (legacy/test construction) or the instance isn't found.
+        """
+        if self.registry:
+            client = self.registry.sonarr(instance)
+            if client is not None:
+                mapper = self.registry.sonarr_mapper(instance) or self.path_mapper
+                return client, isinstance(client, SonarrDbClient), mapper
+            _log("WARNING", f"[{instance}] No Sonarr client in registry — falling back to default instance")
+        return self.sonarr, self.using_db, self.path_mapper
+
+    def get_episode_import_history(self, episode_id: int, instance: str = 'sonarr') -> Optional[str]:
         """
         Get episode import history from either database or API
         Wraps both SonarrDbClient.get_episode_import_date and SonarrClient.get_episode_import_history
         """
-        if self.using_db and self.sonarr_db:
+        client, using_db, _ = self._resolve_sonarr(instance)
+        if using_db and client:
             # Database client returns (date_iso, source)
-            date_iso, source = self.sonarr_db.get_episode_import_date(episode_id)
+            date_iso, source = client.get_episode_import_date(episode_id)
             return date_iso
-        elif self.sonarr_api:
+        elif client:
             # API client returns Optional[str]
-            return self.sonarr_api.get_episode_import_history(episode_id)
+            return client.get_episode_import_history(episode_id)
         else:
             return None
 
-    def find_series_path(self, series_title: str, imdb_id: str, sonarr_path: str = None) -> Optional[Path]:
+    def find_series_path(self, series_title: str, imdb_id: str, sonarr_path: str = None, instance: str = 'sonarr') -> Optional[Path]:
         """Find series directory path using unified file utilities"""
+        _, _, path_mapper = self._resolve_sonarr(instance)
+        # Scope the fallback directory scan to this instance's own configured
+        # paths, not every instance's (config.tv_paths). Otherwise a webhook
+        # for one instance can be crashed by a completely unrelated instance's
+        # path being unreadable (e.g. a stale/disconnected mount) — the scan
+        # would still walk into it while looking for this series.
+        instance_tv_paths = [Path(p) for p in path_mapper.container_paths] if path_mapper.container_paths else config.tv_paths
         return find_media_path_by_imdb_and_title(
             title=series_title,
             imdb_id=imdb_id,
-            search_paths=config.tv_paths,
+            search_paths=instance_tv_paths,
             webhook_path=sonarr_path,
-            path_mapper=self.path_mapper
+            path_mapper=path_mapper
         )
     
-    def should_skip_series_fast(self, imdb_id: str, series_name: str = "") -> Tuple[bool, str, int]:
-        """
-        Fast preliminary check to skip series without filesystem scan
-        
-        Args:
-            imdb_id: Series IMDb ID
-            series_name: Series name for logging
-            
-        Returns:
-            (should_skip: bool, reason: str, episodes_in_db: int)
-        """
+    def _episode_completion_counts(self, imdb_id: str, instance: str) -> Tuple[int, int]:
+        """Return (total_in_db, complete_episodes) for an (imdb_id, instance) pair."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    COUNT(*) AS total_in_db,
+                    COUNT(CASE WHEN dateadded IS NOT NULL AND source IS NOT NULL
+                               AND source NOT IN ('unknown', 'no_valid_date_source') THEN 1 END) AS complete_episodes
+                FROM episodes
+                WHERE imdb_id = %s AND instance = %s
+            """, (imdb_id, instance))
+            row = cursor.fetchone()
+            if not row:
+                return 0, 0
+            return row['total_in_db'], row['complete_episodes']
+
+    def should_skip_series_fast(self, imdb_id: str, series_name: str = "", instance: str = 'sonarr') -> Tuple[bool, str, int]:
+        """Prelim skip check without a filesystem scan — returns (skip, reason, count_in_db)."""
         try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Check if we have complete episodes in database
-                cursor.execute("""
-                    SELECT 
-                        COUNT(*) as total_in_db,
-                        COUNT(CASE WHEN dateadded IS NOT NULL AND source IS NOT NULL AND source != 'unknown' AND source != 'no_valid_date_source' THEN 1 END) as complete_episodes
-                    FROM episodes 
-                    WHERE imdb_id = %s
-                """, (imdb_id,))
-                
-                result = cursor.fetchone()
-                if not result:
-                    return False, "No database records found", 0
-                
-                total_in_db = result['total_in_db']
-                complete_episodes = result['complete_episodes']
-                
-                # Skip if we have episodes and all are complete
-                # We'll verify disk count later if needed
-                if total_in_db > 0 and complete_episodes == total_in_db:
-                    return True, f"Likely complete: {complete_episodes} episodes in DB all have valid dates", total_in_db
-                else:
-                    return False, f"Needs checking: {complete_episodes}/{total_in_db} episodes complete in DB", total_in_db
-                    
+            total_in_db, complete_episodes = self._episode_completion_counts(imdb_id, instance)
+            if total_in_db > 0 and complete_episodes == total_in_db:
+                return True, f"Likely complete: {complete_episodes} episodes in DB all have valid dates", total_in_db
+            return False, f"Needs checking: {complete_episodes}/{total_in_db} episodes complete in DB", total_in_db
         except Exception as e:
             _log("ERROR", f"Error in fast series check for {imdb_id}: {e}")
             return False, f"Error in fast check: {e}", 0
 
-    def should_skip_series(self, imdb_id: str, episodes_on_disk: int, series_name: str = "") -> Tuple[bool, str]:
-        """
-        Determine if we should skip processing this series based on completion status
-        
-        Args:
-            imdb_id: Series IMDb ID
-            episodes_on_disk: Number of episodes found on disk
-            series_name: Series name for logging
-            
-        Returns:
-            (should_skip: bool, reason: str)
-        """
+    def should_skip_series(self, imdb_id: str, episodes_on_disk: int, series_name: str = "", instance: str = 'sonarr') -> Tuple[bool, str]:
+        """Return (should_skip, reason) — skip when DB count, disk count, and date completeness all match."""
         try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # PostgreSQL-only query
-                cursor.execute("""
-                    SELECT 
-                        COUNT(*) as total_in_db,
-                        COUNT(CASE WHEN dateadded IS NOT NULL AND source IS NOT NULL AND source != 'unknown' AND source != 'no_valid_date_source' THEN 1 END) as complete_episodes
-                    FROM episodes 
-                    WHERE imdb_id = %s
-                """, (imdb_id,))
-                
-                result = cursor.fetchone()
-                if not result:
-                    return False, "No database records found"
-                
-                # PostgreSQL RealDictCursor returns dict-like objects
-                total_in_db = result['total_in_db']
-                complete_episodes = result['complete_episodes']
-                
-                # Skip if:
-                # 1. We have episodes in database
-                # 2. Database count matches disk count (no missing episodes)
-                # 3. All episodes have valid dates and sources
-                if total_in_db > 0 and total_in_db == episodes_on_disk and complete_episodes == episodes_on_disk:
-                    return True, f"Complete: {complete_episodes}/{episodes_on_disk} episodes have valid dates"
-                elif total_in_db == 0:
-                    return False, f"New series: No episodes in database"
-                elif total_in_db != episodes_on_disk:
-                    return False, f"Disk mismatch: {total_in_db} in DB vs {episodes_on_disk} on disk"
-                else:
-                    return False, f"Incomplete: {complete_episodes}/{episodes_on_disk} episodes have valid dates"
-                    
+            total_in_db, complete_episodes = self._episode_completion_counts(imdb_id, instance)
+            if total_in_db > 0 and total_in_db == episodes_on_disk and complete_episodes == episodes_on_disk:
+                return True, f"Complete: {complete_episodes}/{episodes_on_disk} episodes have valid dates"
+            if total_in_db == 0:
+                return False, "New series: No episodes in database"
+            if total_in_db != episodes_on_disk:
+                return False, f"Disk mismatch: {total_in_db} in DB vs {episodes_on_disk} on disk"
+            return False, f"Incomplete: {complete_episodes}/{episodes_on_disk} episodes have valid dates"
         except Exception as e:
             _log("ERROR", f"Error checking series completion for {imdb_id}: {e}")
             return False, f"Error checking completion: {e}"
     
-    def process_series(self, series_path: Path, force_scan: bool = False, scan_mode: str = "smart", imdb_id: str = None) -> str:
+    def process_series(self, series_path: Path, force_scan: bool = False, scan_mode: str = "smart", imdb_id: str = None, instance: str = 'sonarr') -> str:
         """Process a TV series directory"""
         if not imdb_id:
             imdb_id = parse_imdb_from_path(series_path)
@@ -191,52 +172,39 @@ class TVProcessor:
         # Fast check first - avoid expensive filesystem scan if possible
         # Skip fast optimization for incomplete mode since we need to check NFO files first
         if not force_scan and scan_mode != "incomplete":
-            should_skip_fast, reason_fast, episodes_in_db = self.should_skip_series_fast(imdb_id, series_path.name)
+            should_skip_fast, reason_fast, episodes_in_db = self.should_skip_series_fast(imdb_id, series_path.name, instance=instance)
             if should_skip_fast:
                 _log("INFO", f"⚡ FAST SKIP: {series_path.name} [{imdb_id}] - {reason_fast}")
-                # Still update the series record to track that we've seen it
-                self.db.upsert_series(imdb_id, str(series_path))
+                self.db.upsert_series(imdb_id, str(series_path), instance=instance)
                 return "skipped"
-        
-        # Need filesystem scan - either force_scan=True or series not complete in DB
+
         disk_episodes = find_episodes_on_disk(series_path)
         _log("INFO", f"Found {len(disk_episodes)} episodes on disk")
-        
-        # Final skip check with actual episode count (unless forced)
+
         if not force_scan:
-            should_skip, reason = self.should_skip_series(imdb_id, len(disk_episodes), series_path.name)
+            should_skip, reason = self.should_skip_series(imdb_id, len(disk_episodes), series_path.name, instance=instance)
             if should_skip:
                 _log("INFO", f"⏭️ SKIPPING SERIES: {series_path.name} [{imdb_id}] - {reason}")
-                # Still update the series record to track that we've seen it
-                self.db.upsert_series(imdb_id, str(series_path))
+                self.db.upsert_series(imdb_id, str(series_path), instance=instance)
                 return "skipped"
             else:
                 _log("INFO", f"📺 PROCESSING SERIES: {series_path.name} [{imdb_id}] - {reason}")
         else:
             _log("INFO", f"🔄 FORCE PROCESSING SERIES: {series_path.name} [{imdb_id}] - Force scan enabled")
-        
-        # Update database
-        self.db.upsert_series(imdb_id, str(series_path))
-        
-        # Get episode dates
-        episode_dates = self._gather_episode_dates(series_path, imdb_id, disk_episodes)
-        
-        # Process episodes with periodic yielding for non-blocking operation
+
+        self.db.upsert_series(imdb_id, str(series_path), instance=instance)
+
+        episode_dates = self._gather_episode_dates(series_path, imdb_id, disk_episodes, instance=instance)
+
         episode_count = 0
         for (season, episode), (aired, dateadded, source) in episode_dates.items():
             if (season, episode) in disk_episodes:
                 episode_count += 1
-                
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                
-                # Save to database
                 try:
-                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True)
+                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True, instance=instance)
                     _log("DEBUG", f"S{season:02d}E{episode:02d}: Database record saved successfully")
                 except Exception as e:
                     _log("ERROR", f"S{season:02d}E{episode:02d}: Database write failed: {e}")
-                    # Continue processing other episodes
                 
         
         # Skip season.nfo and tvshow.nfo creation - focus only on episode NFOs
@@ -250,7 +218,7 @@ class TVProcessor:
         return extract_title_from_directory_name(series_path.name)
     
     
-    def _gather_episode_dates(self, series_path: Path, imdb_id: str, disk_episodes: Dict[Tuple[int, int], List[Path]], scan_mode: str = "smart") -> Dict[Tuple[int, int], Tuple[Optional[str], Optional[str], str]]:
+    def _gather_episode_dates(self, series_path: Path, imdb_id: str, disk_episodes: Dict[Tuple[int, int], List[Path]], scan_mode: str = "smart", instance: str = 'sonarr') -> Dict[Tuple[int, int], Tuple[Optional[str], Optional[str], str]]:
         """Gather episode air dates and date added information with optimization based on scan mode"""
         _log("INFO", f"🎯 GATHERING EPISODE DATES for {imdb_id}: {len(disk_episodes)} episodes on disk (mode: {scan_mode})")
         episode_dates = {}
@@ -258,7 +226,7 @@ class TVProcessor:
         
         # For incomplete mode: Start with NFO check to find missing dateadded elements
         if scan_mode == "incomplete":
-            return self._gather_episode_dates_nfo_first(series_path, imdb_id, disk_episodes)
+            return self._gather_episode_dates_nfo_first(series_path, imdb_id, disk_episodes, instance=instance)
         
         # For smart/full modes: Use database-first optimization
         # TIER 1: Check database first for existing dates (fastest)
@@ -267,8 +235,7 @@ class TVProcessor:
         episodes_needing_nfo_check = []
         
         for (season, episode) in disk_episodes:
-            # Try database first - this is much faster than API calls
-            db_result = self.db.get_episode_date(imdb_id, season, episode)
+            db_result = self.db.get_episode_date(imdb_id, season, episode, instance)
             
             if db_result and db_result.get('dateadded'):
                 # Found in database - use cached data
@@ -288,7 +255,7 @@ class TVProcessor:
         episodes_needing_lookup = episodes_needing_nfo_check  # Renamed for clarity
         if episodes_needing_lookup:
             _log("DEBUG", f"TIER 2 - Querying Sonarr for {len(episodes_needing_lookup)} episodes missing from database")
-            sonarr_episodes = self._get_sonarr_episodes(imdb_id, episodes_needing_lookup)
+            sonarr_episodes = self._get_sonarr_episodes(imdb_id, episodes_needing_lookup, instance=instance)
             
             # Process episodes that needed lookup
             for (season, episode) in episodes_needing_lookup:
@@ -355,7 +322,7 @@ class TVProcessor:
         
         return episode_dates
     
-    def _gather_episode_dates_nfo_first(self, series_path: Path, imdb_id: str, disk_episodes: Dict[Tuple[int, int], List[Path]]) -> Dict[Tuple[int, int], Tuple[Optional[str], Optional[str], str]]:
+    def _gather_episode_dates_nfo_first(self, series_path: Path, imdb_id: str, disk_episodes: Dict[Tuple[int, int], List[Path]], instance: str = 'sonarr') -> Dict[Tuple[int, int], Tuple[Optional[str], Optional[str], str]]:
         """Gather episode dates for incomplete mode: Database-first then API (NFO checks removed in Phase 2)"""
         _log("INFO", f"🔍 INCOMPLETE MODE: Checking {len(disk_episodes)} episodes for missing data")
         episode_dates = {}
@@ -366,10 +333,9 @@ class TVProcessor:
         db_hits = 0
 
         for (season, episode) in disk_episodes:
-            db_result = self.db.get_episode_date(imdb_id, season, episode)
+            db_result = self.db.get_episode_date(imdb_id, season, episode, instance)
 
             if db_result and db_result.get('dateadded'):
-                # Found in database - use cached data
                 aired = db_result.get('aired')
                 dateadded = db_result.get('dateadded')
                 source = db_result.get('source', 'database_cache')
@@ -377,7 +343,6 @@ class TVProcessor:
                 db_hits += 1
                 _log("DEBUG", f"S{season:02d}E{episode:02d}: Database has dateadded={dateadded}")
             else:
-                # Not in database or incomplete - needs API lookup
                 episodes_needing_api_lookup.append((season, episode))
 
         _log("INFO", f"Database hits: {db_hits}/{len(disk_episodes)} episodes. Need API lookup: {len(episodes_needing_api_lookup)}")
@@ -385,7 +350,7 @@ class TVProcessor:
         # STEP 2: For episodes missing from database, query Sonarr
         if episodes_needing_api_lookup:
             _log("DEBUG", f"STEP 2 - Querying Sonarr for {len(episodes_needing_api_lookup)} episodes missing from database")
-            sonarr_episodes = self._get_sonarr_episodes(imdb_id, episodes_needing_api_lookup)
+            sonarr_episodes = self._get_sonarr_episodes(imdb_id, episodes_needing_api_lookup, instance=instance)
             
             for (season, episode) in episodes_needing_api_lookup:
                 aired = None
@@ -426,9 +391,8 @@ class TVProcessor:
                         source = f"{source}_fallback" if source != "unknown" else "aired_fallback"
                     _log("DEBUG", f"S{season:02d}E{episode:02d}: Using aired date as dateadded fallback: {dateadded}")
                 
-                # Save to database for future lookups
                 if dateadded or aired:
-                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True)
+                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True, instance=instance)
                 
                 episode_dates[(season, episode)] = (aired, dateadded, source)
         
@@ -438,24 +402,23 @@ class TVProcessor:
         
         return episode_dates
     
-    def _get_sonarr_episodes(self, imdb_id: str, episodes_filter: List[Tuple[int, int]] = None) -> Dict[Tuple[int, int], Dict[str, Any]]:
+    def _get_sonarr_episodes(self, imdb_id: str, episodes_filter: List[Tuple[int, int]] = None, instance: str = 'sonarr') -> Dict[Tuple[int, int], Dict[str, Any]]:
         """Get episode information from Sonarr including import history - optimized to only fetch needed episodes"""
         try:
+            client, using_db, _ = self._resolve_sonarr(instance)
+
             # Handle different method names for DB vs API client
-            if self.using_db:
-                series_data = self.sonarr.get_series_by_imdb(imdb_id)
+            if using_db:
+                series_data = client.get_series_by_imdb(imdb_id)
             else:
-                series_data = self.sonarr.series_by_imdb(imdb_id)
+                series_data = client.series_by_imdb(imdb_id)
 
             if not series_data:
                 # Try fuzzy matching if exact IMDb lookup fails
                 _log("DEBUG", f"Exact IMDb lookup failed for {imdb_id}, trying fuzzy matching")
 
                 # Get all series and try fuzzy matching
-                if self.using_db:
-                    all_series = self.sonarr.get_all_series()
-                else:
-                    all_series = self.sonarr.get_all_series()
+                all_series = client.get_all_series()
 
                 if all_series:
                     _log("DEBUG", f"Found {len(all_series)} total series in Sonarr")
@@ -489,11 +452,11 @@ class TVProcessor:
                 return {}
 
             # Handle different method names for DB vs API client
-            if self.using_db:
-                episodes = self.sonarr.get_all_episodes_for_series(series_id)
+            if using_db:
+                episodes = client.get_all_episodes_for_series(series_id)
             else:
-                episodes = self.sonarr.episodes_for_series(series_id)
-            
+                episodes = client.episodes_for_series(series_id)
+
             # Convert episodes_filter to set for faster lookup
             filter_set = set(episodes_filter) if episodes_filter else None
             
@@ -526,7 +489,7 @@ class TVProcessor:
                     # First try to get import date from history (more accurate)
                     episode_id = episode.get('id')
                     if episode_id and episode.get('hasFile'):
-                        import_date = self.get_episode_import_history(episode_id)
+                        import_date = self.get_episode_import_history(episode_id, instance=instance)
                         api_calls_made += 1
                         if import_date:
                             episode_data['dateAdded'] = import_date
@@ -552,58 +515,48 @@ class TVProcessor:
             _log("ERROR", f"Failed to get Sonarr episodes for {imdb_id}: {e}")
             return {}
     
-    def process_season(self, series_path: str, season_name: str) -> Dict[str, Any]:
+    def process_season(self, series_path: str, season_name: str, instance: str = 'sonarr') -> Dict[str, Any]:
         """Process a specific season"""
         series_path_obj = Path(series_path)
         if not series_path_obj.exists():
             raise FileNotFoundError(f"Series path not found: {series_path}")
-        
+
         season_path = series_path_obj / season_name
         if not season_path.exists():
             raise FileNotFoundError(f"Season directory not found: {season_path}")
-        
-        # Extract season number from directory name
+
         season_match = re.search(r'(\d+)', season_name)
         if not season_match:
             raise ValueError(f"Could not extract season number from: {season_name}")
-        
+
         season_num = int(season_match.group(1))
-        
-        # Get series IMDb ID
-        imdb_id = parse_imdb_from_path(series_path_obj)  # Phase 3: Using imdb_utils
+
+        imdb_id = parse_imdb_from_path(series_path_obj)
         if not imdb_id:
             raise ValueError(f"No IMDb ID found in series path: {series_path}")
 
         _log("INFO", f"Processing season {season_num} of series: {series_path_obj.name}")
-        
-        # Find episodes in this season
+
         disk_episodes = find_episodes_on_disk(series_path_obj)
         season_episodes = {k: v for k, v in disk_episodes.items() if k[0] == season_num}
-        
+
         if not season_episodes:
             return {"status": "no_episodes", "season": season_num, "episodes_found": 0}
-        
-        # Get episode dates
-        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, season_episodes)
-        
-        # Process episodes
+
+        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, season_episodes, instance=instance)
+
         processed_count = 0
         for (season, episode), (aired, dateadded, source) in episode_dates.items():
             if (season, episode) in season_episodes:
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                
-                # Save to database
                 try:
-                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True)
+                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True, instance=instance)
                     _log("DEBUG", f"S{season:02d}E{episode:02d}: Database record saved successfully")
                 except Exception as e:
                     _log("ERROR", f"S{season:02d}E{episode:02d}: Database write failed: {e}")
-                    # Continue processing other episodes
                 processed_count += 1
-        
+
         _log("INFO", f"Processed {processed_count} episodes in season {season_num}")
-        
+
         return {
             "status": "success",
             "season": season_num,
@@ -611,63 +564,56 @@ class TVProcessor:
             "episodes_processed": processed_count
         }
     
-    def process_episode(self, series_path: str, season_name: str, episode_name: str) -> Dict[str, Any]:
+    def process_episode(self, series_path: str, season_name: str, episode_name: str, instance: str = 'sonarr') -> Dict[str, Any]:
         """Process a specific episode"""
         series_path_obj = Path(series_path)
         if not series_path_obj.exists():
             raise FileNotFoundError(f"Series path not found: {series_path}")
-        
+
         season_path = series_path_obj / season_name
         if not season_path.exists():
             raise FileNotFoundError(f"Season directory not found: {season_path}")
-        
+
         episode_path = season_path / episode_name
         if not episode_path.exists():
             raise FileNotFoundError(f"Episode file not found: {episode_path}")
-        
-        # Extract season and episode numbers
+
         season_match = re.search(r'(\d+)', season_name)
         episode_match = re.search(r'[sS](\d+)[eE](\d+)|(\d+)x(\d+)', episode_name)
-        
+
         if not season_match:
             raise ValueError(f"Could not extract season number from: {season_name}")
-        
+
         if not episode_match:
             raise ValueError(f"Could not extract episode number from: {episode_name}")
-        
+
         season_num = int(season_match.group(1))
-        
-        if episode_match.group(1) and episode_match.group(2):  # SxxExx format
+
+        if episode_match.group(1) and episode_match.group(2):
             episode_num = int(episode_match.group(2))
-        elif episode_match.group(3) and episode_match.group(4):  # NxNN format
+        elif episode_match.group(3) and episode_match.group(4):
             episode_num = int(episode_match.group(4))
         else:
             raise ValueError(f"Could not parse episode number from: {episode_name}")
-        
-        # Get series IMDb ID
-        imdb_id = parse_imdb_from_path(series_path_obj)  # Phase 3: Using imdb_utils
+
+        imdb_id = parse_imdb_from_path(series_path_obj)
         if not imdb_id:
             raise ValueError(f"No IMDb ID found in series path: {series_path}")
 
         _log("INFO", f"Processing episode S{season_num:02d}E{episode_num:02d} of series: {series_path_obj.name}")
-        
-        # Get episode data
+
         disk_episodes = {(season_num, episode_num): [episode_path]}
-        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, disk_episodes)
-        
+        episode_dates = self._gather_episode_dates(series_path_obj, imdb_id, disk_episodes, instance=instance)
+
         if (season_num, episode_num) not in episode_dates:
             return {"status": "no_data", "season": season_num, "episode": episode_num}
-        
+
         aired, dateadded, source = episode_dates[(season_num, episode_num)]
-        
-        # NFO file operations removed - database is now the single source of truth
-        # (Phase 1: Remove NFO file write operations)
-        
-        # Save to database
-        self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, True)
-        
+
+        self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, True, instance=instance)
+
         _log("INFO", f"Processed episode S{season_num:02d}E{episode_num:02d}")
-        
+
         return {
             "status": "success",
             "season": season_num,
@@ -679,61 +625,39 @@ class TVProcessor:
     
     # ===== ASYNC METHODS =====
     
-    async def async_process_series(self, series_path: Path) -> Dict[str, Any]:
-        """
-        Async process a TV series directory with concurrent episode processing
-        
-        Args:
-            series_path: Path to series directory
-            
-        Returns:
-            Dictionary with processing results
-        """
-        imdb_id = parse_imdb_from_path(series_path)  # Phase 3: Using imdb_utils
+    async def async_process_series(self, series_path: Path, instance: str = 'sonarr') -> Dict[str, Any]:
+        """Async process a TV series directory with concurrent episode processing."""
+        imdb_id = parse_imdb_from_path(series_path)
         if not imdb_id:
             return {"status": "error", "reason": f"No IMDb ID found in series path: {series_path}"}
-        
+
         _log("INFO", f"Async processing TV series: {series_path.name}")
-        
-        # Update database
-        self.db.upsert_series(imdb_id, str(series_path))
-        
-        # Find video files asynchronously
+
+        self.db.upsert_series(imdb_id, str(series_path), instance=instance)
+
         disk_episodes = await async_find_episodes_on_disk(series_path)
         _log("INFO", f"Found {len(disk_episodes)} episodes on disk")
-        
-        # Get episode dates (sync for now, could be made async later)
-        episode_dates = self._gather_episode_dates(series_path, imdb_id, disk_episodes)
-        
-        # Prepare episode data for concurrent processing
-        episode_data_list = []
-        mtime_operations = []
-        
+
+        # sync for now — could be made async if episode date gathering becomes a bottleneck
+        episode_dates = self._gather_episode_dates(series_path, imdb_id, disk_episodes, instance=instance)
+
+        processed_count = 0
         for (season, episode), (aired, dateadded, source) in episode_dates.items():
             if (season, episode) in disk_episodes:
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                
-                # Save to database
                 try:
-                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True)
+                    self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, source, True, instance=instance)
                     _log("DEBUG", f"S{season:02d}E{episode:02d}: Database record saved successfully")
+                    processed_count += 1
                 except Exception as e:
                     _log("ERROR", f"S{season:02d}E{episode:02d}: Database write failed: {e}")
-                    # Continue processing other episodes
-        
-        # NFO and mtime operations removed - database is now the single source of truth
-        # (Phase 1: Remove NFO file write operations)
-        results = {}
-        
+
         _log("INFO", f"Completed async processing TV series: {series_path.name}")
-        
+
         return {
             "status": "success",
             "imdb_id": imdb_id,
             "episodes_found": len(disk_episodes),
-            "episodes_processed": len(episode_data_list),
-            "results": results
+            "episodes_processed": processed_count,
         }
     
     async def async_process_multiple_series(
@@ -780,26 +704,25 @@ class TVProcessor:
         
         return processed_results
     
-    def process_webhook_episodes(self, series_path: Path, webhook_episodes: List[Dict[str, Any]], imdb_id: str = None) -> None:
-        """Process only the specific episodes mentioned in a webhook (targeted mode)"""
+    def process_webhook_episodes(self, series_path: Path, webhook_episodes: List[Dict[str, Any]], imdb_id: str = None, instance: str = 'sonarr') -> None:
+        """Process only the specific episodes mentioned in a webhook (targeted mode)."""
         if not imdb_id:
             imdb_id = parse_imdb_from_path(series_path)
         if not imdb_id:
-            _log("ERROR", f"No IMDb ID found in series path: {series_path}")
+            _log("ERROR", f"[{instance}] No IMDb ID found in series path: {series_path}")
             return
-        
+
         if not webhook_episodes:
-            _log("WARNING", f"No episodes in webhook, falling back to series processing: {series_path}")
-            self.process_series(series_path)
+            _log("WARNING", f"[{instance}] No episodes in webhook, falling back to series processing: {series_path}")
+            self.process_series(series_path, instance=instance)
             return
-        
-        _log("INFO", f"Processing {len(webhook_episodes)} webhook episodes for: {series_path.name} (IMDb: {imdb_id})")
-        
-        # Update database
-        self.db.upsert_series(imdb_id, str(series_path))
+
+        _log("INFO", f"[{instance}] Processing {len(webhook_episodes)} webhook episodes for: {series_path.name} (IMDb: {imdb_id})")
+
+        self.db.upsert_series(imdb_id, str(series_path), instance=instance)
         
         # Get enhanced metadata from Sonarr
-        series_metadata = self._get_sonarr_series_metadata(imdb_id)
+        series_metadata = self._get_sonarr_series_metadata(imdb_id, instance=instance)
         
         episodes_processed = 0
         for webhook_episode in webhook_episodes:
@@ -807,45 +730,44 @@ class TVProcessor:
             episode_num = webhook_episode.get("episodeNumber")
             
             if not season_num or not episode_num:
-                _log("WARNING", f"Invalid episode data in webhook: {webhook_episode}")
+                _log("WARNING", f"[{instance}] Invalid episode data in webhook: {webhook_episode}")
                 continue
-            
+
             # Check if episode file exists on disk
             season_dir = series_path / config.get_season_dir_name(season_num)
             if not season_dir.exists():
-                _log("WARNING", f"Season directory not found: {season_dir}")
+                _log("WARNING", f"[{instance}] Season directory not found: {season_dir}")
                 continue
-                
-            # Find matching episode files
+
+            # Find matching episode files — the listing itself retries internally on
+            # a transient OSError (e.g. a network/FUSE mount reporting ENOTCONN for
+            # a just-created file) instead of failing the whole webhook on a blip.
             episode_files = []
-            for file_path in season_dir.iterdir():
-                if file_path.is_file() and file_path.suffix.lower() in ('.mkv', '.mp4', '.avi', '.mov', '.m4v'):
-                    parsed = self._parse_episode_from_filename(file_path.name)
-                    if parsed and parsed == (season_num, episode_num):
-                        episode_files.append(file_path)
-            
+            for file_path in list_video_files_with_retry(season_dir):
+                parsed = self._parse_episode_from_filename(file_path.name)
+                if parsed and parsed == (season_num, episode_num):
+                    episode_files.append(file_path)
+
             if not episode_files:
-                _log("WARNING", f"No video files found for S{season_num:02d}E{episode_num:02d}")
+                _log("WARNING", f"[{instance}] No video files found for S{season_num:02d}E{episode_num:02d}")
                 continue
-                
+
             # Get episode date information - webhook processing prioritizes existing DB entries
-            _log("DEBUG", f"Processing webhook episode: IMDb={imdb_id}, S{season_num:02d}E{episode_num:02d}")
-            aired, dateadded, source = self._get_webhook_episode_date(imdb_id, season_num, episode_num, series_metadata, webhook_episode)
-            enhanced_metadata = self._get_episode_metadata(series_metadata, season_num, episode_num, season_dir) if series_metadata else self._get_episode_metadata(None, season_num, episode_num, season_dir)
-            
+            _log("DEBUG", f"[{instance}] Processing webhook episode: IMDb={imdb_id}, S{season_num:02d}E{episode_num:02d}")
+            aired, dateadded, source = self._get_webhook_episode_date(imdb_id, season_num, episode_num, series_metadata, webhook_episode, instance=instance)
+            enhanced_metadata = self._get_episode_metadata(series_metadata, season_num, episode_num, season_dir, instance=instance) if series_metadata else self._get_episode_metadata(None, season_num, episode_num, season_dir, instance=instance)
+
             # NFO file operations removed - database is now the single source of truth
             # (Phase 1: Remove NFO file write operations)
-            
-            # Save to database
-            self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, True)
-            
-            # Verify database entry was saved (debug)
-            verification = self.db.get_episode_date(imdb_id, season_num, episode_num)
+
+            self.db.upsert_episode_date(imdb_id, season_num, episode_num, aired, dateadded, source, True, instance=instance)
+
+            verification = self.db.get_episode_date(imdb_id, season_num, episode_num, instance)
             if verification:
-                _log("DEBUG", f"Verified database entry saved: S{season_num:02d}E{episode_num:02d} -> {verification['dateadded']}")
+                _log("DEBUG", f"[{instance}] Verified database entry saved: S{season_num:02d}E{episode_num:02d} -> {verification['dateadded']}")
             else:
-                _log("ERROR", f"Failed to save episode to database: S{season_num:02d}E{episode_num:02d}")
-            
+                _log("ERROR", f"[{instance}] Failed to save episode to database: S{season_num:02d}E{episode_num:02d}")
+
             episodes_processed += 1
         
         # DISABLED: Skip creating season.nfo and tvshow.nfo files (user only wants episode NFOs)
@@ -863,7 +785,7 @@ class TVProcessor:
         #     tvdb_id = self.external_clients.get_tvdb_series_id(imdb_id)
         #     self.nfo_manager.create_tvshow_nfo(series_path, imdb_id, tvdb_id)
         
-        _log("INFO", f"Completed targeted processing: {episodes_processed}/{len(webhook_episodes)} episodes processed")
+        _log("INFO", f"[{instance}] Completed targeted processing: {episodes_processed}/{len(webhook_episodes)} episodes processed")
     
     def _parse_episode_from_filename(self, filename: str) -> Optional[Tuple[int, int]]:
         """Parse season and episode numbers from filename"""
@@ -879,17 +801,18 @@ class TVProcessor:
         
         return None
     
-    def _get_sonarr_series_metadata(self, imdb_id: str) -> Optional[Dict[str, Any]]:
+    def _get_sonarr_series_metadata(self, imdb_id: str, instance: str = 'sonarr') -> Optional[Dict[str, Any]]:
         """Get enhanced series metadata from Sonarr (database or API)"""
         try:
-            if not self.sonarr:
+            client, using_db, _ = self._resolve_sonarr(instance)
+            if not client:
                 return None
 
             # Handle different method names for DB vs API client
-            if self.using_db:
-                series_data = self.sonarr.get_series_by_imdb(imdb_id)
+            if using_db:
+                series_data = client.get_series_by_imdb(imdb_id)
             else:
-                series_data = self.sonarr.series_by_imdb(imdb_id)
+                series_data = client.series_by_imdb(imdb_id)
 
             if not series_data:
                 return None
@@ -899,10 +822,10 @@ class TVProcessor:
                 return None
 
             # Get all episodes for this series
-            if self.using_db:
-                episodes = self.sonarr.get_all_episodes_for_series(series_id)
+            if using_db:
+                episodes = client.get_all_episodes_for_series(series_id)
             else:
-                episodes = self.sonarr.episodes_for_series(series_id)
+                episodes = client.episodes_for_series(series_id)
 
             # Organize episodes by season/episode
             episode_map = {}
@@ -919,15 +842,15 @@ class TVProcessor:
             }
 
         except Exception as e:
-            _log("ERROR", f"Failed to get Sonarr series metadata for {imdb_id}: {e}")
+            _log("ERROR", f"[{instance}] Failed to get Sonarr series metadata for {imdb_id}: {e}")
             return None
-    
-    def _get_episode_metadata(self, series_metadata: Optional[Dict[str, Any]], season_num: int, episode_num: int, season_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+
+    def _get_episode_metadata(self, series_metadata: Optional[Dict[str, Any]], season_num: int, episode_num: int, season_dir: Optional[Path] = None, instance: str = 'sonarr') -> Optional[Dict[str, Any]]:
         """Get enhanced episode metadata including title extraction from filename"""
-        _log("DEBUG", f"Getting episode metadata for S{season_num:02d}E{episode_num:02d}, season_dir: {season_dir}")
-        
+        _log("DEBUG", f"[{instance}] Getting episode metadata for S{season_num:02d}E{episode_num:02d}, season_dir: {season_dir}")
+
         metadata = {}
-        
+
         # Try to get title from Sonarr first
         if series_metadata and 'episodes' in series_metadata:
             episode_data = series_metadata['episodes'].get((season_num, episode_num))
@@ -935,27 +858,27 @@ class TVProcessor:
                 title = episode_data.get('title')
                 if title and title != 'TBA':
                     metadata['title'] = title
-                    _log("DEBUG", f"Got title from Sonarr for S{season_num:02d}E{episode_num:02d}: {title}")
-        
+                    _log("DEBUG", f"[{instance}] Got title from Sonarr for S{season_num:02d}E{episode_num:02d}: {title}")
+
         # If no title from Sonarr, try to extract from filename
         if 'title' not in metadata and season_dir:
-            title = self._extract_title_from_filename(season_num, episode_num, season_dir)
+            title = self._extract_title_from_filename(season_num, episode_num, season_dir, instance=instance)
             if title:
                 metadata['title'] = title
-                _log("DEBUG", f"Extracted title from filename for S{season_num:02d}E{episode_num:02d}: {title}")
-        
+                _log("DEBUG", f"[{instance}] Extracted title from filename for S{season_num:02d}E{episode_num:02d}: {title}")
+
         return metadata if metadata else None
-    
-    def _extract_title_from_filename(self, season_num: int, episode_num: int, season_dir: Path) -> Optional[str]:
+
+    def _extract_title_from_filename(self, season_num: int, episode_num: int, season_dir: Path, instance: str = 'sonarr') -> Optional[str]:
         """Extract episode title from video filename using regex pattern"""
         season_pattern = f"S{season_num:02d}E{episode_num:02d}"
-        
+
         try:
             # Look for video files in the season directory
             for file_path in season_dir.iterdir():
                 if file_path.is_file() and file_path.suffix.lower() in ('.mkv', '.mp4', '.avi', '.mov', '.m4v'):
                     filename = file_path.name
-                    
+
                     # Check if this file matches our season/episode
                     if season_pattern in filename.upper():
                         # Extract title using regex pattern: S01E01-Title[WEBDL-1080p]
@@ -965,15 +888,15 @@ class TVProcessor:
                             # Clean up the title
                             title = title.replace('-', ' ').strip()
                             if title:
-                                _log("DEBUG", f"Extracted title '{title}' from filename: {filename}")
+                                _log("DEBUG", f"[{instance}] Extracted title '{title}' from filename: {filename}")
                                 return title
-                            
+
         except Exception as e:
-            _log("ERROR", f"Error extracting title from filename for S{season_num:02d}E{episode_num:02d}: {e}")
-        
+            _log("ERROR", f"[{instance}] Error extracting title from filename for S{season_num:02d}E{episode_num:02d}: {e}")
+
         return None
     
-    def _get_webhook_episode_date(self, imdb_id: str, season_num: int, episode_num: int, series_metadata: Optional[Dict[str, Any]] = None, webhook_episode: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], Optional[str], str]:
+    def _get_webhook_episode_date(self, imdb_id: str, season_num: int, episode_num: int, series_metadata: Optional[Dict[str, Any]] = None, webhook_episode: Optional[Dict[str, Any]] = None, instance: str = 'sonarr') -> Tuple[Optional[str], Optional[str], str]:
         """
         Get episode date for webhook processing - database-first approach.
         
@@ -988,14 +911,14 @@ class TVProcessor:
         This prevents webhooks from overriding existing good data.
         """
         
-        # STEP 1: Check Chronarr database first
+        # Database-first: use existing date to avoid re-processing
         existing_entry = None
         existing_date = None
         try:
-            existing_entry = self.db.get_episode_date(imdb_id, season_num, episode_num)
+            existing_entry = self.db.get_episode_date(imdb_id, season_num, episode_num, instance)
             if existing_entry and existing_entry.get('dateadded'):
                 existing_date = existing_entry['dateadded']
-                _log("INFO", f"Found existing date in database for S{season_num:02d}E{episode_num:02d}: {existing_date}")
+                _log("INFO", f"[{instance}] Found existing date in database for S{season_num:02d}E{episode_num:02d}: {existing_date}")
                 
                 # For webhook processing, use existing data (fast path)
                 # Manual scans will validate below
@@ -1009,10 +932,10 @@ class TVProcessor:
                 return aired, str(existing_date), "database:existing"
                 
         except Exception as e:
-            _log("DEBUG", f"Database check failed for S{season_num:02d}E{episode_num:02d}: {e}")
-        
-        _log("INFO", f"No existing date in database for S{season_num:02d}E{episode_num:02d}, checking Sonarr import history")
-        
+            _log("DEBUG", f"[{instance}] Database check failed for S{season_num:02d}E{episode_num:02d}: {e}")
+
+        _log("INFO", f"[{instance}] No existing date in database for S{season_num:02d}E{episode_num:02d}, checking Sonarr import history")
+
         # Get aired date and episode ID from Sonarr
         aired = None
         episode_id = None
@@ -1021,100 +944,84 @@ class TVProcessor:
             if episode_data:
                 aired = episode_data.get('airDate')
                 episode_id = episode_data.get('id')
-                _log("DEBUG", f"Got aired date from Sonarr for S{season_num:02d}E{episode_num:02d}: {aired}")
-        
+                _log("DEBUG", f"[{instance}] Got aired date from Sonarr for S{season_num:02d}E{episode_num:02d}: {aired}")
+
         # STEP 2: Check Sonarr import history (authoritative source)
-        _log("INFO", f"Checking Sonarr import history for S{season_num:02d}E{episode_num:02d}")
-        
-        if episode_id and hasattr(self, 'sonarr'):
+        _log("INFO", f"[{instance}] Checking Sonarr import history for S{season_num:02d}E{episode_num:02d}")
+
+        client, _, _ = self._resolve_sonarr(instance)
+        if episode_id and client:
             try:
-                _log("DEBUG", f"Calling get_episode_import_history for episode_id: {episode_id}")
-                import_history = self.get_episode_import_history(episode_id)
-                _log("DEBUG", f"Import history result: {import_history}")
-                
+                _log("DEBUG", f"[{instance}] Calling get_episode_import_history for episode_id: {episode_id}")
+                import_history = self.get_episode_import_history(episode_id, instance=instance)
+                _log("DEBUG", f"[{instance}] Import history result: {import_history}")
+
                 if import_history:
                     # Found actual import event from Sonarr
-                    _log("INFO", f"Found Sonarr import event for S{season_num:02d}E{episode_num:02d}: {import_history}")
+                    _log("INFO", f"[{instance}] Found Sonarr import event for S{season_num:02d}E{episode_num:02d}: {import_history}")
                     return aired, import_history, "sonarr:import_history"
                 else:
                     # No import events found - this means only renames/moves exist in history
                     # The episode was already in Sonarr, just being managed/renamed
-                    _log("INFO", f"No import events found for S{season_num:02d}E{episode_num:02d} - only renames/moves in history")
-                    
+                    _log("INFO", f"[{instance}] No import events found for S{season_num:02d}E{episode_num:02d} - only renames/moves in history")
+
                     if aired:
-                        _log("INFO", f"Using air date for existing episode (rename-only history): {aired}")
+                        _log("INFO", f"[{instance}] Using air date for existing episode (rename-only history): {aired}")
                         return aired, aired + "T20:00:00", "airdate"
                     else:
-                        _log("DEBUG", f"No air date available for rename-only episode S{season_num:02d}E{episode_num:02d}")
-                    
+                        _log("DEBUG", f"[{instance}] No air date available for rename-only episode S{season_num:02d}E{episode_num:02d}")
+
             except Exception as e:
-                _log("ERROR", f"Error checking Sonarr import history for S{season_num:02d}E{episode_num:02d}: {e}")
+                _log("ERROR", f"[{instance}] Error checking Sonarr import history for S{season_num:02d}E{episode_num:02d}: {e}")
                 import traceback
                 _log("ERROR", traceback.format_exc())
         else:
             if not episode_id:
-                _log("DEBUG", f"No episode_id found for S{season_num:02d}E{episode_num:02d}")
-            if not hasattr(self, 'sonarr'):
-                _log("DEBUG", f"No sonarr client available")
-        
-        # STEP 2: No import history found - this is likely a genuinely new show
+                _log("DEBUG", f"[{instance}] No episode_id found for S{season_num:02d}E{episode_num:02d}")
+            if not client:
+                _log("DEBUG", f"[{instance}] No sonarr client available")
+
         # Check our database to avoid duplicates
-        existing = self.db.get_episode_date(imdb_id, season_num, episode_num)
+        existing = self.db.get_episode_date(imdb_id, season_num, episode_num, instance)
         if existing and existing.get('dateadded'):
-            _log("INFO", f"Episode S{season_num:02d}E{episode_num:02d} already exists in our database: {existing['dateadded']}")
+            _log("INFO", f"[{instance}] Episode S{season_num:02d}E{episode_num:02d} already exists in our database: {existing['dateadded']}")
             return existing.get('aired'), existing.get('dateadded'), existing.get('source', 'chronarr:database')
-        
+
         # STEP 3: Truly new episode - use webhook date
         dateadded = datetime.now().isoformat()
         source = "sonarr:webhook"
-        
-        _log("INFO", f"No import history and not in database - using webhook date for genuinely new episode S{season_num:02d}E{episode_num:02d}: {dateadded}")
+
+        _log("INFO", f"[{instance}] No import history and not in database - using webhook date for genuinely new episode S{season_num:02d}E{episode_num:02d}: {dateadded}")
         
         return aired, dateadded, source
     
     async def async_batch_episode_processing(
         self,
         episodes_data: List[Dict[str, Any]],
-        max_concurrent: int = 5
+        max_concurrent: int = 5,
+        instance: str = 'sonarr',
     ) -> Dict[str, Any]:
-        """
-        Process episodes from webhook data concurrently
-        
-        Args:
-            episodes_data: List of episode data from webhooks
-            max_concurrent: Maximum concurrent episode processing
-            
-        Returns:
-            Processing results summary
-        """
+        """Process episodes from webhook data concurrently."""
         async def _process_single_episode(episode_data: Dict[str, Any]) -> Dict[str, Any]:
             try:
-                # Extract episode information
                 series_path = Path(episode_data.get('series_path'))
                 season = episode_data.get('season')
                 episode = episode_data.get('episode')
                 aired = episode_data.get('aired')
                 dateadded = episode_data.get('dateadded')
-                
-                # Get IMDb ID
-                imdb_id = parse_imdb_from_path(series_path)  # Phase 3: Using imdb_utils
+
+                imdb_id = parse_imdb_from_path(series_path)
                 if not imdb_id:
                     return {"status": "error", "reason": "No IMDb ID found"}
-                
-                # NFO file operations removed - database is now the single source of truth
-                # (Phase 1: Remove NFO file write operations)
-                nfo_success = True  # Always True since we're not creating NFOs anymore
-                
-                # Update database
-                self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, "webhook", True)
-                
+
+                self.db.upsert_episode_date(imdb_id, season, episode, aired, dateadded, "webhook", True, instance=instance)
+
                 return {
                     "status": "success",
                     "season": season,
                     "episode": episode,
-                    "nfo_created": nfo_success
                 }
-                
+
             except Exception as e:
                 return {
                     "status": "error",

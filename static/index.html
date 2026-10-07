@@ -4,18 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chronarr - Database Management</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=manual-scan-ui">
+    <link rel="stylesheet" href="/static/css/styles.css?v=sidebar-nav">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
     <div class="app-container">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="header-content">
-                <h1><i class="fas fa-shield-alt"></i> Chronarr</h1>
-                <p>Database Management & Reporting</p>
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <i class="fas fa-shield-alt"></i>
+                <span>Chronarr</span>
             </div>
-            <div class="auth-status" id="auth-status" style="display: none;">
+
+            <div class="sidebar-auth" id="auth-status" style="display: none;">
                 <span class="auth-user">
                     <i class="fas fa-user"></i> <span id="auth-username">Loading...</span>
                 </span>
@@ -23,24 +24,84 @@
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </button>
             </div>
-            <nav class="nav-tabs">
-                <button class="nav-tab active" data-tab="dashboard">
+
+            <nav class="sidebar-nav">
+                <button class="sidebar-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
                     <i class="fas fa-tachometer-alt"></i> Dashboard
                 </button>
-                <button class="nav-tab" data-tab="movies">
-                    <i class="fas fa-film"></i> Movies
-                </button>
-                <button class="nav-tab" data-tab="tv">
-                    <i class="fas fa-tv"></i> TV Series
-                </button>
-                <button class="nav-tab" data-tab="reports">
+
+                <div class="nav-section-label">LIBRARY</div>
+
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('movies-sub', 'movies')">
+                        <span class="toggle-content">
+                            <i class="fas fa-film"></i> Movies
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
+                    </button>
+                    <div class="sidebar-sub-items expanded" id="movies-sub">
+                        <button class="sidebar-sub-item active" id="sub-movies-all" onclick="selectMovieInstance('')">
+                            All Movies
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('tv-sub', 'tv')">
+                        <span class="toggle-content">
+                            <i class="fas fa-tv"></i> TV Series
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
+                    </button>
+                    <div class="sidebar-sub-items expanded" id="tv-sub">
+                        <button class="sidebar-sub-item active" id="sub-tv-all" onclick="selectTvInstance('')">
+                            All Series
+                        </button>
+                    </div>
+                </div>
+
+                <button class="sidebar-item" data-tab="reports" onclick="switchTab('reports')">
                     <i class="fas fa-chart-bar"></i> Reports
                 </button>
-                <button class="nav-tab" data-tab="tools">
-                    <i class="fas fa-tools"></i> Tools
-                </button>
+
+                <div class="nav-section-label">AUTOMATION</div>
+
+                <div class="sidebar-group">
+                    <button class="sidebar-group-toggle" aria-expanded="true" onclick="toggleSidebarGroup('tools-sub')">
+                        <span class="toggle-content">
+                            <i class="fas fa-tools"></i> Tools
+                        </span>
+                        <i class="fas fa-chevron-down toggle-chevron"></i>
+                    </button>
+                    <div class="sidebar-sub-items expanded" id="tools-sub">
+                        <button class="sidebar-sub-item active" id="sub-tool-bulk-source" onclick="selectToolsPage('tool-bulk-source')">
+                            Bulk Source Update
+                        </button>
+                        <button class="sidebar-sub-item" id="sub-tool-manual-scan" onclick="selectToolsPage('tool-manual-scan')">
+                            Manual Scan
+                        </button>
+                        <button class="sidebar-sub-item" id="sub-tool-stats" onclick="selectToolsPage('tool-stats')">
+                            Database Statistics
+                        </button>
+                        <button class="sidebar-sub-item" id="sub-tool-populate" onclick="selectToolsPage('tool-populate')">
+                            Populate Database
+                        </button>
+                        <button class="sidebar-sub-item" id="sub-tool-logs" onclick="selectToolsPage('tool-logs')">
+                            Log Files
+                        </button>
+                        <button class="sidebar-sub-item" id="sub-tool-unresolved" onclick="selectToolsPage('tool-unresolved')">
+                            Unresolved Lookups
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-divider"></div>
+
+                <a href="/setup" class="sidebar-item">
+                    <i class="fas fa-plug"></i> Setup
+                </a>
             </nav>
-        </header>
+        </aside>
 
         <!-- Main Content -->
         <main class="main-content">
@@ -57,7 +118,7 @@
                             <small id="movies-with-dates">- with dates</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon tv">
                             <i class="fas fa-tv"></i>
@@ -68,7 +129,7 @@
                             <small id="episodes-total">- episodes</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon missing">
                             <i class="fas fa-exclamation-triangle"></i>
@@ -79,7 +140,7 @@
                             <small id="no-valid-source-total">- no valid source</small>
                         </div>
                     </div>
-                    
+
                     <div class="stat-card">
                         <div class="stat-icon activity">
                             <i class="fas fa-history"></i>
@@ -88,6 +149,17 @@
                             <h3 id="recent-activity">-</h3>
                             <p>Recent Activity</p>
                             <small>Last 7 days</small>
+                        </div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-icon skipped">
+                            <i class="fas fa-ban"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="skipped-total">-</h3>
+                            <p>Skipped Items</p>
+                            <small id="skipped-breakdown">- movies, - episodes</small>
                         </div>
                     </div>
                 </div>
@@ -134,7 +206,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="table-container">
                     <table class="data-table" id="movies-table">
                         <thead>
@@ -146,17 +218,18 @@
                                 <th>Source</th>
                                 <th>Date Type</th>
                                 <th>Video File</th>
+                                <th id="movies-instance-col">Instance</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="movies-tbody">
                             <tr>
-                                <td colspan="8" class="loading">Loading movies...</td>
+                                <td colspan="9" class="loading">Loading movies...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                
+
                 <div class="pagination" id="movies-pagination"></div>
             </div>
 
@@ -191,7 +264,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="table-container">
                     <table class="data-table" id="series-table">
                         <thead>
@@ -201,17 +274,18 @@
                                 <th>Episodes</th>
                                 <th>With Dates</th>
                                 <th>With Video</th>
+                                <th id="series-instance-col">Instance</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="series-tbody">
                             <tr>
-                                <td colspan="6" class="loading">Loading series...</td>
+                                <td colspan="7" class="loading">Loading series...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                
+
                 <div class="pagination" id="series-pagination"></div>
             </div>
 
@@ -287,133 +361,209 @@
                 </div>
             </div>
 
-            <!-- Tools Tab -->
-            <div class="tab-content" id="tools">
+            <!-- Tools: Bulk Source Update -->
+            <div class="tab-content" id="tool-bulk-source">
                 <div class="content-header">
-                    <h2><i class="fas fa-tools"></i> Database Tools</h2>
+                    <h2><i class="fas fa-exchange-alt"></i> Bulk Source Update</h2>
                 </div>
-
-                <div class="tools-grid">
-                    <div class="tool-card">
-                        <h3><i class="fas fa-exchange-alt"></i> Bulk Source Update</h3>
-                        <p>Change source for multiple items at once</p>
-                        <form id="bulk-update-form">
-                            <div class="form-group">
-                                <label>Media Type:</label>
-                                <select id="bulk-media-type" required>
-                                    <option value="">Select type...</option>
-                                    <option value="movies">Movies</option>
-                                    <option value="episodes">Episodes</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>From Source:</label>
-                                <input type="text" id="bulk-old-source" placeholder="e.g., no_valid_date_source" required>
-                            </div>
-                            <div class="form-group">
-                                <label>To Source:</label>
-                                <select id="bulk-new-source" required>
-                                    <option value="">Select new source...</option>
-                                    <option value="airdate">Air Date</option>
-                                    <option value="digital_release">Digital Release</option>
-                                    <option value="manual">Manual</option>
-                                    <option value="radarr:db.history.import">Radarr Import</option>
-                                    <option value="sonarr:history.import">Sonarr Import</option>
-                                </select>
-                            </div>
-                            <button type="submit" class="btn btn-warning">
-                                <i class="fas fa-exchange-alt"></i> Update Sources
-                            </button>
-                        </form>
-                    </div>
-
-                    <div class="tool-card">
-                        <h3><i class="fas fa-search"></i> Manual Scan</h3>
-                        <p>Scan specific folders or perform full library scans</p>
-                        <form id="manual-scan-form">
-                            <div class="form-group">
-                                <label>Scan Type:</label>
-                                <select id="scan-type" required>
-                                    <option value="both">TV Shows & Movies</option>
-                                    <option value="tv">TV Shows Only</option>
-                                    <option value="movies">Movies Only</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Scan Mode:</label>
-                                <select id="scan-mode" required>
-                                    <option value="smart">Smart (Recommended)</option>
-                                    <option value="full">Full Scan</option>
-                                    <option value="incomplete">Incomplete Only</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Specific Path (Optional):</label>
-                                <input type="text" id="scan-path" placeholder="e.g., /mnt/unionfs/Media/TV/Series Name" title="Leave empty for full library scan">
-                                <small>Leave empty to scan entire library</small>
-                            </div>
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-play"></i> Start Scan
-                            </button>
-                        </form>
-                        <div id="scan-status" class="scan-status" style="display: none;">
-                            <div class="scan-progress">
-                                <div class="progress-bar">
-                                    <div class="progress-fill" id="scan-progress-bar"></div>
-                                </div>
-                                <div class="scan-info">
-                                    <span id="scan-current-operation">Initializing...</span>
-                                    <span id="scan-progress-text">0%</span>
-                                </div>
-                            </div>
-                            <button class="btn btn-secondary btn-sm" onclick="stopScanPolling()">
-                                <i class="fas fa-times"></i> Hide Status
-                            </button>
+                <div class="tool-page">
+                    <p class="tool-page-desc">Change source for multiple items at once</p>
+                    <form id="bulk-update-form">
+                        <div class="form-group">
+                            <label>Media Type:</label>
+                            <select id="bulk-media-type" required>
+                                <option value="">Select type...</option>
+                                <option value="movies">Movies</option>
+                                <option value="episodes">Episodes</option>
+                            </select>
                         </div>
-                    </div>
-
-                    <div class="tool-card">
-                        <h3><i class="fas fa-database"></i> Database Statistics</h3>
-                        <p>View detailed database information</p>
-                        <div class="stats-display" id="detailed-stats">
-                            <p>Click refresh to load detailed statistics</p>
+                        <div class="form-group">
+                            <label>From Source:</label>
+                            <input type="text" id="bulk-old-source" placeholder="e.g., no_valid_date_source" required>
                         </div>
-                        <button class="btn btn-secondary" onclick="loadDetailedStats()">
-                            <i class="fas fa-sync"></i> Refresh Stats
+                        <div class="form-group">
+                            <label>To Source:</label>
+                            <select id="bulk-new-source" required>
+                                <option value="">Select new source...</option>
+                                <option value="airdate">Air Date</option>
+                                <option value="digital_release">Digital Release</option>
+                                <option value="manual">Manual</option>
+                                <option value="radarr:db.history.import">Radarr Import</option>
+                                <option value="sonarr:history.import">Sonarr Import</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-warning">
+                            <i class="fas fa-exchange-alt"></i> Update Sources
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Tools: Manual Scan -->
+            <div class="tab-content" id="tool-manual-scan">
+                <div class="content-header">
+                    <h2><i class="fas fa-search"></i> Manual Scan</h2>
+                </div>
+                <div class="tool-page">
+                    <p class="tool-page-desc">Scan specific folders or perform full library scans</p>
+                    <form id="manual-scan-form">
+                        <div class="form-group">
+                            <label>Scan Type:</label>
+                            <select id="scan-type" required>
+                                <option value="both">TV Shows & Movies</option>
+                                <option value="tv">TV Shows Only</option>
+                                <option value="movies">Movies Only</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Scan Mode:</label>
+                            <select id="scan-mode" required>
+                                <option value="smart">Smart (Recommended)</option>
+                                <option value="full">Full Scan</option>
+                                <option value="incomplete">Incomplete Only</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Specific Path (Optional):</label>
+                            <input type="text" id="scan-path" placeholder="e.g., /mnt/unionfs/Media/TV/Series Name" title="Leave empty for full library scan">
+                            <small>Leave empty to scan entire library</small>
+                        </div>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Start Scan
+                        </button>
+                    </form>
+                    <div id="scan-status" class="scan-status" style="display: none;">
+                        <div class="scan-progress">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="scan-progress-bar"></div>
+                            </div>
+                            <div class="scan-info">
+                                <span id="scan-current-operation">Initializing...</span>
+                                <span id="scan-progress-text">0%</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="stopScanPolling()">
+                            <i class="fas fa-times"></i> Hide Status
                         </button>
                     </div>
+                </div>
+            </div>
 
-                    <div class="tool-card">
-                        <h3><i class="fas fa-upload"></i> Populate Database</h3>
-                        <p>Bulk import data from Radarr/Sonarr into Chronarr database</p>
-                        <form id="populate-form">
-                            <div class="form-group">
-                                <label>Media Type:</label>
-                                <select id="populate-media-type" required>
-                                    <option value="both">Movies & TV Shows</option>
-                                    <option value="movies">Movies Only</option>
-                                    <option value="tv">TV Shows Only</option>
-                                </select>
-                            </div>
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-play"></i> Start Population
-                            </button>
-                        </form>
-                        <div id="populate-status" class="scan-status" style="display: none;">
-                            <div class="scan-progress">
-                                <div class="progress-bar">
-                                    <div class="progress-fill" id="populate-progress-bar"></div>
-                                </div>
-                                <div class="scan-info">
-                                    <span id="populate-current-operation">Running...</span>
-                                    <span id="populate-progress-text">In Progress</span>
-                                </div>
-                            </div>
-                            <div id="populate-results" class="stats-display" style="margin-top: 10px;"></div>
-                            <button class="btn btn-secondary btn-sm" onclick="stopPopulatePolling()">
-                                <i class="fas fa-times"></i> Hide Status
-                            </button>
+            <!-- Tools: Database Statistics -->
+            <div class="tab-content" id="tool-stats">
+                <div class="content-header">
+                    <h2><i class="fas fa-database"></i> Database Statistics</h2>
+                </div>
+                <div class="tool-page">
+                    <p class="tool-page-desc">View detailed database information</p>
+                    <div class="stats-display" id="detailed-stats">
+                        <p>Click refresh to load detailed statistics</p>
+                    </div>
+                    <button class="btn btn-secondary" onclick="loadDetailedStats()">
+                        <i class="fas fa-sync"></i> Refresh Stats
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tools: Populate Database -->
+            <div class="tab-content" id="tool-populate">
+                <div class="content-header">
+                    <h2><i class="fas fa-upload"></i> Populate Database</h2>
+                </div>
+                <div class="tool-page">
+                    <p class="tool-page-desc">Bulk import data from Radarr/Sonarr into Chronarr database</p>
+                    <form id="populate-form">
+                        <div class="form-group">
+                            <label>Media Type:</label>
+                            <select id="populate-media-type" required>
+                                <option value="both">Movies & TV Shows</option>
+                                <option value="movies">Movies Only</option>
+                                <option value="tv">TV Shows Only</option>
+                            </select>
                         </div>
+                        <div class="form-group">
+                            <label>Instance:</label>
+                            <select id="populate-instance" required>
+                                <option value="all">All Instances</option>
+                            </select>
+                            <p class="field-hint" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
+                                Picking a specific instance populates only that one and sets Media Type for you (a Radarr instance is always movies, a Sonarr instance always TV).
+                            </p>
+                        </div>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Start Population
+                        </button>
+                    </form>
+                    <div id="populate-status" class="scan-status" style="display: none;">
+                        <div class="scan-progress">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="populate-progress-bar"></div>
+                            </div>
+                            <div class="scan-info">
+                                <span id="populate-current-operation">Running...</span>
+                                <span id="populate-progress-text">In Progress</span>
+                            </div>
+                        </div>
+                        <div id="populate-results" class="stats-display" style="margin-top: 10px;"></div>
+                        <button class="btn btn-secondary btn-sm" onclick="stopPopulatePolling()">
+                            <i class="fas fa-times"></i> Hide Status
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tools: Log Files -->
+            <div class="tab-content" id="tool-logs">
+                <div class="content-header">
+                    <h2><i class="fas fa-file-lines"></i> Log Files</h2>
+                </div>
+                <div class="tool-page tool-page-wide">
+                    <p class="tool-page-desc">View recent activity or download the current log and its rotated backups</p>
+                    <div class="stats-display" id="log-files-list">
+                        <p>Loading&hellip;</p>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 1rem;">
+                        <label>Tail:</label>
+                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                            <select id="log-tail-file" style="width: auto;"></select>
+                            <select id="log-tail-lines" style="width: auto;">
+                                <option value="100">Last 100 lines</option>
+                                <option value="200" selected>Last 200 lines</option>
+                                <option value="500">Last 500 lines</option>
+                                <option value="1000">Last 1000 lines</option>
+                            </select>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="refreshLogTail()">
+                                <i class="fas fa-sync"></i> Refresh
+                            </button>
+                            <label style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.3rem; margin: 0;">
+                                <input type="checkbox" id="log-tail-auto-refresh" onchange="toggleLogTailAutoRefresh()" style="width: auto;">
+                                Auto-refresh (5s)
+                            </label>
+                        </div>
+                    </div>
+                    <pre id="log-tail-output" style="max-height: 65vh; overflow: auto; background: var(--bg-secondary, #1a1a1a); color: var(--text-primary, #ddd); padding: 0.75rem; border-radius: 4px; font-size: 0.78rem; line-height: 1.4; white-space: pre-wrap; word-break: break-all; margin-top: 0.5rem;">Select a file above and click Refresh.</pre>
+                </div>
+            </div>
+
+            <!-- Tools: Unresolved Lookups -->
+            <div class="tab-content" id="tool-unresolved">
+                <div class="content-header">
+                    <h2><i class="fas fa-magnifying-glass-minus"></i> Unresolved Lookups</h2>
+                </div>
+                <div class="tool-page tool-page-wide">
+                    <p class="tool-page-desc">Movies and episodes the Emby/Jellyfin plugin asked about that Chronarr answered "not found" for — persists across scans so these don't have to be caught live in the logs. Clears itself automatically once a lookup for the same item succeeds.</p>
+                    <div class="form-group" style="margin-top: 0.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                        <label style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.3rem; margin: 0;">
+                            <input type="checkbox" id="unresolved-show-dismissed" onchange="loadUnresolvedLookups()" style="width: auto;">
+                            Show dismissed
+                        </label>
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="dismissAllUnresolvedLookups()">
+                            <i class="fas fa-eye-slash"></i> Dismiss All
+                        </button>
+                    </div>
+                    <div class="stats-display" id="unresolved-lookups-list" style="margin-top: 0.5rem;">
+                        <p>Loading&hellip;</p>
                     </div>
                 </div>
             </div>
@@ -451,13 +601,14 @@
                     <input type="hidden" id="edit-season">
                     <input type="hidden" id="edit-episode">
                     <input type="hidden" id="edit-media-type">
-                    
+                    <input type="hidden" id="edit-instance">
+
                     <div class="form-group">
                         <label for="edit-dateadded">Date Added:</label>
                         <input type="datetime-local" id="edit-dateadded">
                         <small>Leave empty to clear date</small>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="edit-source">Source:</label>
                         <select id="edit-source" required>
@@ -469,7 +620,7 @@
                             <option value="no_valid_date_source">No Valid Source</option>
                         </select>
                     </div>
-                    
+
                     <div class="form-actions">
                         <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                         <button type="submit" class="btn btn-primary">Save Changes</button>
@@ -482,6 +633,6 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=manual-scan-ui"></script>
+    <script src="/static/js/app.js?v=unresolved-lookups-2"></script>
 </body>
 </html>

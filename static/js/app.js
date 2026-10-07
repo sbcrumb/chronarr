@@ -5,57 +5,134 @@ let currentTab = 'dashboard';
 let currentMoviesPage = 1;
 let currentSeriesPage = 1;
 let dashboardData = null;
+let currentMovieInstance = '';
+let currentTvInstance = '';
+
+// Instance badge color palette — assigned in order as instances are discovered
+const instanceColorMap = {};
+const instanceColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
+let instanceColorIndex = 0;
+
+function getInstanceColor(name) {
+    if (!name) return '#6b7280';
+    if (!instanceColorMap[name]) {
+        instanceColorMap[name] = instanceColors[instanceColorIndex++ % instanceColors.length];
+    }
+    return instanceColorMap[name];
+}
+
+function instanceBadge(name) {
+    if (!name) return '<span class="text-muted">-</span>';
+    const c = getInstanceColor(name);
+    return `<span class="instance-badge" style="background:${c}1a;color:${c};border-color:${c}40">${escapeHtml(name)}</span>`;
+}
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
-    initializeTabs();
     initializeEventListeners();
-    checkAuthStatus();  // Check authentication status on page load
+    checkAuthStatus();
     loadDashboard();
     loadSeriesSources();
+    buildSidebarInstances();
 });
 
 // Tab management
-function initializeTabs() {
-    const tabButtons = document.querySelectorAll('.nav-tab');
-    const tabContents = document.querySelectorAll('.tab-content');
-    
-    tabButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            const tabName = this.dataset.tab;
-            switchTab(tabName);
-        });
-    });
-}
-
 function switchTab(tabName) {
-    // Update button states
-    document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-    
+    // Update sidebar item active states
+    document.querySelectorAll('.sidebar-item[data-tab]').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = document.querySelector(`.sidebar-item[data-tab="${tabName}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+
     // Update content
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     document.getElementById(tabName).classList.add('active');
-    
+
     currentTab = tabName;
-    
-    // Load tab-specific data
+
+    if (tabName !== 'tool-logs') {
+        // Don't keep polling the log tail in the background once the user
+        // has navigated away from the page that shows it.
+        stopLogTailAutoRefresh();
+    }
+
     switch(tabName) {
-        case 'dashboard':
-            loadDashboard();
-            break;
-        case 'movies':
-            loadMovies();
-            break;
-        case 'tv':
-            loadSeries();
-            break;
-        case 'reports':
-            loadReport();
-            break;
-        case 'tools':
-            loadDetailedStats();
-            break;
+        case 'dashboard': loadDashboard(); break;
+        case 'movies': loadMovies(); break;
+        case 'tv': loadSeries(); break;
+        case 'reports': loadReport(); break;
+        case 'tool-stats': loadDetailedStats(); break;
+        case 'tool-populate': loadPopulateInstanceOptions(); break;
+        case 'tool-logs': loadLogFiles(); break;
+        case 'tool-unresolved': loadUnresolvedLookups(); break;
+    }
+}
+
+// Sidebar instance navigation
+function toggleSidebarGroup(subId, tabName) {
+    const sub = document.getElementById(subId);
+    const isExpanded = sub.classList.toggle('expanded');
+    const toggle = sub.closest('.sidebar-group').querySelector('.sidebar-group-toggle');
+    toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+    if (tabName) switchTab(tabName);
+}
+
+function selectToolsPage(page) {
+    document.querySelectorAll('#tools-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(`sub-${page}`);
+    if (target) target.classList.add('active');
+    switchTab(page);
+}
+
+function selectMovieInstance(name) {
+    currentMovieInstance = name;
+    currentMoviesPage = 1;
+    document.querySelectorAll('#movies-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(name ? `sub-movies-${name}` : 'sub-movies-all');
+    if (target) target.classList.add('active');
+    switchTab('movies');
+}
+
+function selectTvInstance(name) {
+    currentTvInstance = name;
+    currentSeriesPage = 1;
+    document.querySelectorAll('#tv-sub .sidebar-sub-item').forEach(btn => btn.classList.remove('active'));
+    const target = document.getElementById(name ? `sub-tv-${name}` : 'sub-tv-all');
+    if (target) target.classList.add('active');
+    switchTab('tv');
+}
+
+async function buildSidebarInstances() {
+    try {
+        const data = await apiCall('/api/instances');
+        const radarrNames = (data.radarr || []).map(i => i.name);
+        const sonarrNames = (data.sonarr || []).map(i => i.name);
+
+        // Pre-assign colors so badges match sidebar dots
+        [...radarrNames, ...sonarrNames].forEach(n => getInstanceColor(n));
+
+        const moviesSub = document.getElementById('movies-sub');
+        radarrNames.forEach(name => {
+            const color = getInstanceColor(name);
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-sub-item';
+            btn.id = `sub-movies-${name}`;
+            btn.onclick = () => selectMovieInstance(name);
+            btn.innerHTML = `<span class="instance-dot" style="background:${color}"></span>${escapeHtml(name)}`;
+            moviesSub.appendChild(btn);
+        });
+
+        const tvSub = document.getElementById('tv-sub');
+        sonarrNames.forEach(name => {
+            const color = getInstanceColor(name);
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-sub-item';
+            btn.id = `sub-tv-${name}`;
+            btn.onclick = () => selectTvInstance(name);
+            btn.innerHTML = `<span class="instance-dot" style="background:${color}"></span>${escapeHtml(name)}`;
+            tvSub.appendChild(btn);
+        });
+    } catch (error) {
+        console.error('Failed to build sidebar instances:', error);
     }
 }
 
@@ -78,6 +155,10 @@ function initializeEventListeners() {
     document.getElementById('bulk-update-form').addEventListener('submit', handleBulkUpdate);
     document.getElementById('manual-scan-form').addEventListener('submit', handleManualScan);
     document.getElementById('populate-form').addEventListener('submit', handlePopulateDatabase);
+    const populateInstanceSelect = document.getElementById('populate-instance');
+    if (populateInstanceSelect) {
+        populateInstanceSelect.addEventListener('change', syncPopulateMediaTypeToInstance);
+    }
 }
 
 // API calls
@@ -141,6 +222,11 @@ function updateDashboardStats() {
     document.getElementById('no-valid-source-total').textContent = `${moviesWithoutDates} movies, ${episodesWithoutDates} episodes without dates`;
     
     document.getElementById('recent-activity').textContent = dashboardData.recent_activity_count || 0;
+
+    const moviesSkipped = dashboardData.movies_skipped || 0;
+    const episodesSkipped = dashboardData.episodes_skipped || 0;
+    document.getElementById('skipped-total').textContent = dashboardData.total_skipped || (moviesSkipped + episodesSkipped);
+    document.getElementById('skipped-breakdown').textContent = `${moviesSkipped} movies, ${episodesSkipped} episodes`;
 }
 
 function updateDashboardCharts() {
@@ -198,19 +284,21 @@ async function loadMovies(page = 1) {
     const imdbSearch = document.getElementById('movies-imdb-search').value;
     const hasDate = document.getElementById('movies-filter-date').value;
     const sourceFilter = document.getElementById('movies-filter-source').value;
-    
+    const instanceFilter = currentMovieInstance;
+
     const skip = (page - 1) * 100;
     console.log(`DEBUG: loadMovies called with page=${page}, calculated skip=${skip}`);
-    
+
     const params = new URLSearchParams({
         skip: skip,
         limit: 100
     });
-    
+
     if (search) params.append('search', search);
     if (imdbSearch) params.append('imdb_search', imdbSearch);
     if (hasDate) params.append('has_date', hasDate);
     if (sourceFilter) params.append('source_filter', sourceFilter);
+    if (instanceFilter) params.append('instance', instanceFilter);
     
     try {
         const data = await apiCall(`/api/movies?${params}`);
@@ -227,7 +315,7 @@ function updateMoviesTable(data) {
     const tbody = document.getElementById('movies-tbody');
     
     if (!data.movies || data.movies.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center">No movies found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center">No movies found</td></tr>';
         return;
     }
     
@@ -285,14 +373,15 @@ function updateMoviesTable(data) {
                 <td><span class="badge badge-secondary">${movie.source_description || movie.source || 'Unknown'}</span></td>
                 <td><span class="badge ${dateTypeBadge}">${dateType}</span></td>
                 <td>${hasVideoBadge}</td>
+                <td>${instanceBadge(movie.instance)}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}')">
+                    <button class="btn btn-sm btn-primary" onclick="editMovie('${movie.imdb_id}', '${dateadded}', '${movie.source || ''}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-edit"></i> Edit
                     </button>
-                    <button class="btn btn-sm btn-secondary" onclick="debugMovie('${movie.imdb_id}')" title="Debug Data">
+                    <button class="btn btn-sm btn-secondary" onclick="debugMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')" title="Debug Data">
                         <i class="fas fa-bug"></i>
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteMovie('${movie.imdb_id}')" style="margin-left: 5px;" title="Delete Movie">
+                    <button class="btn btn-sm btn-danger" onclick="deleteMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')" style="margin-left: 5px;" title="Delete Movie">
                         <i class="fas fa-trash"></i> Delete
                     </button>
                 </td>
@@ -360,6 +449,7 @@ async function loadSeriesSources() {
     }
 }
 
+
 function refreshMovies() {
     loadMovies(isNaN(currentMoviesPage) ? 1 : currentMoviesPage);
 }
@@ -375,19 +465,21 @@ async function loadSeries(page = 1) {
     const imdbSearch = document.getElementById('series-imdb-search').value;
     const dateFilter = document.getElementById('series-filter-date').value;
     const sourceFilter = document.getElementById('series-filter-source').value;
-    
+    const instanceFilter = currentTvInstance;
+
     const skip = (page - 1) * 50;
     console.log(`DEBUG: loadSeries called with page=${page}, calculated skip=${skip}`);
-    
+
     const params = new URLSearchParams({
         skip: skip,
         limit: 50
     });
-    
+
     if (search) params.append('search', search);
     if (imdbSearch) params.append('imdb_search', imdbSearch);
     if (dateFilter) params.append('date_filter', dateFilter);
     if (sourceFilter) params.append('source_filter', sourceFilter);
+    if (instanceFilter) params.append('instance', instanceFilter);
     
     try {
         const data = await apiCall(`/api/series?${params}`);
@@ -403,14 +495,14 @@ function updateSeriesTable(data) {
     const tbody = document.getElementById('series-tbody');
     
     if (!data.series || data.series.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center">No series found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center">No series found</td></tr>';
         return;
     }
-    
+
     tbody.innerHTML = data.series.map(series => {
-        const progressPercent = series.total_episodes > 0 ? 
+        const progressPercent = series.total_episodes > 0 ?
             ((series.episodes_with_dates / series.total_episodes) * 100).toFixed(1) : 0;
-        
+
         return `
             <tr>
                 <td>${escapeHtml(series.title)}</td>
@@ -421,9 +513,13 @@ function updateSeriesTable(data) {
                     <small class="text-muted">(${progressPercent}%)</small>
                 </td>
                 <td>${series.episodes_with_video}</td>
+                <td>${instanceBadge(series.instance)}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}')">
+                    <button class="btn btn-sm btn-primary" onclick="viewSeriesEpisodes('${series.imdb_id}', '${series.instance || 'sonarr'}')">
                         <i class="fas fa-list"></i> Episodes
+                    </button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteSeries('${series.imdb_id}', '${series.instance || 'sonarr'}', ${JSON.stringify(series.title || series.imdb_id).replace(/"/g, '&quot;')})" style="margin-left: 5px;" title="Delete Series">
+                        <i class="fas fa-trash"></i> Delete
                     </button>
                 </td>
             </tr>
@@ -462,9 +558,9 @@ function refreshSeries() {
     loadSeries(isNaN(currentSeriesPage) ? 1 : currentSeriesPage);
 }
 
-async function viewSeriesEpisodes(imdbId) {
+async function viewSeriesEpisodes(imdbId, instance = 'sonarr') {
     try {
-        const data = await apiCall(`/api/series/${imdbId}/episodes`);
+        const data = await apiCall(`/api/series/${imdbId}/episodes?instance=${encodeURIComponent(instance)}`);
         showEpisodesModal(data);
     } catch (error) {
         console.error('Failed to load episodes:', error);
@@ -542,7 +638,7 @@ function showEpisodesModal(data) {
                                         `<td>${dateadded}</td>`;
                                     
                                     return `
-                                        <tr class="${rowClass}" data-has-date="${!missingDate}" data-imdb="${data.series.imdb_id}" data-season="${episode.season}" data-episode="${episode.episode}">
+                                        <tr class="${rowClass}" data-has-date="${!missingDate}" data-imdb="${data.series.imdb_id}" data-season="${episode.season}" data-episode="${episode.episode}" data-instance="${episode.instance || 'sonarr'}">
                                             <td>
                                                 <input type="checkbox" class="episode-checkbox" onchange="updateBulkDeleteButton()">
                                             </td>
@@ -552,10 +648,10 @@ function showEpisodesModal(data) {
                                             <td><span class="badge badge-secondary">${episode.source_description || episode.source || 'Unknown'}</span></td>
                                             <td>${hasVideoBadge}</td>
                                             <td>
-                                                <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}')">
+                                                <button class="btn btn-sm btn-primary" onclick="editEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${dateadded}', '${episode.source || ''}', '${episode.instance || 'sonarr'}')">
                                                     <i class="fas fa-edit"></i> Edit
                                                 </button>
-                                                <button class="btn btn-sm btn-danger" onclick="deleteEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode})" style="margin-left: 5px;">
+                                                <button class="btn btn-sm btn-danger" onclick="deleteEpisode('${data.series.imdb_id}', ${episode.season}, ${episode.episode}, '${episode.instance || 'sonarr'}')" style="margin-left: 5px;">
                                                     <i class="fas fa-trash"></i> Delete
                                                 </button>
                                             </td>
@@ -635,7 +731,7 @@ function updateReportTables(data) {
                 <td>${movie.released || '-'}</td>
                 <td><span class="badge badge-warning">${movie.source_description || movie.source || 'Unknown'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-success" onclick="smartFixMovie('${movie.imdb_id}')">
+                    <button class="btn btn-sm btn-success" onclick="smartFixMovie('${movie.imdb_id}', '${movie.instance || 'radarr'}')">
                         <i class="fas fa-magic"></i> Smart Fix
                     </button>
                 </td>
@@ -656,7 +752,7 @@ function updateReportTables(data) {
                 <td>${episode.aired || '-'}</td>
                 <td><span class="badge badge-warning">${episode.source_description || episode.source || 'Unknown'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-success" onclick="smartFixEpisode('${episode.imdb_id}', ${episode.season}, ${episode.episode})">
+                    <button class="btn btn-sm btn-success" onclick="smartFixEpisode('${episode.imdb_id}', ${episode.season}, ${episode.episode}, '${episode.instance || 'sonarr'}')">
                         <i class="fas fa-magic"></i> Smart Fix
                     </button>
                 </td>
@@ -670,36 +766,39 @@ function refreshReport() {
 }
 
 // Smart fix functions
-async function smartFixMovie(imdbId) {
+async function smartFixMovie(imdbId, instance) {
+    instance = instance || 'radarr';
     try {
-        console.log('🔍 SMART FIX: Loading options for movie', imdbId);
-        const options = await apiCall(`/api/movies/${imdbId}/date-options`);
+        console.log('🔍 SMART FIX: Loading options for movie', imdbId, 'instance', instance);
+        const options = await apiCall(`/api/movies/${imdbId}/date-options?instance=${encodeURIComponent(instance)}`);
         console.log('🔍 SMART FIX: Received options:', options);
-        showSmartFixModal('movie', options);
+        showSmartFixModal('movie', options, instance);
     } catch (error) {
         console.error('Failed to load movie options:', error);
         showToast('Failed to load movie options', 'error');
     }
 }
 
-async function smartFixEpisode(imdbId, season, episode) {
+async function smartFixEpisode(imdbId, season, episode, instance) {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('smartFixEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
+    instance = instance || 'sonarr';
     try {
-        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options`);
-        showSmartFixModal('episode', options);
+        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options?instance=${encodeURIComponent(instance)}`);
+        showSmartFixModal('episode', options, instance);
     } catch (error) {
         console.error('Failed to load episode options:', error);
         showToast('Failed to load episode options', 'error');
     }
 }
 
-function showSmartFixModal(mediaType, options) {
+function showSmartFixModal(mediaType, options, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     console.log('🔍 SMART FIX: Showing modal for', mediaType, 'with options:', options);
     
     const modal = document.getElementById('smart-fix-modal');
@@ -751,7 +850,7 @@ function showSmartFixModal(mediaType, options) {
     optionsHtml += `
         <div class="form-actions">
             <button type="button" class="btn btn-secondary" onclick="closeSmartFixModal()">Cancel</button>
-            <button type="button" class="btn btn-success" onclick="applySmartFix('${mediaType}', ${JSON.stringify(options).replace(/'/g, "&apos;")})">
+            <button type="button" class="btn btn-success" onclick="applySmartFix('${mediaType}', ${JSON.stringify(options).replace(/'/g, "&apos;")}, '${instance}')">
                 <i class="fas fa-magic"></i> Apply Fix
             </button>
         </div>
@@ -765,7 +864,8 @@ function closeSmartFixModal() {
     document.getElementById('smart-fix-modal').classList.remove('active');
 }
 
-async function applySmartFix(mediaType, options) {
+async function applySmartFix(mediaType, options, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const selectedRadio = document.querySelector('input[name="date-option"]:checked');
     if (!selectedRadio) {
         showToast('Please select a date option', 'warning');
@@ -827,9 +927,9 @@ async function applySmartFix(mediaType, options) {
     
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(options.imdb_id, dateadded, source);
+            await updateMovieDate(options.imdb_id, dateadded, source, instance);
         } else {
-            await updateEpisodeDate(options.imdb_id, options.season, options.episode, dateadded, source);
+            await updateEpisodeDate(options.imdb_id, options.season, options.episode, dateadded, source, instance);
         }
         closeSmartFixModal();
     } catch (error) {
@@ -916,19 +1016,21 @@ async function handleBulkUpdate(event) {
 }
 
 // Edit modal functions
-async function editMovie(imdbId, dateadded, source) {
+async function editMovie(imdbId, dateadded, source, instance) {
+    instance = instance || 'radarr';
     try {
         // Load movie options to populate available dates
-        const options = await apiCall(`/api/movies/${imdbId}/date-options`);
-        showEnhancedEditModal('movie', options, dateadded, source);
+        const options = await apiCall(`/api/movies/${imdbId}/date-options?instance=${encodeURIComponent(instance)}`);
+        showEnhancedEditModal('movie', options, dateadded, source, instance);
     } catch (error) {
         console.error('Failed to load movie options for edit:', error);
         // Fallback to basic edit modal
-        showBasicEditModal('movie', imdbId, dateadded, source);
+        showBasicEditModal('movie', imdbId, dateadded, source, null, null, instance);
     }
 }
 
-function showEnhancedEditModal(mediaType, options, currentDateadded, currentSource) {
+function showEnhancedEditModal(mediaType, options, currentDateadded, currentSource, instance) {
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const modal = document.getElementById('edit-modal');
     const title = document.getElementById('modal-title');
     const modalBody = document.querySelector('#edit-modal .modal-body');
@@ -946,6 +1048,7 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
     let formHtml = `
         <input type="hidden" id="edit-imdb-id" value="${options.imdb_id}">
         <input type="hidden" id="edit-media-type" value="${mediaType}">
+        <input type="hidden" id="edit-instance" value="${instance}">
         ${mediaType === 'episode' ? `
             <input type="hidden" id="edit-season" value="${options.season}">
             <input type="hidden" id="edit-episode" value="${options.episode}">
@@ -1028,11 +1131,13 @@ function showEnhancedEditModal(mediaType, options, currentDateadded, currentSour
     modal.classList.add('active');
 }
 
-function showBasicEditModal(mediaType, imdbId, dateadded, source) {
+function showBasicEditModal(mediaType, imdbId, dateadded, source, season, episode, instance) {
     // Fallback to original basic edit modal
+    instance = instance || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     document.getElementById('modal-title').textContent = `Edit ${mediaType}: ${imdbId}`;
     document.getElementById('edit-imdb-id').value = imdbId;
     document.getElementById('edit-media-type').value = mediaType;
+    document.getElementById('edit-instance').value = instance;
     
     if (dateadded && dateadded !== '-') {
         try {
@@ -1086,11 +1191,12 @@ function updateEditDateFromOption(optionIndex, option) {
 
 async function handleEnhancedEditSubmit(event) {
     event.preventDefault();
-    
+
     const modal = document.getElementById('edit-modal');
     const options = JSON.parse(modal.dataset.options);
     const imdbId = options.imdb_id;
     const mediaType = document.getElementById('edit-media-type').value;
+    const instance = document.getElementById('edit-instance')?.value || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const dateadded = document.getElementById('edit-dateadded').value;
     const source = document.getElementById('edit-source').value;
     
@@ -1110,11 +1216,11 @@ async function handleEnhancedEditSubmit(event) {
     
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(imdbId, isoDateadded, source);
+            await updateMovieDate(imdbId, isoDateadded, source, instance);
         } else {
-            await updateEpisodeDate(imdbId, options.season, options.episode, isoDateadded, source);
+            await updateEpisodeDate(imdbId, options.season, options.episode, isoDateadded, source, instance);
         }
-        
+
         closeModal();
     } catch (error) {
         console.error('Enhanced edit failed:', error);
@@ -1122,22 +1228,23 @@ async function handleEnhancedEditSubmit(event) {
     }
 }
 
-async function editEpisode(imdbId, season, episode, dateadded, source) {
+async function editEpisode(imdbId, season, episode, dateadded, source, instance) {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('editEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
+    instance = instance || 'sonarr';
     try {
         // Load episode options to populate available dates
-        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options`);
-        showEnhancedEditModal('episode', options, dateadded, source);
+        const options = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}/date-options?instance=${encodeURIComponent(instance)}`);
+        showEnhancedEditModal('episode', options, dateadded, source, instance);
     } catch (error) {
         console.error('Failed to load episode options for edit:', error);
         // Fallback to basic edit modal
-        showBasicEditModal('episode', imdbId, dateadded, source, season, episode);
+        showBasicEditModal('episode', imdbId, dateadded, source, season, episode, instance);
     }
 }
 
@@ -1147,24 +1254,25 @@ function closeModal() {
 
 async function handleEditSubmit(event) {
     event.preventDefault();
-    
+
     const imdbId = document.getElementById('edit-imdb-id').value;
     const mediaType = document.getElementById('edit-media-type').value;
+    const instance = document.getElementById('edit-instance')?.value || (mediaType === 'movie' ? 'radarr' : 'sonarr');
     const season = document.getElementById('edit-season').value;
     const episode = document.getElementById('edit-episode').value;
     const dateadded = document.getElementById('edit-dateadded').value;
     const source = document.getElementById('edit-source').value;
-    
+
     // Convert datetime-local to ISO string
     const isoDateadded = dateadded ? new Date(dateadded).toISOString() : null;
-    
+
     try {
         if (mediaType === 'movie') {
-            await updateMovieDate(imdbId, isoDateadded, source);
+            await updateMovieDate(imdbId, isoDateadded, source, instance);
         } else {
-            await updateEpisodeDate(imdbId, parseInt(season), parseInt(episode), isoDateadded, source);
+            await updateEpisodeDate(imdbId, parseInt(season), parseInt(episode), isoDateadded, source, instance);
         }
-        
+
         closeModal();
     } catch (error) {
         console.error('Update failed:', error);
@@ -1172,13 +1280,15 @@ async function handleEditSubmit(event) {
 }
 
 // Update functions
-async function updateMovieDate(imdbId, dateadded, source) {
+async function updateMovieDate(imdbId, dateadded, source, instance) {
+    instance = instance || 'radarr';
     try {
         const result = await apiCall(`/api/movies/${imdbId}`, {
             method: 'PUT',
             body: JSON.stringify({
                 dateadded: dateadded,
-                source: source
+                source: source,
+                instance: instance
             })
         });
         
@@ -1194,13 +1304,15 @@ async function updateMovieDate(imdbId, dateadded, source) {
     }
 }
 
-async function updateEpisodeDate(imdbId, season, episode, dateadded, source) {
+async function updateEpisodeDate(imdbId, season, episode, dateadded, source, instance) {
+    instance = instance || 'sonarr';
     try {
         const result = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}`, {
             method: 'PUT',
             body: JSON.stringify({
                 dateadded: dateadded,
-                source: source
+                source: source,
+                instance: instance
             })
         });
         
@@ -1215,7 +1327,7 @@ async function updateEpisodeDate(imdbId, season, episode, dateadded, source) {
         const episodesModal = document.getElementById('episodes-modal');
         if (episodesModal) {
             closeEpisodesModal();
-            setTimeout(() => viewSeriesEpisodes(imdbId), 100);
+            setTimeout(() => viewSeriesEpisodes(imdbId, instance), 100);
         }
         
     } catch (error) {
@@ -1279,9 +1391,9 @@ function showToast(message, type = 'info') {
 }
 
 // Debug function
-async function debugMovie(imdbId) {
+async function debugMovie(imdbId, instance = 'radarr') {
     try {
-        const data = await apiCall(`/api/debug/movie/${imdbId}/raw`);
+        const data = await apiCall(`/api/debug/movie/${imdbId}/raw?instance=${encodeURIComponent(instance)}`);
         
         const debugInfo = `
 DEBUG INFO for ${imdbId}:
@@ -1311,23 +1423,23 @@ Analysis:
 }
 
 // Episode deletion functionality
-async function deleteEpisode(imdbId, season, episode) {
+async function deleteEpisode(imdbId, season, episode, instance = 'sonarr') {
     // Validate parameters
     if (!imdbId || season === undefined || season === null || episode === undefined || episode === null) {
         console.error('deleteEpisode: Invalid parameters:', {imdbId, season, episode});
         showToast('Invalid episode parameters', 'error');
         return;
     }
-    
+
     const episodeStr = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
-    
+
     // Confirmation dialog
     if (!confirm(`⚠️ Delete Episode ${episodeStr}?\n\nThis will permanently remove the episode from the database.\n\nAre you sure you want to continue?`)) {
         return;
     }
-    
+
     try {
-        const response = await fetch(`/api/episodes/${imdbId}/${season}/${episode}`, {
+        const response = await fetch(`/api/episodes/${imdbId}/${season}/${episode}?instance=${encodeURIComponent(instance)}`, {
             method: 'DELETE',
             headers: {
                 'Content-Type': 'application/json'
@@ -1363,14 +1475,14 @@ async function deleteEpisode(imdbId, season, episode) {
 }
 
 // Movie deletion functionality
-async function deleteMovie(imdbId) {
+async function deleteMovie(imdbId, instance = 'radarr') {
     // Confirmation dialog
     if (!confirm(`⚠️ Delete Movie?\n\nThis will permanently remove the movie (${imdbId}) from the database.\n\nAre you sure you want to continue?`)) {
         return;
     }
-    
+
     try {
-        const response = await fetch(`/api/movies/${imdbId}`, {
+        const response = await fetch(`/api/movies/${imdbId}?instance=${encodeURIComponent(instance)}`, {
             method: 'DELETE',
             headers: {
                 'Content-Type': 'application/json'
@@ -1392,6 +1504,33 @@ async function deleteMovie(imdbId) {
         
     } catch (error) {
         console.error('Delete movie failed:', error);
+        showToast(`❌ Delete failed: ${error.message}`, 'error');
+    }
+}
+
+async function deleteSeries(imdbId, instance, title) {
+    if (!confirm(`⚠️ Delete Series?\n\n"${title}"\n\nThis will permanently remove the series and ALL its episodes from the database.\n\nAre you sure you want to continue?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/series/${imdbId}?instance=${encodeURIComponent(instance)}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            showToast(`✅ Series deleted (${result.episodes_deleted} episode(s) removed)`, 'success');
+            loadSeries(currentSeriesPage);
+        } else {
+            const errorMsg = result.message || result.detail || result.error || 'Unknown error';
+            showToast(`❌ Failed to delete series: ${errorMsg}`, 'error');
+        }
+
+    } catch (error) {
+        console.error('Delete series failed:', error);
         showToast(`❌ Delete failed: ${error.message}`, 'error');
     }
 }
@@ -1706,9 +1845,10 @@ async function bulkDeleteSelected() {
         const imdbId = row.getAttribute('data-imdb');
         const season = parseInt(row.getAttribute('data-season'));
         const episode = parseInt(row.getAttribute('data-episode'));
-        
+        const instance = row.getAttribute('data-instance') || 'sonarr';
+
         try {
-            const response = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}`, {
+            const response = await apiCall(`/api/episodes/${imdbId}/${season}/${episode}?instance=${encodeURIComponent(instance)}`, {
                 method: 'DELETE'
             });
             
@@ -1748,10 +1888,279 @@ async function bulkDeleteSelected() {
 // Database Population Functions
 // ---------------------------
 
+// Fills the Instance dropdown on the Populate Database card from the same
+// /api/instances data the sidebar already uses — "All Instances" plus one
+// entry per configured Radarr/Sonarr instance, grouped by type so it's
+// obvious which is which once there's more than a couple.
+async function loadPopulateInstanceOptions() {
+    const select = document.getElementById('populate-instance');
+    if (!select) return;
+
+    try {
+        const data = await apiCall('/api/instances');
+        const radarrNames = (data.radarr || []).map(i => i.name);
+        const sonarrNames = (data.sonarr || []).map(i => i.name);
+
+        // Keep "All Instances", drop everything else and rebuild — this
+        // gets called every time the Tools tab is opened, so it has to be
+        // safe to run repeatedly without piling up duplicate options.
+        select.innerHTML = '<option value="all">All Instances</option>';
+
+        if (radarrNames.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Radarr';
+            radarrNames.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                opt.dataset.mediaType = 'movies';
+                group.appendChild(opt);
+            });
+            select.appendChild(group);
+        }
+
+        if (sonarrNames.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Sonarr';
+            sonarrNames.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                opt.dataset.mediaType = 'tv';
+                group.appendChild(opt);
+            });
+            select.appendChild(group);
+        }
+
+        // Reset in case the last selection here no longer exists (e.g. an
+        // instance was deleted since this was last loaded).
+        syncPopulateMediaTypeToInstance();
+    } catch (error) {
+        console.error('Failed to load instances for populate dropdown:', error);
+        // Leave just "All Instances" — populate still works, just without
+        // the ability to target a single instance until this loads.
+    }
+}
+
+function syncPopulateMediaTypeToInstance() {
+    const instanceSelect = document.getElementById('populate-instance');
+    const mediaTypeSelect = document.getElementById('populate-media-type');
+    if (!instanceSelect || !mediaTypeSelect) return;
+
+    const selectedOption = instanceSelect.options[instanceSelect.selectedIndex];
+    const mediaType = selectedOption ? selectedOption.dataset.mediaType : null;
+
+    if (instanceSelect.value !== 'all' && mediaType) {
+        // A specific instance can only ever be one media type — a Radarr
+        // instance is movies, a Sonarr instance is TV. Lock the Media Type
+        // dropdown to match instead of making the user keep the two in sync
+        // by hand (picking the wrong one used to silently populate nothing).
+        mediaTypeSelect.value = mediaType;
+        mediaTypeSelect.disabled = true;
+    } else {
+        mediaTypeSelect.disabled = false;
+    }
+}
+
+// --- Log Files (Tools tab) ---
+let logTailAutoRefreshTimer = null;
+
+function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+async function loadLogFiles() {
+    const listEl = document.getElementById('log-files-list');
+    const fileSelect = document.getElementById('log-tail-file');
+    if (!listEl || !fileSelect) return;
+
+    try {
+        const data = await apiCall('/api/logs');
+        const files = data.files || [];
+
+        if (files.length === 0) {
+            listEl.innerHTML = '<p class="empty-note">No log files found.</p>';
+            fileSelect.innerHTML = '';
+            return;
+        }
+
+        listEl.innerHTML = `
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr><th>File</th><th>Size</th><th>Modified</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                    ${files.map(f => `
+                        <tr>
+                            <td>${escapeHtml(f.filename)}${f.is_current ? ' <span class="badge badge-success">current</span>' : ''}</td>
+                            <td>${formatBytes(f.size_bytes)}</td>
+                            <td>${formatDateTime(f.modified_at)}</td>
+                            <td>
+                                <a class="btn btn-sm btn-secondary" href="/api/logs/${encodeURIComponent(f.filename)}/download">
+                                    <i class="fas fa-download"></i> Download
+                                </a>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+
+        // Preserve the current tail-file selection across refreshes (this is
+        // called every time the Tools tab is opened) if it still exists.
+        const previousSelection = fileSelect.value;
+        fileSelect.innerHTML = files.map(f =>
+            `<option value="${escapeHtml(f.filename)}">${escapeHtml(f.filename)}${f.is_current ? ' (current)' : ''}</option>`
+        ).join('');
+        if (files.some(f => f.filename === previousSelection)) {
+            fileSelect.value = previousSelection;
+        }
+    } catch (error) {
+        listEl.innerHTML = '<p class="empty-note">Failed to load log files.</p>';
+    }
+}
+
+async function refreshLogTail() {
+    const fileSelect = document.getElementById('log-tail-file');
+    const linesSelect = document.getElementById('log-tail-lines');
+    const output = document.getElementById('log-tail-output');
+    if (!fileSelect || !fileSelect.value || !output) return;
+
+    // Only follow to the bottom if the viewer was already there (or close to
+    // it) before this refresh. Otherwise every 5s auto-refresh yanks anyone
+    // who scrolled up to read older lines straight back down again.
+    const nearBottomTolerancePx = 24;
+    const wasNearBottom = output.scrollHeight - output.clientHeight - output.scrollTop <= nearBottomTolerancePx;
+
+    try {
+        const data = await apiCall(`/api/logs/${encodeURIComponent(fileSelect.value)}/tail?lines=${linesSelect.value}`);
+        output.textContent = (data.lines || []).join('\n') || '(empty)';
+        if (wasNearBottom) {
+            output.scrollTop = output.scrollHeight;
+        }
+    } catch (error) {
+        output.textContent = 'Failed to load log tail.';
+    }
+}
+
+function stopLogTailAutoRefresh() {
+    if (logTailAutoRefreshTimer) {
+        clearInterval(logTailAutoRefreshTimer);
+        logTailAutoRefreshTimer = null;
+    }
+    const checkbox = document.getElementById('log-tail-auto-refresh');
+    if (checkbox) checkbox.checked = false;
+}
+
+function toggleLogTailAutoRefresh() {
+    const checkbox = document.getElementById('log-tail-auto-refresh');
+    if (logTailAutoRefreshTimer) {
+        clearInterval(logTailAutoRefreshTimer);
+        logTailAutoRefreshTimer = null;
+    }
+    if (checkbox && checkbox.checked) {
+        refreshLogTail();
+        logTailAutoRefreshTimer = setInterval(refreshLogTail, 5000);
+    }
+}
+
+// --- Unresolved Lookups (Tools tab) ---
+
+const UNRESOLVED_REASON_LABELS = {
+    no_db_record: 'No DB record',
+    no_resolved_date: 'In DB, no date yet'
+};
+
+async function loadUnresolvedLookups() {
+    const listEl = document.getElementById('unresolved-lookups-list');
+    const showDismissed = document.getElementById('unresolved-show-dismissed');
+    if (!listEl) return;
+
+    try {
+        const includeDismissed = showDismissed && showDismissed.checked;
+        const data = await apiCall(`/api/unresolved-lookups?include_dismissed=${includeDismissed ? 'true' : 'false'}`);
+        const lookups = data.lookups || [];
+
+        if (lookups.length === 0) {
+            listEl.innerHTML = '<p class="empty-note">Nothing unresolved right now.</p>';
+            return;
+        }
+
+        listEl.innerHTML = `
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Title</th>
+                        <th>IMDb ID</th>
+                        <th>Reason</th>
+                        <th>Instance</th>
+                        <th>Misses</th>
+                        <th>Last Seen</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${lookups.map(l => {
+                        const isEpisode = l.media_type === 'episode';
+                        const episodeTag = isEpisode ? ` S${String(l.season).padStart(2, '0')}E${String(l.episode).padStart(2, '0')}` : '';
+                        return `
+                        <tr>
+                            <td>${isEpisode ? 'Episode' : 'Movie'}</td>
+                            <td>${l.title ? escapeHtml(l.title) + episodeTag : '<span class="empty-note">unknown</span>'}</td>
+                            <td><a href="https://www.imdb.com/title/${encodeURIComponent(l.imdb_id)}" target="_blank" rel="noopener">${escapeHtml(l.imdb_id)}</a></td>
+                            <td>${escapeHtml(UNRESOLVED_REASON_LABELS[l.reason] || l.reason)}</td>
+                            <td>${escapeHtml(l.instance || '')}</td>
+                            <td>${l.miss_count}</td>
+                            <td>${formatDateTime(l.last_seen)}</td>
+                            <td>
+                                ${l.dismissed
+                                    ? '<span class="badge">dismissed</span>'
+                                    : `<button class="btn btn-sm btn-secondary" onclick="dismissUnresolvedLookup(${l.id})"><i class="fas fa-eye-slash"></i> Dismiss</button>`
+                                }
+                            </td>
+                        </tr>
+                    `;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        listEl.innerHTML = '<p class="empty-note">Failed to load unresolved lookups.</p>';
+    }
+}
+
+async function dismissUnresolvedLookup(id) {
+    try {
+        await apiCall(`/api/unresolved-lookups/${id}/dismiss`, { method: 'POST' });
+        loadUnresolvedLookups();
+    } catch (error) {
+        // apiCall already surfaces a toast on failure
+    }
+}
+
+async function dismissAllUnresolvedLookups() {
+    if (!confirm('Dismiss every unresolved lookup currently shown? Any that miss again later will resurface.')) {
+        return;
+    }
+    try {
+        const result = await apiCall('/api/unresolved-lookups/dismiss-all', { method: 'POST' });
+        showToast(`✅ Dismissed ${result.dismissed_count || 0} lookups`, 'success');
+        loadUnresolvedLookups();
+    } catch (error) {
+        // apiCall already surfaces a toast on failure
+    }
+}
+
 async function handlePopulateDatabase(event) {
     event.preventDefault();
 
     const mediaType = document.getElementById('populate-media-type').value;
+    const instanceSelect = document.getElementById('populate-instance');
+    const instance = instanceSelect ? instanceSelect.value : 'all';
 
     // Validate input
     if (!mediaType) {
@@ -1760,7 +2169,8 @@ async function handlePopulateDatabase(event) {
     }
 
     // Confirm with user
-    const confirmMsg = `Are you sure you want to populate the database with ${mediaType}? This will query Radarr/Sonarr and may take several minutes.`;
+    const target = instance !== 'all' ? `instance '${instance}'` : `${mediaType}`;
+    const confirmMsg = `Are you sure you want to populate the database with ${target}? This will query Radarr/Sonarr and may take several minutes.`;
     if (!confirm(confirmMsg)) {
         return;
     }
@@ -1771,7 +2181,7 @@ async function handlePopulateDatabase(event) {
 
         // Start the population
         showToast('🚀 Starting database population...', 'info');
-        const response = await fetch(`/admin/populate-database?media_type=${mediaType}`, {
+        const response = await fetch(`/admin/populate-database?media_type=${mediaType}&instance=${encodeURIComponent(instance)}`, {
             method: 'POST',
             credentials: 'include'
         });
@@ -1852,6 +2262,33 @@ function stopPopulatePolling() {
     }
 }
 
+// Renders a collapsed-by-default <details> list of populate-run items —
+// used for both added_items and skipped_items, which can run into the
+// thousands on a full library sync, so this is never expanded by default.
+// Item shape tells movie apart from episode: episodes carry `season`.
+function renderPopulateItemsList(items, label) {
+    if (!items || items.length === 0) return '';
+
+    const rows = items.map(item => {
+        if ('season' in item) {
+            const ep = `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}`;
+            const extra = item.reason ? escapeHtml(item.reason) : escapeHtml(item.source || '');
+            return `${escapeHtml(item.title || 'Unknown')} ${ep} (${escapeHtml(item.episode_title || 'Unknown')}) &mdash; ${extra}`;
+        }
+        const extra = item.reason ? escapeHtml(item.reason) : escapeHtml(item.source || '');
+        return `${escapeHtml(item.title || 'Unknown')} (${item.year || 'N/A'}) [${escapeHtml(item.imdb_id || '')}] &mdash; ${extra}`;
+    });
+
+    return `
+        <details style="margin-top: 6px;">
+            <summary style="cursor: pointer;">${label} (${items.length})</summary>
+            <div style="max-height: 300px; overflow-y: auto; font-size: 0.85rem; margin-top: 4px;">
+                ${rows.map(r => `<div>${r}</div>`).join('')}
+            </div>
+        </details>
+    `;
+}
+
 function updatePopulateProgress(status) {
     const progressBar = document.getElementById('populate-progress-bar');
     const operationText = document.getElementById('populate-current-operation');
@@ -1882,6 +2319,8 @@ function updatePopulateProgress(status) {
                     <strong>Movies:</strong><br>
                     Total: ${m.total || 0} | Added: ${m.added || 0} | Skipped: ${m.skipped || 0} | Errors: ${m.errors || 0}<br>
                     Duration: ${m.duration ? m.duration.toFixed(2) : 0}s
+                    ${renderPopulateItemsList(m.added_items, 'Added')}
+                    ${renderPopulateItemsList(m.skipped_items, 'Skipped')}
                 </div>
             `;
         }
@@ -1894,6 +2333,8 @@ function updatePopulateProgress(status) {
                     Series: ${t.total_series || 0} | Episodes: ${t.total_episodes || 0}<br>
                     Added: ${t.added || 0} | Skipped: ${t.skipped || 0} | Errors: ${t.errors || 0}<br>
                     Duration: ${t.duration ? t.duration.toFixed(2) : 0}s
+                    ${renderPopulateItemsList(t.added_items, 'Added')}
+                    ${renderPopulateItemsList(t.skipped_items, 'Skipped')}
                 </div>
             `;
         }
