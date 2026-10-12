@@ -733,11 +733,21 @@ class TVProcessor:
                 _log("WARNING", f"[{instance}] Invalid episode data in webhook: {webhook_episode}")
                 continue
 
-            # Check if episode file exists on disk
+            # Check if episode file exists on disk. Some strm/debrid-backed libraries
+            # (confirmed live: a decypharr-backed Sonarr library) don't organize into
+            # "Season NN" subfolders at all — the episode file sits directly in the
+            # series root. find_episodes_on_disk() (the full-scan path) already copes
+            # with this via a recursive scan; this targeted webhook path took a Season-
+            # folder shortcut for speed that doesn't hold here. Fall back to the series
+            # root itself before giving up — still scoped (not recursive into every
+            # subfolder), just covers the one layout actually seen in the wild.
             season_dir = series_path / config.get_season_dir_name(season_num)
             if not season_dir.exists():
-                _log("WARNING", f"[{instance}] Season directory not found: {season_dir}")
-                continue
+                if not series_path.exists():
+                    _log("WARNING", f"[{instance}] Season directory not found: {season_dir}")
+                    continue
+                _log("DEBUG", f"[{instance}] No '{config.get_season_dir_name(season_num)}' subfolder — falling back to series root: {series_path}")
+                season_dir = series_path
 
             # Find matching episode files — the listing itself retries internally on
             # a transient OSError (e.g. a network/FUSE mount reporting ENOTCONN for
