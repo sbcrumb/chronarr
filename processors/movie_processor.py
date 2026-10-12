@@ -15,7 +15,7 @@ from clients.external_clients import ExternalClientManager
 from config.settings import config
 from utils.logging import _log
 from utils.imdb_utils import find_imdb_in_directory  # Phase 3: Replaced NFOManager
-from utils.file_utils import find_media_path_by_imdb_and_title, list_video_files_with_retry
+from utils.file_utils import find_media_path_by_imdb_and_title, list_video_files_with_retry, is_video_file
 
 
 def _get_local_timezone():
@@ -540,11 +540,10 @@ class MovieProcessor:
     
     def _get_file_mtime_date(self, movie_path: Path) -> Tuple[str, str, Optional[str]]:
         """Get date from file modification time as last resort"""
-        video_exts = (".mkv", ".mp4", ".avi", ".mov", ".m4v")
         newest_mtime = None
-        
+
         for file_path in movie_path.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in video_exts:
+            if is_video_file(file_path):
                 try:
                     mtime = file_path.stat().st_mtime
                     if newest_mtime is None or mtime > newest_mtime:

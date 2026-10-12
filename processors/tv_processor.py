@@ -19,7 +19,8 @@ from utils.file_utils import (
     find_media_path_by_imdb_and_title,
     find_episodes_on_disk,
     extract_title_from_directory_name,
-    list_video_files_with_retry
+    list_video_files_with_retry,
+    is_video_file
 )
 from utils.async_file_utils import (
     async_find_episodes_on_disk,
@@ -733,11 +734,21 @@ class TVProcessor:
                 _log("WARNING", f"[{instance}] Invalid episode data in webhook: {webhook_episode}")
                 continue
 
-            # Check if episode file exists on disk
+            # Check if episode file exists on disk. Some strm/debrid-backed libraries
+            # (confirmed live: a decypharr-backed Sonarr library) don't organize into
+            # "Season NN" subfolders at all — the episode file sits directly in the
+            # series root. find_episodes_on_disk() (the full-scan path) already copes
+            # with this via a recursive scan; this targeted webhook path took a Season-
+            # folder shortcut for speed that doesn't hold here. Fall back to the series
+            # root itself before giving up — still scoped (not recursive into every
+            # subfolder), just covers the one layout actually seen in the wild.
             season_dir = series_path / config.get_season_dir_name(season_num)
             if not season_dir.exists():
-                _log("WARNING", f"[{instance}] Season directory not found: {season_dir}")
-                continue
+                if not series_path.exists():
+                    _log("WARNING", f"[{instance}] Season directory not found: {season_dir}")
+                    continue
+                _log("DEBUG", f"[{instance}] No '{config.get_season_dir_name(season_num)}' subfolder — falling back to series root: {series_path}")
+                season_dir = series_path
 
             # Find matching episode files — the listing itself retries internally on
             # a transient OSError (e.g. a network/FUSE mount reporting ENOTCONN for
@@ -876,7 +887,7 @@ class TVProcessor:
         try:
             # Look for video files in the season directory
             for file_path in season_dir.iterdir():
-                if file_path.is_file() and file_path.suffix.lower() in ('.mkv', '.mp4', '.avi', '.mov', '.m4v'):
+                if is_video_file(file_path):
                     filename = file_path.name
 
                     # Check if this file matches our season/episode

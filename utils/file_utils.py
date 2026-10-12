@@ -60,6 +60,20 @@ def clean_title_for_search(title: str) -> str:
     return title.lower().replace(" ", "").replace("-", "").replace(".", "")
 
 
+def is_video_file(item: Path) -> bool:
+    """True if `item` is (or points to) a video file, without requiring the
+    target to currently resolve. is_file() follows symlinks and stats the
+    *target* - on a FUSE/DFS-backed mount (decypharr, rclone, etc.) that
+    lazily activates a file's backing download on first access, a freshly
+    created symlink can briefly fail that stat and is_file() just silently
+    returns False, no exception raised. is_symlink() stats the link itself
+    (lstat), so it can't be fooled by a not-yet-ready target - check that
+    first so a symlinked video file is never invisible to a directory scan
+    just because the mount hasn't warmed it up yet.
+    """
+    return (item.is_symlink() or item.is_file()) and item.suffix.lower() in VIDEO_EXTENSIONS
+
+
 def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
     if not directory.exists():
         return []
@@ -68,11 +82,11 @@ def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
 
     if recursive:
         for item in directory.rglob('*'):
-            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
+            if is_video_file(item):
                 video_files.append(item)
     else:
         for item in directory.iterdir():
-            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
+            if is_video_file(item):
                 video_files.append(item)
 
     return video_files
@@ -109,7 +123,7 @@ def list_video_files_with_retry(
         try:
             return [
                 item for item in directory.iterdir()
-                if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS
+                if is_video_file(item)
             ]
         except OSError as e:
             last_exc = e
@@ -212,17 +226,6 @@ def extract_imdb_id_from_path(path: Union[str, Path]) -> Optional[str]:
     return None
 
 
-def is_video_file(file_path: Path) -> bool:
-    """
-    Check if a file is a video file based on extension
-    
-    Args:
-        file_path: Path to check
-        
-    Returns:
-        True if it's a video file, False otherwise
-    """
-    return file_path.suffix.lower() in VIDEO_EXTENSIONS
 
 
 def safe_directory_scan(directory: Path, pattern: str = "*") -> List[Path]:

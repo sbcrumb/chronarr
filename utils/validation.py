@@ -115,7 +115,11 @@ def validate_video_file(file_path: Union[str, Path]) -> bool:
     try:
         path = Path(file_path)
         video_extensions = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.ts'}
-        return path.is_file() and path.suffix.lower() in video_extensions
+        # is_symlink() first: is_file() alone follows the link and silently
+        # returns False if a FUSE/DFS-backed mount (decypharr, rclone, etc.)
+        # hasn't resolved the target yet — see utils/file_utils.is_video_file
+        # for the full explanation of why this matters for symlinked libraries.
+        return (path.is_symlink() or path.is_file()) and path.suffix.lower() in video_extensions
     except (OSError, ValueError):
         return False
 
