@@ -946,9 +946,9 @@ class ChronarrDatabase:
         by imdb_id alone would remove another instance's still-valid row too.
         """
         from pathlib import Path
+        from utils.file_utils import is_video_file
 
         deleted_movies = []
-        video_exts = (".mkv", ".mp4", ".avi", ".mov", ".m4v")
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -968,10 +968,11 @@ class ChronarrDatabase:
                     })
                     continue
 
-                has_video = any(
-                    f.is_file() and f.suffix.lower() in video_exts
-                    for f in movie_path.iterdir() if f.is_file()
-                )
+                # is_symlink()-first: see is_video_file's docstring. Matters a
+                # lot more here than elsewhere — this check gates an actual DELETE, so
+                # a FUSE/DFS mount not having warmed up a symlink target yet would
+                # otherwise delete a perfectly real movie row, not just skip a date.
+                has_video = any(is_video_file(f) for f in movie_path.iterdir())
                 if not has_video:
                     cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
                     deleted_movies.append({

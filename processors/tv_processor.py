@@ -19,7 +19,8 @@ from utils.file_utils import (
     find_media_path_by_imdb_and_title,
     find_episodes_on_disk,
     extract_title_from_directory_name,
-    list_video_files_with_retry
+    list_video_files_with_retry,
+    is_video_file
 )
 from utils.async_file_utils import (
     async_find_episodes_on_disk,
@@ -886,7 +887,7 @@ class TVProcessor:
         try:
             # Look for video files in the season directory
             for file_path in season_dir.iterdir():
-                if file_path.is_file() and file_path.suffix.lower() in ('.mkv', '.mp4', '.avi', '.mov', '.m4v'):
+                if is_video_file(file_path):
                     filename = file_path.name
 
                     # Check if this file matches our season/episode

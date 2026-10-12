@@ -949,7 +949,7 @@ async def manual_scan(background_tasks: BackgroundTasks, path: Optional[str] = N
                             tv_processor.process_season(series_path, scan_path)
                         except Exception as e:
                             print(f"ERROR: Failed processing season {scan_path}: {e}")
-                elif path and scan_path.is_file() and scan_path.suffix.lower() in ('.mkv', '.mp4', '.avi'):
+                elif path and (scan_path.is_symlink() or scan_path.is_file()) and scan_path.suffix.lower() in ('.mkv', '.mp4', '.avi'):
                     _log("DEBUG", f"Taking single episode processing path")
                     # Single episode processing
                     season_path = scan_path.parent
