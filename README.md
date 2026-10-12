@@ -335,7 +335,7 @@ SONARR_DB_PASSWORD=sonarr_pass       # Sonarr database password (.env.secrets)
 # See docker-compose.yml.example for volume mount configuration
 ```
 
-**Multi-Instance Configuration (v3.0+):**
+**Multi-Instance Configuration (2.1.0+):**
 
 Add additional Radarr or Sonarr instances using a `NAME` segment between the prefix and the variable suffix. The name becomes the instance identifier in Chronarr's UI and database.
 
@@ -540,6 +540,30 @@ docker exec -it chronarr-core psql -h radarr-db -U radarr -d radarr-main
 - Use **Debug** button to inspect raw database data
 - Verify Radarr/Sonarr have import history data
 
+### Symlinked / Debrid Libraries (decypharr, rclone, strm-backed mounts, etc.)
+
+If your library uses symlinks into a FUSE/debrid-backed mount (decypharr's DFS, rclone, similar tools), and episodes/movies intermittently fail to get a date with errors like `Transport endpoint is not connected` (`ENOTCONN`) in the core container's logs even though the file plays fine in Emby/Jellyfin/Plex — this is almost always a **Docker mount propagation** issue, not a Chronarr bug.
+
+**Why it happens:** the FUSE mount (e.g. `/mnt/decypharr`) gets bind-mounted into the `chronarr-core` container at container start. If the underlying mount is ever remounted on the host afterward (the debrid tool's own container restarting, its cache cycling, etc.), Docker doesn't automatically propagate that into containers unless the mount is explicitly configured with **shared propagation**. Without it, Chronarr's container keeps holding a stale, dead handle to the *old* mount — even though the host itself, and anything that mounted fresh, sees the real file just fine. Restarting `chronarr-core` "fixes" it temporarily because that gives the container a fresh bind-mount — but it comes back the next time the underlying mount cycles.
+
+**Fix — set up shared mount propagation so a remount propagates automatically, no restart needed:**
+
+1. In `docker-compose.yml`, add `rslave` propagation to the relevant volume under `chronarr-core`:
+   ```yaml
+   volumes:
+     - /mnt/decypharr:/mnt/decypharr:rslave
+   ```
+2. On the host, mark that mountpoint as shared (this is what `rslave` listens for):
+   ```bash
+   sudo mount --make-rshared /mnt/decypharr
+   ```
+3. This does **not** persist across the debrid tool's container restarting (or a host reboot) on its own — it needs to be reapplied every time the underlying mount gets recreated. The simplest robust fix is a self-healing cron entry (run as root):
+   ```bash
+   * * * * * findmnt -o PROPAGATION /mnt/decypharr --noheadings 2>/dev/null | grep -q shared || mount --make-rshared /mnt/decypharr
+   ```
+
+Restart `chronarr-core` once after adding the compose change for it to take effect.
+
 ### Performance Issues
 - Enable direct database access for Radarr/Sonarr (much faster than API)
 - Increase database connection pool size
@@ -632,20 +656,24 @@ v3 is a drop-in upgrade for single-instance setups. Pull the new image and resta
 
 **Database:** Schema migrations run automatically on startup. Existing movie and episode records are preserved and tagged with the default instance name (`radarr` / `sonarr`).
 
-**Multi-instance (optional):** If you run a second Radarr (e.g., 4K) or second Sonarr, see the [Multi-Instance Configuration](#multi-instance-configuration-v30) block in the Configuration section. Each extra instance just needs a `RADARR_{NAME}_URL` block in your `.env` and its own webhook connection in Radarr/Sonarr.
+**Multi-instance (optional):** If you run a second Radarr (e.g., 4K) or second Sonarr, see the "Multi-Instance Configuration" block in the Configuration section above. Each extra instance just needs a `RADARR_{NAME}_URL` block in your `.env` and its own webhook connection in Radarr/Sonarr.
 
 ---
 
 ## Changelog
 
-### v3.0.0
+### v2.1.0
 - 🏠 **Sidebar navigation** - Replaced horizontal tab bar with a collapsible dark sidebar; instance sub-items expand under Movies and TV Shows
-- 🔀 **Multi-instance support** - Configure multiple Radarr and/or Sonarr instances; each is tracked separately and shown with colored badges in the UI
+- 🔀 **Multi-instance support** - Configure multiple Radarr and/or Sonarr instances; each is tracked separately and shown with colored badges in the UI. Fully backward compatible — existing single-instance setups need no changes
 - 🏷️ **Instance badges** - Every row in the Movies and TV tables shows a colored badge identifying its instance; badge colors are consistent between the sidebar and the table
 - 🚀 **Cold-start populate fix** - Database population on startup now iterates all configured instances, not just the first
 - 🗑️ **Delete series** - Remove an entire TV series and all its episode records from the database in one click
 - 🔧 **Instance-aware edit** - Date edits, smart fixes, and skipped-item updates are now scoped to the correct instance
 - 🧹 **Series title cleanup** - Series titles derived from folder paths no longer include media-manager ID suffixes (e.g., `[imdb-tt1234567]`)
+- 🧙 **Setup wizard** - Guided `.env`/`.env.secrets` generation with per-instance connection testing and backup/restore
+- 📜 **Readable logs + log viewer** - Configurable log level, compact webhook summaries, per-webhook request IDs, and an in-browser log viewer (Tools tab)
+- 🔍 **Unresolved Lookups page** - Emby/Jellyfin plugin lookups that come back "not found" now persist in the web UI for review instead of only showing up in the logs
+- 🔗 **Series IMDb ID auto-migration** - Automatically detects and merges a series whose IMDb ID changed between syncs, instead of creating a duplicate entry
 
 ### v2.0.0 (2025-11-05)
 - 🎉 **Initial release** - Comprehensive date and chronology management for Radarr and Sonarr
