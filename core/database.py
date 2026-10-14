@@ -793,8 +793,15 @@ class ChronarrDatabase:
             conn.commit()
             return deleted_count > 0
 
-    def update_movie_file_info(self, imdb_id: str, path: str, has_video_file: bool = True) -> bool:
-        """Update path and file status — used when a population scan finds a video for a queued movie."""
+    def update_movie_file_info(self, imdb_id: str, path: str, has_video_file: bool = True,
+                                instance: str = 'radarr') -> bool:
+        """Update path and file status — used when a population scan finds a video for a queued movie.
+
+        instance-scoped (see get_movie_dates): without it, a dual-instance user
+        with the same title in both a NAS and a strm/rclone Radarr would have
+        this update land on whichever row imdb_id matched first, not
+        necessarily the instance that actually reported the file.
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -803,8 +810,8 @@ class ChronarrDatabase:
                 SET path = %s,
                     has_video_file = %s,
                     last_updated = %s
-                WHERE imdb_id = %s
-            """, (path, has_video_file, datetime.utcnow(), imdb_id))
+                WHERE imdb_id = %s AND instance = %s
+            """, (path, has_video_file, datetime.utcnow(), imdb_id, instance))
 
             updated_count = cursor.rowcount
             conn.commit()
@@ -812,10 +819,15 @@ class ChronarrDatabase:
             return updated_count > 0
 
     def update_episode_file_info(self, imdb_id: str, season: int, episode: int,
-                                  path: str, has_video_file: bool = True) -> bool:
+                                  path: str, has_video_file: bool = True,
+                                  instance: str = 'sonarr') -> bool:
         """
         Update video file status for an existing episode
         Used when population finds a video file for a manually-added episode
+
+        instance-scoped (see get_episode_date) for the same reason
+        update_movie_file_info is — same imdb_id can exist under more than
+        one configured Sonarr instance.
 
         Args:
             imdb_id: Series IMDb ID
@@ -823,6 +835,7 @@ class ChronarrDatabase:
             episode: Episode number
             path: File path (ignored - kept for backward compatibility)
             has_video_file: Whether a video file exists (default True)
+            instance: Which configured Sonarr instance this episode belongs to
 
         Returns:
             True if episode was updated, False if not found
@@ -834,8 +847,8 @@ class ChronarrDatabase:
                 UPDATE episodes
                 SET has_video_file = %s,
                     last_updated = %s
-                WHERE imdb_id = %s AND season = %s AND episode = %s
-            """, (has_video_file, datetime.utcnow(), imdb_id, season, episode))
+                WHERE imdb_id = %s AND season = %s AND episode = %s AND instance = %s
+            """, (has_video_file, datetime.utcnow(), imdb_id, season, episode, instance))
 
             updated_count = cursor.rowcount
             conn.commit()
