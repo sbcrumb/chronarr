@@ -5,6 +5,7 @@ Handles all configuration loading and validation with comprehensive error report
 import os
 import sys
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -12,6 +13,47 @@ from utils.exceptions import ConfigurationError
 
 
 logger = logging.getLogger(__name__)
+
+
+# Reserved env var segments that are NOT instance names
+_RADARR_RESERVED = {"DB", "WEBHOOK"}
+_SONARR_RESERVED = {"DB", "WEBHOOK"}
+
+
+@dataclass
+class RadarrInstance:
+    """Configuration for one Radarr instance"""
+    name: str               # "radarr" for default, "radarr_4k" for RADARR_4K_*
+    url: str
+    api_key: str
+    root_folders: List[str]
+    movie_paths: List[str]
+    webhook_path: str       # e.g. "/radarr/webhook" or "/radarr_4k/webhook"
+    db_type: str = ""       # "postgresql", "sqlite", or "" (API-only)
+    db_host: str = ""
+    db_port: int = 5432
+    db_name: str = ""
+    db_user: str = ""
+    db_password: str = ""
+    db_path: str = ""       # sqlite only
+
+
+@dataclass
+class SonarrInstance:
+    """Configuration for one Sonarr instance"""
+    name: str               # "sonarr" for default, "sonarr_4k" for SONARR_4K_*
+    url: str
+    api_key: str
+    root_folders: List[str]
+    tv_paths: List[str]
+    webhook_path: str       # e.g. "/sonarr/webhook" or "/sonarr_4k/webhook"
+    db_type: str = ""
+    db_host: str = ""
+    db_port: int = 5432
+    db_name: str = ""
+    db_user: str = ""
+    db_password: str = ""
+    db_path: str = ""       # sqlite only
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -77,7 +119,10 @@ class ChronarrConfig:
         
         # External connections
         self._load_external_connections()
-        
+
+        # Warn if any discovered instance has no paths at all
+        self._warn_missing_instance_paths()
+
         # Movie processing
         self._load_movie_settings()
         
@@ -88,39 +133,21 @@ class ChronarrConfig:
         self._load_auth_settings()
     
     def _load_paths(self) -> None:
-        """Load and validate path configuration"""
-        tv_paths_env = os.environ.get("TV_PATHS", "")
+        """Load global path fallbacks.
+
+        MOVIE_PATHS and TV_PATHS are optional global fallbacks used when an
+        instance does not define its own per-instance paths variable
+        (RADARR_{NAME}_MOVIE_PATHS / SONARR_{NAME}_TV_PATHS).
+
+        For single-instance setups these remain the simplest approach.
+        For multi-instance setups, define paths per-instance so each block
+        is fully self-contained and there is no risk of one definition
+        silently overriding another (Docker env_file last-definition-wins).
+        """
         movie_paths_env = os.environ.get("MOVIE_PATHS", "")
-        
-        if not tv_paths_env:
-            raise ConfigurationError(
-                setting="TV_PATHS",
-                reason="TV_PATHS environment variable is required but not set"
-            )
-        
-        if not movie_paths_env:
-            raise ConfigurationError(
-                setting="MOVIE_PATHS", 
-                reason="MOVIE_PATHS environment variable is required but not set"
-            )
-            
-        # Parse paths
-        self.tv_paths = [Path(p.strip()) for p in tv_paths_env.split(",") if p.strip()]
+        tv_paths_env = os.environ.get("TV_PATHS", "")
         self.movie_paths = [Path(p.strip()) for p in movie_paths_env.split(",") if p.strip()]
-        
-        if not self.tv_paths:
-            raise ConfigurationError(
-                setting="TV_PATHS",
-                reason="No valid TV paths found after parsing",
-                current_value=tv_paths_env
-            )
-        
-        if not self.movie_paths:
-            raise ConfigurationError(
-                setting="MOVIE_PATHS",
-                reason="No valid movie paths found after parsing", 
-                current_value=movie_paths_env
-            )
+        self.tv_paths = [Path(p.strip()) for p in tv_paths_env.split(",") if p.strip()]
     
     def _load_server_settings(self) -> None:
         """Load server configuration"""
@@ -134,21 +161,198 @@ class ChronarrConfig:
     
     def _load_external_connections(self) -> None:
         """Load external API and database connection settings"""
-        # API URLs
-        self.radarr_url = os.environ.get("RADARR_URL", "")
-        self.sonarr_url = os.environ.get("SONARR_URL", "")
+        # Discover all Radarr and Sonarr instances from env
+        self.radarr_instances: List[RadarrInstance] = self._discover_radarr_instances()
+        self.sonarr_instances: List[SonarrInstance] = self._discover_sonarr_instances()
+
+        # Backward-compat shims — point at the first (default) instance if present
+        self.radarr_url = self.radarr_instances[0].url if self.radarr_instances else ""
+        self.sonarr_url = self.sonarr_instances[0].url if self.sonarr_instances else ""
+        self.radarr_db_type = self.radarr_instances[0].db_type if self.radarr_instances else ""
+
         self.jellyseerr_url = os.environ.get("JELLYSEERR_URL", "")
-        
-        # Radarr database settings
-        self.radarr_db_type = os.environ.get("RADARR_DB_TYPE", "").lower()
-        self.radarr_db_host = os.environ.get("RADARR_DB_HOST", "")
-        self.radarr_db_port = self._get_int_env("RADARR_DB_PORT", 5432, 1, 65535) 
-        self.radarr_db_name = os.environ.get("RADARR_DB_NAME", "")
-        self.radarr_db_user = os.environ.get("RADARR_DB_USER", "")
-        
+
         # Timeout settings
         self.timeout_seconds = self._get_int_env("TIMEOUT_SECONDS", 45, 10, 300)
-    
+
+    # ------------------------------------------------------------------
+    # Instance discovery helpers
+    # ------------------------------------------------------------------
+
+    def _load_radarr_instance(self, name_segment: str, url: str) -> RadarrInstance:
+        """Build a RadarrInstance from env vars for the given name segment.
+
+        name_segment is the part between RADARR_ and _URL, e.g. "4K" for
+        RADARR_4K_URL.  Empty string means the default (RADARR_URL) instance.
+        """
+        prefix = f"RADARR_{name_segment}_" if name_segment else "RADARR_"
+        instance_name = f"radarr_{name_segment.lower()}" if name_segment else "radarr"
+        webhook_path = f"/{instance_name}/webhook"
+
+        root_folders = [
+            p.strip()
+            for p in os.environ.get(f"{prefix}ROOT_FOLDERS", "").split(",")
+            if p.strip()
+        ]
+        movie_paths = [
+            p.strip()
+            for p in os.environ.get(f"{prefix}MOVIE_PATHS",
+                                    os.environ.get("MOVIE_PATHS", "")).split(",")
+            if p.strip()
+        ]
+
+        db_type = os.environ.get(f"{prefix}DB_TYPE", "").lower()
+        db_port_str = os.environ.get(f"{prefix}DB_PORT", "5432")
+        try:
+            db_port = int(db_port_str)
+        except ValueError:
+            db_port = 5432
+
+        return RadarrInstance(
+            name=instance_name,
+            url=url,
+            api_key=os.environ.get(f"{prefix}API_KEY", ""),
+            root_folders=root_folders,
+            movie_paths=movie_paths,
+            webhook_path=webhook_path,
+            db_type=db_type,
+            db_host=os.environ.get(f"{prefix}DB_HOST", ""),
+            db_port=db_port,
+            db_name=os.environ.get(f"{prefix}DB_NAME", ""),
+            db_user=os.environ.get(f"{prefix}DB_USER", ""),
+            db_password=os.environ.get(f"{prefix}DB_PASSWORD", ""),
+            db_path=os.environ.get(f"{prefix}DB_PATH", ""),
+        )
+
+    def _discover_radarr_instances(self) -> List[RadarrInstance]:
+        """Discover all configured Radarr instances from environment variables.
+
+        Looks for RADARR_URL (default instance) and RADARR_{NAME}_URL (named
+        instances). The default instance is always first in the returned list.
+        """
+        instances = []
+
+        # Default instance
+        default_url = os.environ.get("RADARR_URL", "")
+        if default_url:
+            instances.append(self._load_radarr_instance("", default_url))
+
+        # Named instances — scan for RADARR_*_URL
+        seen = set()
+        for key in sorted(os.environ.keys()):
+            if not key.startswith("RADARR_") or not key.endswith("_URL"):
+                continue
+            if key == "RADARR_URL":
+                continue
+            name_segment = key[len("RADARR_"):-len("_URL")]
+            # Skip reserved segments (DB, WEBHOOK) and duplicates
+            if name_segment in _RADARR_RESERVED or name_segment in seen:
+                continue
+            seen.add(name_segment)
+            url = os.environ[key]
+            if url:
+                instances.append(self._load_radarr_instance(name_segment, url))
+
+        return instances
+
+    def _load_sonarr_instance(self, name_segment: str, url: str) -> SonarrInstance:
+        """Build a SonarrInstance from env vars for the given name segment."""
+        prefix = f"SONARR_{name_segment}_" if name_segment else "SONARR_"
+        instance_name = f"sonarr_{name_segment.lower()}" if name_segment else "sonarr"
+        webhook_path = f"/{instance_name}/webhook"
+
+        root_folders = [
+            p.strip()
+            for p in os.environ.get(f"{prefix}ROOT_FOLDERS", "").split(",")
+            if p.strip()
+        ]
+        tv_paths = [
+            p.strip()
+            for p in os.environ.get(f"{prefix}TV_PATHS",
+                                    os.environ.get("TV_PATHS", "")).split(",")
+            if p.strip()
+        ]
+
+        db_type = os.environ.get(f"{prefix}DB_TYPE", "").lower()
+        db_port_str = os.environ.get(f"{prefix}DB_PORT", "5432")
+        try:
+            db_port = int(db_port_str)
+        except ValueError:
+            db_port = 5432
+
+        return SonarrInstance(
+            name=instance_name,
+            url=url,
+            api_key=os.environ.get(f"{prefix}API_KEY", ""),
+            root_folders=root_folders,
+            tv_paths=tv_paths,
+            webhook_path=webhook_path,
+            db_type=db_type,
+            db_host=os.environ.get(f"{prefix}DB_HOST", ""),
+            db_port=db_port,
+            db_name=os.environ.get(f"{prefix}DB_NAME", ""),
+            db_user=os.environ.get(f"{prefix}DB_USER", ""),
+            db_password=os.environ.get(f"{prefix}DB_PASSWORD", ""),
+            db_path=os.environ.get(f"{prefix}DB_PATH", ""),
+        )
+
+    def _discover_sonarr_instances(self) -> List[SonarrInstance]:
+        """Discover all configured Sonarr instances from environment variables."""
+        instances = []
+
+        default_url = os.environ.get("SONARR_URL", "")
+        if default_url:
+            instances.append(self._load_sonarr_instance("", default_url))
+
+        seen = set()
+        for key in sorted(os.environ.keys()):
+            if not key.startswith("SONARR_") or not key.endswith("_URL"):
+                continue
+            if key == "SONARR_URL":
+                continue
+            name_segment = key[len("SONARR_"):-len("_URL")]
+            if name_segment in _SONARR_RESERVED or name_segment in seen:
+                continue
+            seen.add(name_segment)
+            url = os.environ[key]
+            if url:
+                instances.append(self._load_sonarr_instance(name_segment, url))
+
+        return instances
+
+    def _warn_missing_instance_paths(self) -> None:
+        """Warn at startup if any configured instance has no paths.
+
+        An instance with empty movie_paths / tv_paths cannot match file
+        paths to media items — date assignment from the DB will still work,
+        but any path-based lookup will silently find nothing.
+
+        Each instance should define its own paths variable:
+          RADARR_{NAME}_MOVIE_PATHS  (or RADARR_MOVIE_PATHS for the default)
+          SONARR_{NAME}_TV_PATHS     (or SONARR_TV_PATHS for the default)
+
+        MOVIE_PATHS / TV_PATHS act as a global fallback when no per-instance
+        variable is set.
+        """
+        for inst in self.radarr_instances:
+            if not inst.movie_paths:
+                logger.warning(
+                    "Radarr instance '%s' has no movie paths configured. "
+                    "Set %s_MOVIE_PATHS in your .env (or MOVIE_PATHS as a "
+                    "global fallback). Path matching will not work for this instance.",
+                    inst.name,
+                    inst.name.upper(),
+                )
+        for inst in self.sonarr_instances:
+            if not inst.tv_paths:
+                logger.warning(
+                    "Sonarr instance '%s' has no TV paths configured. "
+                    "Set %s_TV_PATHS in your .env (or TV_PATHS as a "
+                    "global fallback). Path matching will not work for this instance.",
+                    inst.name,
+                    inst.name.upper(),
+                )
+
     def _load_movie_settings(self) -> None:
         """Load movie processing settings"""
         self.movie_priority = os.environ.get("MOVIE_PRIORITY", "import_then_digital").lower()

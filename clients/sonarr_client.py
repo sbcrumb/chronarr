@@ -10,18 +10,27 @@ from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.error import URLError, HTTPError
 
-from core.logging import _log
+from core.logging import _log as _log_raw
 
 
 class SonarrClient:
     """Enhanced Sonarr API client for TV series and episode management"""
     
-    def __init__(self, base_url: str, api_key: str, timeout: int = 45, retries: int = 3):
+    def __init__(self, base_url: str, api_key: str, timeout: int = 45, retries: int = 3, instance_name: str = ""):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.retries = max(0, retries)
         self.enabled = bool(self.base_url and self.api_key)
+        self.instance_name = instance_name
+
+    def _log(self, level: str, message: str) -> None:
+        """Log with this client's instance name prefixed, so a log line is
+        traceable back to which Radarr/Sonarr instance it came from — matters
+        as soon as there's more than one of the same type configured.
+        """
+        prefix = f"[{self.instance_name}] " if self.instance_name else ""
+        _log_raw(level, f"{prefix}{message}")
 
     def _get(self, path: str, params: Dict[str, Any] = None) -> Optional[Any]:
         """Make GET request to Sonarr API with retries"""
@@ -36,7 +45,7 @@ class SonarrClient:
         
         for attempt in range(self.retries):
             try:
-                _log("DEBUG", f"Sonarr API Request: {url}")
+                self._log("DEBUG", f"Sonarr API Request: {url}")
                 req = UrlRequest(url, headers=headers)
                 
                 with urlopen(req, timeout=self.timeout) as resp:
@@ -46,71 +55,71 @@ class SonarrClient:
                     
             except HTTPError as e:
                 if e.code == 401:
-                    _log("ERROR", "Sonarr authentication failed - check API key")
+                    self._log("ERROR", "Sonarr authentication failed - check API key")
                     return None
                 elif e.code == 429:
                     wait_time = (attempt + 1) * 2
-                    _log("WARNING", f"Sonarr rate limited, waiting {wait_time}s (attempt {attempt+1}/{self.retries})")
+                    self._log("WARNING", f"Sonarr rate limited, waiting {wait_time}s (attempt {attempt+1}/{self.retries})")
                     time.sleep(wait_time)
                 else:
-                    _log("WARNING", f"Sonarr HTTP {e.code} error on attempt {attempt+1}/{self.retries}: {e.reason}")
+                    self._log("WARNING", f"Sonarr HTTP {e.code} error on attempt {attempt+1}/{self.retries}: {e.reason}")
                     
             except Exception as e:
-                _log("WARNING", f"Sonarr API attempt {attempt+1}/{self.retries} failed: {e}")
+                self._log("WARNING", f"Sonarr API attempt {attempt+1}/{self.retries} failed: {e}")
             
             if attempt < self.retries - 1:
                 time.sleep(0.5 * (attempt + 1))
         
-        _log("ERROR", f"Sonarr API failed after {self.retries} attempts: {url}")
+        self._log("ERROR", f"Sonarr API failed after {self.retries} attempts: {url}")
         return None
 
     def series_by_imdb(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """Find series by IMDb ID using lookup endpoint"""
         search_term = f"imdbid:{imdb_id}"
-        _log("DEBUG", f"Searching Sonarr with term: {search_term}")
+        self._log("DEBUG", f"Searching Sonarr with term: {search_term}")
         
         result = self._get("/series/lookup", {"term": search_term})
         if not result:
-            _log("WARNING", f"No results from Sonarr lookup for: {search_term}")
+            self._log("WARNING", f"No results from Sonarr lookup for: {search_term}")
             return None
             
-        _log("DEBUG", f"Sonarr lookup returned {len(result)} results")
+        self._log("DEBUG", f"Sonarr lookup returned {len(result)} results")
         
         # Log all results for debugging
         for i, series in enumerate(result):
             series_imdb = series.get("imdbId", "")
             series_title = series.get("title", "")
             series_id = series.get("id", "")
-            _log("DEBUG", f"Result {i+1}: Title='{series_title}', IMDb='{series_imdb}', ID={series_id}")
+            self._log("DEBUG", f"Result {i+1}: Title='{series_title}', IMDb='{series_imdb}', ID={series_id}")
         
         # Find exact IMDb match (case insensitive)
         target_imdb = imdb_id.lower()
         for series in result:
             series_imdb = (series.get("imdbId") or "").lower()
             if series_imdb == target_imdb:
-                _log("INFO", f"Found exact IMDb match: {series.get('title')} (ID: {series.get('id')})")
+                self._log("INFO", f"Found exact IMDb match: {series.get('title')} (ID: {series.get('id')})")
                 return series
                 
         # Try partial match as fallback
         for series in result:
             series_imdb = (series.get("imdbId") or "").lower()
             if target_imdb in series_imdb or series_imdb in target_imdb:
-                _log("WARNING", f"Found partial IMDb match: {series.get('title')} (Expected: {imdb_id}, Found: {series.get('imdbId')})")
+                self._log("WARNING", f"Found partial IMDb match: {series.get('title')} (Expected: {imdb_id}, Found: {series.get('imdbId')})")
                 return series
         
-        _log("WARNING", f"No IMDb match found in {len(result)} results for {imdb_id}")
+        self._log("WARNING", f"No IMDb match found in {len(result)} results for {imdb_id}")
         return None
 
     def series_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Search for series by title as fallback when IMDb lookup fails"""
-        _log("DEBUG", f"Searching Sonarr by title: {title}")
+        self._log("DEBUG", f"Searching Sonarr by title: {title}")
         
         result = self._get("/series/lookup", {"term": title})
         if not result:
-            _log("WARNING", f"No results from Sonarr title search for: {title}")
+            self._log("WARNING", f"No results from Sonarr title search for: {title}")
             return None
             
-        _log("DEBUG", f"Sonarr title search returned {len(result)} results")
+        self._log("DEBUG", f"Sonarr title search returned {len(result)} results")
         
         title_lower = title.lower()
         
@@ -118,17 +127,17 @@ class SonarrClient:
         for series in result:
             series_title = (series.get("title") or "").lower()
             if series_title == title_lower:
-                _log("INFO", f"Found exact title match: {series.get('title')} (ID: {series.get('id')})")
+                self._log("INFO", f"Found exact title match: {series.get('title')} (ID: {series.get('id')})")
                 return series
         
         # Look for partial title match
         for series in result:
             series_title = (series.get("title") or "").lower()
             if title_lower in series_title or series_title in title_lower:
-                _log("INFO", f"Found partial title match: '{series.get('title')}' for search '{title}' (ID: {series.get('id')})")
+                self._log("INFO", f"Found partial title match: '{series.get('title')}' for search '{title}' (ID: {series.get('id')})")
                 return series
         
-        _log("WARNING", f"No title match found for: {title}")
+        self._log("WARNING", f"No title match found for: {title}")
         return None
 
     def get_all_series(self) -> List[Dict[str, Any]]:
@@ -137,17 +146,17 @@ class SonarrClient:
 
     def series_by_imdb_direct(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """Find series by scanning all series for IMDb match (slower but more reliable)"""
-        _log("DEBUG", f"Direct series lookup for IMDb: {imdb_id}")
+        self._log("DEBUG", f"Direct series lookup for IMDb: {imdb_id}")
         all_series = self.get_all_series()
         
         target_imdb = imdb_id.lower()
         for series in all_series:
             series_imdb = (series.get("imdbId") or "").lower()
             if series_imdb == target_imdb:
-                _log("INFO", f"Found series via direct lookup: {series.get('title')} (ID: {series.get('id')})")
+                self._log("INFO", f"Found series via direct lookup: {series.get('title')} (ID: {series.get('id')})")
                 return series
         
-        _log("WARNING", f"No series found with IMDb ID via direct lookup: {imdb_id}")
+        self._log("WARNING", f"No series found with IMDb ID via direct lookup: {imdb_id}")
         return None
 
     def get_series_by_id(self, series_id: int) -> Optional[Dict[str, Any]]:
@@ -197,7 +206,7 @@ class SonarrClient:
             if page > 10:  # Safety valve
                 break
         
-        _log("DEBUG", f"Got {len(all_records)} history records for episode {episode_id}")
+        self._log("DEBUG", f"Got {len(all_records)} history records for episode {episode_id}")
         
         # Categorize events
         import_events = []
@@ -211,7 +220,7 @@ class SonarrClient:
             if not date:
                 continue
             
-            _log("DEBUG", f"History event: {event_type} at {date}")
+            self._log("DEBUG", f"History event: {event_type} at {date}")
             
             if event_type == "downloadfolderimported":
                 import_events.append({"date": date, "event": event})
@@ -224,7 +233,7 @@ class SonarrClient:
         if import_events:
             earliest_import = min(import_events, key=lambda x: x["date"])
             import_date = earliest_import["date"]
-            _log("INFO", f"Found import date: {import_date} for episode {episode_id}")
+            self._log("INFO", f"Found import date: {import_date} for episode {episode_id}")
             
             # Check chronological order of events
             if rename_events:
@@ -237,26 +246,26 @@ class SonarrClient:
                     
                     # If import happened BEFORE rename, it's valid original import
                     if import_dt <= rename_dt:
-                        _log("INFO", f"Import {import_date} happened before/during rename {rename_date} - using import date")
+                        self._log("INFO", f"Import {import_date} happened before/during rename {rename_date} - using import date")
                         return import_date
                     
                     # If rename happened BEFORE import - always use aired date fallback
                     else:
-                        _log("WARNING", f"Rename {rename_date} happened before import {import_date} - using aired date fallback")
+                        self._log("WARNING", f"Rename {rename_date} happened before import {import_date} - using aired date fallback")
                         return None  # Trigger aired date fallback
                         
                 except Exception as e:
-                    _log("DEBUG", f"Error comparing dates: {e}")
+                    self._log("DEBUG", f"Error comparing dates: {e}")
             
             return import_date
         
         # Fallback to grab event
         if grabbed_events:
             earliest_grab = min(grabbed_events, key=lambda x: x["date"])
-            _log("WARNING", f"No import events, using grab date: {earliest_grab['date']} for episode {episode_id}")
+            self._log("WARNING", f"No import events, using grab date: {earliest_grab['date']} for episode {episode_id}")
             return earliest_grab["date"]
         
-        _log("WARNING", f"No reliable import events found for episode {episode_id} - should use air date instead")
+        self._log("WARNING", f"No reliable import events found for episode {episode_id} - should use air date instead")
         return None
 
 

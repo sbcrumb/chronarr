@@ -4,8 +4,7 @@ Provides endpoints for the web-based database manipulation interface
 """
 import json
 import os
-import tempfile
-import multiprocessing
+import re
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import HTTPException, Query, BackgroundTasks
@@ -14,14 +13,12 @@ from pathlib import Path
 from api.models import *
 from utils.logging import _log
 
+# Strip [imdb-tt...] or [tmdb-...] suffixes that media managers append to folder names
+_FOLDER_ID_SUFFIX = re.compile(r'\s*\[[a-z]+-[^\]]+\]', re.IGNORECASE)
 
-# Status file for cross-process communication
-# Use /tmp which is writable in both core and web containers (unlike /app/data,
-# which can be mounted read-only)
-POPULATE_STATUS_FILE = os.path.join(tempfile.gettempdir(), "chronarr_populate_status.json")
-
-# Process tracking
-_populate_process = None
+def _clean_folder_title(raw: str) -> str:
+    """Remove media-manager ID suffixes from a folder name used as a display title."""
+    return _FOLDER_ID_SUFFIX.sub('', raw).strip()
 
 
 def map_source_to_description(source: str) -> str:
@@ -58,9 +55,22 @@ def map_source_to_description(source: str) -> str:
     elif "omdb:" in source_lower:
         return "OMDb Release"
     
-    # Sonarr sources
-    elif "sonarr:" in source_lower:
+    # Sonarr sources — same granularity as Radarr above. This used to be a
+    # single catch-all ("Sonarr API") for every sonarr: source regardless of
+    # whether it actually came from direct DB history, the aired-date
+    # fallback, or a file date — genuinely misleading once instances started
+    # using direct DB access, since a DB-sourced date would still display
+    # as "Sonarr API".
+    elif "sonarr:db.history.import" in source_lower or "sonarr:db.bulk.import" in source_lower:
+        return "Sonarr Import History"
+    elif "sonarr:db.file.dateadded" in source_lower:
+        return "Sonarr File Date"
+    elif "sonarr:aired_fallback" in source_lower:
+        return "Sonarr Air Date"
+    elif "sonarr:api.import_history" in source_lower:
         return "Sonarr API"
+    elif "sonarr:" in source_lower:
+        return "Sonarr"
 
     # Manual and other sources
     elif "manual" in source_lower:
@@ -91,13 +101,14 @@ async def get_movies_list(dependencies: dict,
                          source_filter: Optional[str] = Query(None),
                          search: Optional[str] = Query(None),
                          imdb_search: Optional[str] = Query(None),
-                         skipped: Optional[bool] = Query(None)):
+                         skipped: Optional[bool] = Query(None),
+                         instance_filter: Optional[str] = Query(None)):
     """Get paginated list of movies with filtering options"""
     db = dependencies["db"]
-    
+
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        
+
         # Build dynamic query
         where_conditions = []
         params = []
@@ -110,10 +121,8 @@ async def get_movies_list(dependencies: dict,
 
         if has_date is not None:
             if has_date:
-                # PostgreSQL - NULL handling
                 where_conditions.append("dateadded IS NOT NULL")
             else:
-                # PostgreSQL - NULL handling
                 where_conditions.append("dateadded IS NULL")
 
         if source_filter:
@@ -127,17 +136,21 @@ async def get_movies_list(dependencies: dict,
         if imdb_search:
             where_conditions.append("imdb_id ILIKE %s")
             params.append(f"%{imdb_search}%")
-        
+
+        if instance_filter:
+            where_conditions.append("instance = %s")
+            params.append(instance_filter)
+
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
-        
+
         # Get total count
         count_query = f"SELECT COUNT(*) FROM movies WHERE {where_clause}"
         cursor.execute(count_query, params)
         total_count = db._get_first_value(cursor.fetchone())
-        
-        # Get paginated results - PostgreSQL
+
+        # Get paginated results
         query = f"""
-            SELECT imdb_id, title, year, path, released, dateadded, source, has_video_file, last_updated, skipped, skip_reason
+            SELECT imdb_id, instance, title, year, path, released, dateadded, source, has_video_file, last_updated, skipped, skip_reason
             FROM movies
             WHERE {where_clause}
             ORDER BY last_updated DESC
@@ -169,12 +182,13 @@ async def get_movies_list(dependencies: dict,
 
 
 async def get_tv_series_list(dependencies: dict,
-                           skip: int = Query(0, ge=0), 
+                           skip: int = Query(0, ge=0),
                            limit: int = Query(50, le=500),
                            search: Optional[str] = Query(None),
                            imdb_search: Optional[str] = Query(None),
                            date_filter: Optional[str] = Query(None),
-                           source_filter: Optional[str] = Query(None)):
+                           source_filter: Optional[str] = Query(None),
+                           instance_filter: Optional[str] = Query(None)):
     """Get paginated list of TV series with episode counts"""
     db = dependencies["db"]
     
@@ -199,10 +213,13 @@ async def get_tv_series_list(dependencies: dict,
             params.append(f"%{imdb_search}%")
             
         if source_filter:
-            # Need to check episodes for source filter
             where_conditions.append("e.source = %s")
             params.append(source_filter)
-            
+
+        if instance_filter:
+            where_conditions.append("s.instance = %s")
+            params.append(instance_filter)
+
         if date_filter:
             if date_filter == "complete":
                 # All episodes have dates
@@ -225,14 +242,13 @@ async def get_tv_series_list(dependencies: dict,
 
         # Get total count with same filtering logic as main query
         if having_clause or needs_episode_join:
-            # When using HAVING clause or filtering by episode fields, need to count filtered results with JOIN
             count_query = f"""
                 SELECT COUNT(*) FROM (
-                    SELECT s.imdb_id
+                    SELECT s.imdb_id, s.instance
                     FROM series s
-                    LEFT JOIN episodes e ON s.imdb_id = e.imdb_id
+                    LEFT JOIN episodes e ON s.imdb_id = e.imdb_id AND s.instance = e.instance
                     WHERE {where_clause}
-                    GROUP BY s.imdb_id
+                    GROUP BY s.imdb_id, s.instance
                     {('HAVING ' + having_clause) if having_clause else ''}
                 ) filtered_series
             """
@@ -245,10 +261,10 @@ async def get_tv_series_list(dependencies: dict,
         
         # Get series with episode statistics
         having_part = f" HAVING {having_clause}" if having_clause else ""
-        # PostgreSQL query
         query = f"""
             SELECT
                 s.imdb_id,
+                s.instance,
                 s.path,
                 s.last_updated,
                 COUNT(e.episode) as total_episodes,
@@ -256,9 +272,9 @@ async def get_tv_series_list(dependencies: dict,
                 COUNT(CASE WHEN e.has_video_file = TRUE THEN 1 END) as episodes_with_video,
                 COUNT(CASE WHEN e.skipped = TRUE THEN 1 END) as episodes_skipped
             FROM series s
-            LEFT JOIN episodes e ON s.imdb_id = e.imdb_id
+            LEFT JOIN episodes e ON s.imdb_id = e.imdb_id AND s.instance = e.instance
             WHERE {where_clause}
-            GROUP BY s.imdb_id, s.path, s.last_updated{having_part}
+            GROUP BY s.imdb_id, s.instance, s.path, s.last_updated{having_part}
             ORDER BY s.last_updated DESC
             LIMIT %s OFFSET %s
         """
@@ -269,7 +285,7 @@ async def get_tv_series_list(dependencies: dict,
             series_data = dict(row)
             # Extract title from path
             try:
-                series_data['title'] = Path(series_data['path']).name if series_data['path'] else series_data['imdb_id']
+                series_data['title'] = _clean_folder_title(Path(series_data['path']).name) if series_data['path'] else series_data['imdb_id']
             except:
                 series_data['title'] = series_data['imdb_id']
             series.append(series_data)
@@ -362,32 +378,41 @@ async def debug_series_date_distribution(dependencies: dict):
         }
 
 
-async def get_series_episodes(dependencies: dict, imdb_id: str):
-    """Get all episodes for a specific TV series"""
+async def get_series_episodes(dependencies: dict, imdb_id: str, instance: str = 'sonarr'):
+    """Get all episodes for a specific TV series, scoped to one instance.
+
+    A given IMDb ID can exist independently under multiple Sonarr instances
+    (e.g. a full back-catalog under the default `sonarr` and a separate,
+    smaller pickup under a named instance like `sonarr_strm`) — each is its
+    own series/episodes rows, keyed by (imdb_id, instance). Not filtering by
+    instance here pulled every instance's episodes into one merged list, so
+    a series row that's genuinely only 15 episodes under one instance would
+    show all 175 from every instance sharing the IMDb ID.
+    """
     db = dependencies["db"]
-    
+
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        
+
         # Get series info - PostgreSQL
-        cursor.execute("SELECT * FROM series WHERE imdb_id = %s", (imdb_id,))
+        cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, instance))
         series_row = cursor.fetchone()
         if not series_row:
             raise HTTPException(status_code=404, detail="Series not found")
-        
+
         series_info = dict(series_row)
         try:
-            series_info['title'] = Path(series_info['path']).name if series_info['path'] else imdb_id
+            series_info['title'] = _clean_folder_title(Path(series_info['path']).name) if series_info['path'] else imdb_id
         except:
             series_info['title'] = imdb_id
-        
+
         # Get episodes - PostgreSQL
         cursor.execute("""
-            SELECT season, episode, aired, dateadded, source, has_video_file, last_updated
-            FROM episodes 
-            WHERE imdb_id = %s
+            SELECT season, episode, instance, aired, dateadded, source, has_video_file, last_updated
+            FROM episodes
+            WHERE imdb_id = %s AND instance = %s
             ORDER BY season, episode
-        """, (imdb_id,))
+        """, (imdb_id, instance))
         
         episodes = []
         for row in cursor.fetchall():
@@ -411,8 +436,8 @@ async def get_missing_dates_report(dependencies: dict):
         
         # Movies without dates - PostgreSQL
         cursor.execute("""
-            SELECT imdb_id, path, released, source, last_updated
-            FROM movies 
+            SELECT imdb_id, instance, path, released, source, last_updated
+            FROM movies
             WHERE dateadded IS NULL OR source = 'no_valid_date_source'
             ORDER BY last_updated DESC
         """)
@@ -429,9 +454,9 @@ async def get_missing_dates_report(dependencies: dict):
         
         # Episodes without dates - PostgreSQL
         cursor.execute("""
-            SELECT e.imdb_id, e.season, e.episode, e.aired, e.source, e.last_updated, s.path
+            SELECT e.imdb_id, e.instance, e.season, e.episode, e.aired, e.source, e.last_updated, s.path
             FROM episodes e
-            JOIN series s ON e.imdb_id = s.imdb_id
+            JOIN series s ON e.imdb_id = s.imdb_id AND s.instance = e.instance
             WHERE e.dateadded IS NULL OR e.source = 'no_valid_date_source'
             ORDER BY e.last_updated DESC
         """)
@@ -439,7 +464,7 @@ async def get_missing_dates_report(dependencies: dict):
         for row in cursor.fetchall():
             episode = dict(row)
             try:
-                episode['series_title'] = Path(episode['path']).name if episode['path'] else episode['imdb_id']
+                episode['series_title'] = _clean_folder_title(Path(episode['path']).name) if episode['path'] else episode['imdb_id']
             except:
                 episode['series_title'] = episode['imdb_id']
             # Map source to user-friendly description
@@ -566,7 +591,7 @@ async def get_dashboard_stats(dependencies: dict):
 # Database Modification Endpoints
 # ---------------------------
 
-async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optional[str], source: str):
+async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optional[str], source: str, instance: str = 'radarr'):
     """Update dateadded for a specific movie"""
     db = dependencies["db"]
     
@@ -594,26 +619,27 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
             raise HTTPException(status_code=422, detail=f"Invalid date format: {dateadded}")
     
     # Validate movie exists
-    movie = db.get_movie_dates(imdb_id)
+    movie = db.get_movie_dates(imdb_id, instance)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
-    
+
     # Update the date
     db.upsert_movie_dates(
         imdb_id=imdb_id,
         released=movie.get('released'),
         dateadded=dateadded,
         source=source,
-        has_video_file=movie.get('has_video_file', False)
+        has_video_file=movie.get('has_video_file', False),
+        instance=instance
     )
-    
+
     # Add to processing history
     try:
         db.add_processing_history(
             imdb_id=imdb_id,
             media_type="movie",
             event_type="manual_date_update",
-            details={"old_source": movie.get('source'), "new_source": source, "dateadded": dateadded}
+            details={"old_source": movie.get('source'), "new_source": source, "dateadded": dateadded, "instance": instance}
         )
     except Exception as e:
         print(f"⚠️ Failed to add processing history: {e}")
@@ -623,15 +649,15 @@ async def update_movie_date(dependencies: dict, imdb_id: str, dateadded: Optiona
     return {"status": "success", "message": f"Updated movie {imdb_id}"}
 
 
-async def update_episode_date(dependencies: dict, imdb_id: str, season: int, episode: int, 
-                            dateadded: Optional[str], source: str):
+async def update_episode_date(dependencies: dict, imdb_id: str, season: int, episode: int,
+                            dateadded: Optional[str], source: str, instance: str = 'sonarr'):
     """Update dateadded for a specific episode"""
     db = dependencies["db"]
     
     _log("DEBUG", f"update_episode_date called with dateadded={repr(dateadded)}, source={repr(source)}")
     
     # Get existing episode
-    episode_data = db.get_episode_date(imdb_id, season, episode)
+    episode_data = db.get_episode_date(imdb_id, season, episode, instance)
     if not episode_data:
         raise HTTPException(status_code=404, detail="Episode not found")
     
@@ -655,7 +681,8 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
         aired=episode_data.get('aired'),
         dateadded=dateadded,
         source=source,
-        has_video_file=episode_data.get('has_video_file', False)
+        has_video_file=episode_data.get('has_video_file', False),
+        instance=instance
     )
     
     # Trigger NFO file update via core container
@@ -665,10 +692,18 @@ async def update_episode_date(dependencies: dict, imdb_id: str, season: int, epi
         import json
         import os
         
-        # Get core container connection details
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
-        
+        # Where THIS (web) container reaches core — deliberately not named
+        # CORE_API_HOST/CORE_API_PORT, which are a different pre-existing
+        # pair that control what interface core's own uvicorn binds to
+        # (config/settings.py, main.py). Those two settings look like they
+        # should be the same thing and aren't — setting CORE_API_HOST to a
+        # specific hostname to fix cross-stack DNS collisions (two chronarr
+        # deployments sharing a Docker network) breaks core's own healthcheck
+        # instead, since it stops binding to 0.0.0.0. Learned this the hard
+        # way once already; keep these names distinct.
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+
         # Call core container to update NFO file
         nfo_update_url = f"http://{core_host}:{core_port}/api/episodes/{imdb_id}/{season}/{episode}/update-nfo"
         
@@ -766,12 +801,12 @@ async def bulk_update_source(dependencies: dict, media_type: str, old_source: st
     }
 
 
-async def get_movie_date_options(dependencies: dict, imdb_id: str):
+async def get_movie_date_options(dependencies: dict, imdb_id: str, instance: str = 'radarr'):
     """Get available date options for a movie (Radarr import, digital release, etc.)"""
     db = dependencies["db"]
 
     # Get current movie data
-    movie = db.get_movie_dates(imdb_id)
+    movie = db.get_movie_dates(imdb_id, instance)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
     
@@ -942,9 +977,9 @@ async def get_movie_date_options(dependencies: dict, imdb_id: str):
     }
 
 
-async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int):
+async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
     """Get available date options for an episode"""
-    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}")
+    _log("DEBUG", f"get_episode_date_options called with imdb_id={imdb_id}, season={season}, episode={episode}, instance={instance}")
     db = dependencies["db"]
     
     # Validate parameters with enhanced checking
@@ -969,7 +1004,7 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
         raise HTTPException(status_code=422, detail=f"Invalid parameter types: {e}")
     
     # Get current episode data
-    episode_data = db.get_episode_date(imdb_id, season, episode)
+    episode_data = db.get_episode_date(imdb_id, season, episode, instance)
     _log("DEBUG", f"Episode data from DB: {episode_data}")
     if not episode_data:
         print(f"❌ Episode not found in database: {imdb_id} S{season:02d}E{episode:02d}")
@@ -1280,193 +1315,16 @@ async def get_episode_date_options(dependencies: dict, imdb_id: str, season: int
     }
 
 
-def _populate_worker_process(media_type: str, status_file: str):
-    """
-    Worker process that runs database population in complete isolation.
-    Runs in separate process - keeps web interface responsive.
-    """
-    import os
-    import sys
-    import json
-    from datetime import datetime
-
-    # Add parent directory to path for imports
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-    def update_status(status_data):
-        """Write status to file for main process to read"""
-        try:
-            with open(status_file, 'w') as f:
-                json.dump(status_data, f)
-        except Exception as e:
-            print(f"ERROR: Failed to update status file: {e}")
-
-    # Initialize status
-    status = {
-        "running": True,
-        "media_type": media_type,
-        "start_time": datetime.now().isoformat(),
-        "movies": {"status": "pending", "stats": None},
-        "tv": {"status": "pending", "stats": None},
-        "completed": False,
-        "error": None
-    }
-    update_status(status)
-
-    try:
-        # Import here (inside process) to avoid pickling issues
-        from core.database import ChronarrDatabase
-        from core.database_populator import DatabasePopulator
-        from clients.radarr_client import RadarrClient
-        from clients.sonarr_client import SonarrClient
-        from config.settings import config
-
-        # Initialize components
-        db = ChronarrDatabase(config)
-        radarr_client = RadarrClient(
-            os.environ.get("RADARR_URL", ""),
-            os.environ.get("RADARR_API_KEY", "")
-        )
-        sonarr_client = SonarrClient(
-            os.environ.get("SONARR_URL", ""),
-            os.environ.get("SONARR_API_KEY", "")
-        )
-
-        populator = DatabasePopulator(db, radarr_client, sonarr_client)
-
-        print(f"INFO: [Worker Process] Starting database population: {media_type}")
-
-        # Run population based on media type
-        if media_type in ["movies", "both"]:
-            status["movies"]["status"] = "running"
-            update_status(status)
-
-            movie_stats = populator.populate_movies()
-
-            status["movies"]["status"] = "completed"
-            status["movies"]["stats"] = movie_stats
-            update_status(status)
-            print(f"INFO: [Worker Process] Movie population completed: {movie_stats}")
-
-        if media_type in ["tv", "both"]:
-            status["tv"]["status"] = "running"
-            update_status(status)
-
-            tv_stats = populator.populate_tv_episodes()
-
-            status["tv"]["status"] = "completed"
-            status["tv"]["stats"] = tv_stats
-            update_status(status)
-            print(f"INFO: [Worker Process] TV population completed: {tv_stats}")
-
-        # Mark as completed
-        status["completed"] = True
-        status["running"] = False
-        update_status(status)
-        print("INFO: [Worker Process] Database population completed successfully")
-
-    except Exception as e:
-        print(f"ERROR: [Worker Process] Database population failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-        status["error"] = str(e)
-        status["running"] = False
-        status["completed"] = True
-        update_status(status)
-
-
-async def populate_database(background_tasks: BackgroundTasks, media_type: str = "both", dependencies: dict = None):
-    """
-    Populate Chronarr database from Radarr/Sonarr sources in separate process.
-    This keeps the web interface responsive during population.
-
-    Args:
-        background_tasks: FastAPI background tasks (not used - kept for compatibility)
-        media_type: Type of media to populate ("movies", "tv", or "both")
-        dependencies: Dictionary with dependencies (not used in multiprocessing mode)
-
-    Returns:
-        Status message indicating population has started
-    """
-    global _populate_process
-
-    if media_type not in ["both", "movies", "tv"]:
-        raise HTTPException(status_code=400, detail="media_type must be 'both', 'movies', or 'tv'")
-
-    # Check if process is already running
-    if _populate_process and _populate_process.is_alive():
-        return {
-            "status": "already_running",
-            "message": "Database population is already in progress"
-        }
-
-    # Initialize status file
-    initial_status = {
-        "running": True,
-        "media_type": media_type,
-        "start_time": datetime.now().isoformat(),
-        "movies": {"status": "pending", "stats": None},
-        "tv": {"status": "pending", "stats": None},
-        "completed": False,
-        "error": None
-    }
-
-    try:
-        with open(POPULATE_STATUS_FILE, 'w') as f:
-            json.dump(initial_status, f)
-    except Exception as e:
-        print(f"ERROR: Failed to initialize status file: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to initialize status tracking: {e}")
-
-    # Start population in separate process
-    _populate_process = multiprocessing.Process(
-        target=_populate_worker_process,
-        args=(media_type, POPULATE_STATUS_FILE),
-        daemon=False  # Keep process alive even if parent exits
-    )
-    _populate_process.start()
-
-    _log("INFO", f"Database population process started for: {media_type}")
-    return {
-        "status": "started",
-        "media_type": media_type,
-        "message": f"Database population started for {media_type}"
-    }
-
-
-async def get_populate_status():
-    """Get the current status of database population from status file"""
-    global _populate_process
-
-    # Check if status file exists
-    if not os.path.exists(POPULATE_STATUS_FILE):
-        return {"running": False, "completed": False}
-
-    # Read status from file
-    try:
-        with open(POPULATE_STATUS_FILE, 'r') as f:
-            status = json.load(f)
-
-        # Check if process is still alive
-        if _populate_process:
-            status["process_alive"] = _populate_process.is_alive()
-            if not _populate_process.is_alive() and status.get("running"):
-                # Process died unexpectedly
-                status["running"] = False
-                status["completed"] = True
-                if not status.get("error"):
-                    status["error"] = "Process terminated unexpectedly"
-
-        return status
-
-    except Exception as e:
-        print(f"ERROR: Failed to read status file: {e}")
-        return {
-            "running": False,
-            "completed": True,
-            "error": f"Failed to read status: {e}"
-        }
+# Database population used to run its worker process directly in this
+# container (multiprocessing.Process + a status file), the same way
+# /manual/scan and /manual/cleanup-orphaned already proxy to chronarr-core
+# below. Moved to chronarr-core (2026-09-15): this container has no LOG_DIR
+# volume mount, so every _log() call DatabasePopulator made was writing to a
+# path invisible on the host and lost on restart — docker logs showed it
+# live (print() doesn't care about mounts) but the persisted chronarr.log
+# never got it. See api/routes.py for the real implementation; the
+# /admin/populate-database and /api/populate/status handlers below now just
+# proxy to it.
 
 
 def register_web_routes(app, dependencies):
@@ -1486,8 +1344,8 @@ def register_web_routes(app, dependencies):
     @app.get("/api/movies")
     async def api_movies_list(skip: int = 0, limit: int = 100, has_date: bool = None,
                              source_filter: str = None, search: str = None, imdb_search: str = None,
-                             skipped: bool = None):
-        return await get_movies_list(dependencies, skip, limit, has_date, source_filter, search, imdb_search, skipped)
+                             skipped: bool = None, instance: str = None):
+        return await get_movies_list(dependencies, skip, limit, has_date, source_filter, search, imdb_search, skipped, instance)
     
     @app.post("/api/movies/{imdb_id}/update-date")
     async def api_update_movie_date(imdb_id: str, dateadded: str = None, source: str = "manual"):
@@ -1500,28 +1358,30 @@ def register_web_routes(app, dependencies):
             data = await request.json()
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
+            instance = data.get('instance', 'radarr')
 
             _log("DEBUG", f"API PUT /api/movies/{imdb_id} - Received JSON:")
             print(f"   - Raw data: {data}")
             print(f"   - dateadded: {dateadded}")
             print(f"   - source: {source}")
+            print(f"   - instance: {instance}")
 
-            return await update_movie_date(dependencies, imdb_id, dateadded, source)
+            return await update_movie_date(dependencies, imdb_id, dateadded, source, instance)
         except Exception as e:
             print(f"❌ Error parsing request body: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
     
     @app.get("/api/movies/{imdb_id}/date-options")
-    async def api_movie_date_options(imdb_id: str):
-        return await get_movie_date_options(dependencies, imdb_id)
+    async def api_movie_date_options(imdb_id: str, instance: str = 'radarr'):
+        return await get_movie_date_options(dependencies, imdb_id, instance)
 
     @app.get("/api/debug/movie/{imdb_id}/raw")
-    async def api_debug_movie_raw(imdb_id: str):
+    async def api_debug_movie_raw(imdb_id: str, instance: str = 'radarr'):
         """Get raw database data for a movie for debugging"""
         db = dependencies["db"]
 
         try:
-            movie = db.get_movie_dates(imdb_id)
+            movie = db.get_movie_dates(imdb_id, instance)
 
             if not movie:
                 raise HTTPException(status_code=404, detail="Movie not found")
@@ -1538,13 +1398,13 @@ def register_web_routes(app, dependencies):
             raise HTTPException(status_code=500, detail=f"Failed to get debug data: {str(e)}")
 
     @app.delete("/api/movies/{imdb_id}")
-    async def api_delete_movie(imdb_id: str):
+    async def api_delete_movie(imdb_id: str, instance: str = 'radarr'):
         """Delete a movie from the database"""
         db = dependencies["db"]
-        
+
         try:
             # Use the existing database method
-            deleted = db.delete_movie(imdb_id)
+            deleted = db.delete_movie(imdb_id, instance)
             
             if deleted:
                 return {
@@ -1599,13 +1459,14 @@ def register_web_routes(app, dependencies):
 
     # TV series endpoints
     @app.get("/api/series")
-    async def api_series_list(skip: int = 0, limit: int = 50, search: str = None, 
-                             imdb_search: str = None, date_filter: str = None, source_filter: str = None):
-        return await get_tv_series_list(dependencies, skip, limit, search, imdb_search, date_filter, source_filter)
+    async def api_series_list(skip: int = 0, limit: int = 50, search: str = None,
+                             imdb_search: str = None, date_filter: str = None,
+                             source_filter: str = None, instance: str = None):
+        return await get_tv_series_list(dependencies, skip, limit, search, imdb_search, date_filter, source_filter, instance)
     
     @app.get("/api/series/{imdb_id}/episodes")
-    async def api_series_episodes(imdb_id: str):
-        return await get_series_episodes(dependencies, imdb_id)
+    async def api_series_episodes(imdb_id: str, instance: str = 'sonarr'):
+        return await get_series_episodes(dependencies, imdb_id, instance)
     
     @app.get("/api/series/sources")
     async def api_series_sources():
@@ -1650,6 +1511,32 @@ def register_web_routes(app, dependencies):
             print(f"❌ Error migrating series IMDb ID: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to migrate IMDb ID: {str(e)}")
 
+    @app.delete("/api/series/{imdb_id}")
+    async def api_delete_series(imdb_id: str, instance: str = 'sonarr'):
+        """Delete a series and all its episodes from the database"""
+        db = dependencies["db"]
+
+        try:
+            episodes_deleted = db.delete_series_episodes(imdb_id, instance)
+            series_deleted = db.delete_series(imdb_id, instance)
+
+            if series_deleted or episodes_deleted > 0:
+                return {
+                    "success": True,
+                    "status": "success",
+                    "message": f"Deleted series {imdb_id} and {episodes_deleted} episode(s)",
+                    "imdb_id": imdb_id,
+                    "episodes_deleted": episodes_deleted
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Series not found")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Error deleting series: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete series: {str(e)}")
+
     # Episode endpoints
     @app.post("/api/episodes/{imdb_id}/{season}/{episode}/update-date")
     async def api_update_episode_date(imdb_id: str, season: int, episode: int, 
@@ -1663,23 +1550,24 @@ def register_web_routes(app, dependencies):
             data = await request.json()
             dateadded = data.get('dateadded')
             source = data.get('source', 'manual')
-            return await update_episode_date(dependencies, imdb_id, season, episode, dateadded, source)
+            instance = data.get('instance', 'sonarr')
+            return await update_episode_date(dependencies, imdb_id, season, episode, dateadded, source, instance)
         except Exception as e:
             print(f"❌ Error parsing episode update request: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
     
     @app.get("/api/episodes/{imdb_id}/{season}/{episode}/date-options")
-    async def api_episode_date_options(imdb_id: str, season: int, episode: int):
-        return await get_episode_date_options(dependencies, imdb_id, season, episode)
+    async def api_episode_date_options(imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
+        return await get_episode_date_options(dependencies, imdb_id, season, episode, instance)
     
     @app.delete("/api/episodes/{imdb_id}/{season}/{episode}")
-    async def api_delete_episode(imdb_id: str, season: int, episode: int):
+    async def api_delete_episode(imdb_id: str, season: int, episode: int, instance: str = 'sonarr'):
         """Delete an episode from the database"""
         db = dependencies["db"]
-        
+
         try:
             # Use the existing database method
-            deleted = db.delete_episode(imdb_id, season, episode)
+            deleted = db.delete_episode(imdb_id, season, episode, instance)
             
             if deleted:
                 return {
@@ -1826,8 +1714,8 @@ def register_web_routes(app, dependencies):
         import socket
         
         # Get core container URL
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         
         # Forward query parameters from the request
         query_string = str(request.url.query) if request.url.query else ""
@@ -1863,8 +1751,8 @@ def register_web_routes(app, dependencies):
         import socket
 
         # Get core container URL
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         core_url = f"http://{core_host}:{core_port}/manual/cleanup-orphaned"
 
         try:
@@ -1983,8 +1871,8 @@ def register_web_routes(app, dependencies):
         import socket
         
         # Get core container connection details
-        core_host = os.environ.get("CORE_API_HOST", "chronarr")
-        core_port = os.environ.get("CORE_API_PORT", "8080")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
         
         try:
             # Call core container's detailed scan status endpoint
@@ -2412,27 +2300,320 @@ def register_database_admin_routes(app, dependencies):
         """Get schedule execution history"""
         return await get_schedule_executions(dependencies, schedule_id)
 
-    # Database population endpoints
-    _log("DEBUG", "Registering /admin/populate-database endpoint...")
-
+    # Database population endpoints (proxy to core container — see the note
+    # above register_web_routes() for why this doesn't run locally anymore)
     @app.post("/admin/populate-database")
-    async def api_populate_database(request: Request, background_tasks: BackgroundTasks):
-        """Populate database from Radarr/Sonarr"""
-        _log("DEBUG", "populate-database endpoint called!")
+    async def api_populate_database(request: Request):
+        """Proxy populate-database requests to core container"""
+        import urllib.request
+        import urllib.parse
+        import urllib.error
+        import socket
+
         try:
             data = await request.json()
             media_type = data.get("media_type", "both")
+            instance = data.get("instance", "all")
         except Exception:
-            # Fallback to query parameter if JSON parsing fails
+            # Fallback to query parameters if JSON parsing fails
             media_type = request.query_params.get("media_type", "both")
-        return await populate_database(background_tasks, media_type, dependencies)
+            instance = request.query_params.get("instance", "all")
 
-    _log("DEBUG", "/admin/populate-database registered")
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query_string = urllib.parse.urlencode({"media_type": media_type, "instance": instance})
+        core_url = f"http://{core_host}:{core_port}/admin/populate-database?{query_string}"
+
+        try:
+            req = urllib.request.Request(core_url, method='POST')
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core container HTTP error: {e.reason}")
+        except urllib.error.URLError as e:
+            raise HTTPException(status_code=503, detail=f"Could not connect to core container: {str(e)}")
+        except socket.timeout:
+            raise HTTPException(status_code=504, detail="Core container request timed out")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Populate database request failed: {str(e)}")
 
     @app.get("/api/populate/status")
     async def api_populate_status():
-        """Get database population status"""
-        return await get_populate_status()
+        """Proxy populate status requests to core container"""
+        import urllib.request
+        import urllib.error
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/populate/status"
+
+        try:
+            req = urllib.request.Request(core_url, method='GET')
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core container HTTP error: {e.reason}")
+        except urllib.error.URLError as e:
+            raise HTTPException(status_code=503, detail=f"Could not connect to core container: {str(e)}")
+        except socket.timeout:
+            raise HTTPException(status_code=504, detail="Core container request timed out")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Populate status request failed: {str(e)}")
+
+    # /setup page and its data endpoint — proxy /api/instances to the core
+    @app.get("/api/instances")
+    async def api_instances(request: Request):
+        """Proxy instance list and connection status from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/instances"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/wizard/instance-details")
+    async def wizard_instance_details(request: Request):
+        """Proxy an instance's full config (for pre-filling Edit) from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/wizard/instance-details" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8")
+            try:
+                detail = json.loads(detail).get("detail", detail)
+            except ValueError:
+                pass
+            raise HTTPException(status_code=e.code, detail=detail)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    async def _proxy_post_to_core(path: str, body: dict):
+        """Forward a wizard POST to the core container and hand back its response as-is.
+
+        Same host/port lookup and error handling as the /api/instances GET
+        proxy above — core owns the InstanceRegistry and the env files, so
+        every wizard write goes through it rather than the web container
+        touching config directly.
+        """
+        import urllib.request
+        import urllib.error
+        import json as _json
+        import os as _os
+        import socket
+
+        core_host = _os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = _os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}{path}"
+
+        data = _json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(core_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Core sends back a real error detail (bad name, failed test, etc.) —
+            # pass it through instead of flattening everything to a generic 500.
+            detail = e.read().decode("utf-8")
+            try:
+                detail = _json.loads(detail).get("detail", detail)
+            except ValueError:
+                pass
+            raise HTTPException(status_code=e.code, detail=detail)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/wizard/test-connection")
+    async def wizard_test_connection(request: Request):
+        """Proxy the wizard's connection test to the core container."""
+        return await _proxy_post_to_core("/api/wizard/test-connection", await request.json())
+
+    @app.post("/api/wizard/save-instance")
+    async def wizard_save_instance(request: Request):
+        """Proxy the wizard's save (writes .env/.env.secrets) to the core container."""
+        return await _proxy_post_to_core("/api/wizard/save-instance", await request.json())
+
+    @app.post("/api/wizard/delete-instance")
+    async def wizard_delete_instance(request: Request):
+        """Proxy the wizard's delete (removes .env/.env.secrets entries) to the core container."""
+        return await _proxy_post_to_core("/api/wizard/delete-instance", await request.json())
+
+    @app.get("/api/wizard/env-backup")
+    async def wizard_env_backup():
+        """Proxy the .env/.env.secrets backup download from the core container.
+
+        Passed through as raw bytes with the same Content-Disposition header
+        core set, rather than re-parsed as JSON — this is a file download,
+        not a data endpoint.
+        """
+        import urllib.request
+        import urllib.error
+        import os as _os
+        import socket
+
+        core_host = _os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = _os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/wizard/env-backup"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read()
+                disposition = resp.headers.get("Content-Disposition", "attachment; filename=chronarr-env-backup.json")
+                return Response(content=body, media_type="application/json", headers={"Content-Disposition": disposition})
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=e.reason)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/wizard/env-restore")
+    async def wizard_env_restore(request: Request):
+        """Proxy the wizard's env-file restore (overwrites .env/.env.secrets) to core."""
+        return await _proxy_post_to_core("/api/wizard/env-restore", await request.json())
+
+    @app.get("/api/logs")
+    async def logs_list():
+        """Proxy the log file listing from the core container (only core has LOG_DIR mounted)."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/logs"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/logs/{filename}/tail")
+    async def logs_tail(filename: str, request: Request):
+        """Proxy the log tail (last N lines, as JSON) from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/logs/{filename}/tail" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8")
+            try:
+                detail = json.loads(detail).get("detail", detail)
+            except (ValueError, AttributeError):
+                pass
+            raise HTTPException(status_code=e.code, detail=detail)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/logs/{filename}/download")
+    async def logs_download(filename: str):
+        """Proxy a log file download from the core container.
+
+        Passed through as raw bytes with the same Content-Disposition/media
+        type core set, rather than re-parsed — this is a file download.
+        """
+        import urllib.request
+        import urllib.error
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/logs/{filename}/download"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read()
+                disposition = resp.headers.get("Content-Disposition", f'attachment; filename="{filename}"')
+                return Response(content=body, media_type="text/plain", headers={"Content-Disposition": disposition})
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=e.reason)
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.get("/api/unresolved-lookups")
+    async def unresolved_lookups_list(request: Request):
+        """Proxy the unresolved plugin-lookups list from the core container."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/unresolved-lookups" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/unresolved-lookups/{lookup_id}/dismiss")
+    async def unresolved_lookups_dismiss(lookup_id: int):
+        """Proxy dismissing an unresolved plugin lookup to the core container."""
+        return await _proxy_post_to_core(f"/api/unresolved-lookups/{lookup_id}/dismiss", {})
+
+    @app.post("/api/unresolved-lookups/dismiss-all")
+    async def unresolved_lookups_dismiss_all():
+        """Proxy dismissing every active unresolved plugin lookup to the core container."""
+        return await _proxy_post_to_core("/api/unresolved-lookups/dismiss-all", {})
+
+    @app.get("/setup")
+    async def setup_page():
+        """Serve the instance setup / webhook URL reference page."""
+        import os
+        setup_file = os.path.join(os.path.dirname(__file__), "..", "static", "setup.html")
+        from fastapi.responses import FileResponse
+        if os.path.exists(setup_file):
+            return FileResponse(os.path.normpath(setup_file))
+        raise HTTPException(status_code=404, detail="Setup page not found")
 
 
 # Scheduled Scans Functions

@@ -10,7 +10,7 @@ from urllib.parse import urlencode, urljoin
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.error import URLError, HTTPError
 
-from core.logging import _log
+from core.logging import _log as _log_raw
 
 # Import path mapper for proper path handling
 try:
@@ -55,11 +55,12 @@ class RadarrClient:
         'usenet', 'torrent', 'radarr', 'completed', 'processing'
     ]
     
-    def __init__(self, base_url: str, api_key: str, timeout: int = 45, retries: int = 3):
+    def __init__(self, base_url: str, api_key: str, timeout: int = 45, retries: int = 3, instance_name: str = ""):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.retries = max(0, retries)
+        self.instance_name = instance_name
         
         # Initialize database client - REQUIRED for operation
         self.db_client = None
@@ -67,14 +68,22 @@ class RadarrClient:
             try:
                 self.db_client = RadarrDbClient.from_env()
                 if self.db_client:
-                    _log("INFO", "✅ DATABASE ONLY MODE: Direct database access enabled")
+                    self._log("INFO", "✅ DATABASE ONLY MODE: Direct database access enabled")
                 else:
-                    _log("ERROR", "❌ DATABASE ONLY MODE: Database configuration required - API mode disabled")
+                    self._log("ERROR", "❌ DATABASE ONLY MODE: Database configuration required - API mode disabled")
             except Exception as e:
-                _log("ERROR", f"❌ DATABASE ONLY MODE: Failed to initialize database client: {e}")
+                self._log("ERROR", f"❌ DATABASE ONLY MODE: Failed to initialize database client: {e}")
                 self.db_client = None
         else:
-            _log("ERROR", "❌ DATABASE ONLY MODE: RadarrDbClient not available - check dependencies")
+            self._log("ERROR", "❌ DATABASE ONLY MODE: RadarrDbClient not available - check dependencies")
+
+    def _log(self, level: str, message: str) -> None:
+        """Log with this client's instance name prefixed, so a log line is
+        traceable back to which Radarr/Sonarr instance it came from — matters
+        as soon as there's more than one of the same type configured.
+        """
+        prefix = f"[{self.instance_name}] " if self.instance_name else ""
+        _log_raw(level, f"{prefix}{message}")
 
     def _get(self, path: str, params: Dict[str, Any] = None) -> Optional[Any]:
         """Make GET request to Radarr API with retries"""
@@ -93,7 +102,7 @@ class RadarrClient:
                 if params:
                     url = url + ("&" if "?" in url else "?") + urlencode(params)
                 
-                _log("DEBUG", f"Radarr API Request: {url}")
+                self._log("DEBUG", f"Radarr API Request: {url}")
                 req = UrlRequest(url, headers={"Accept": "application/json"})
                 
                 with urlopen(req, timeout=self.timeout) as resp:
@@ -103,34 +112,34 @@ class RadarrClient:
                     
             except (URLError, HTTPError, json.JSONDecodeError) as e:
                 last_err = e
-                _log("DEBUG", f"Radarr API attempt {attempt + 1} failed: {e}")
+                self._log("DEBUG", f"Radarr API attempt {attempt + 1} failed: {e}")
                 time.sleep(min(2 ** attempt, 5))  # Exponential backoff
                 attempt += 1
         
-        _log("WARNING", f"Radarr GET {path} failed after {self.retries + 1} attempts: {last_err}")
+        self._log("WARNING", f"Radarr GET {path} failed after {self.retries + 1} attempts: {last_err}")
         return None
 
     def movie_by_imdb(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """Find movie by IMDb ID - DATABASE ONLY mode"""
         imdb_id = imdb_id if imdb_id.startswith("tt") else f"tt{imdb_id}"
-        _log("DEBUG", f"Looking up movie by IMDb ID: {imdb_id}")
+        self._log("DEBUG", f"Looking up movie by IMDb ID: {imdb_id}")
         
         # Database required - no API fallback
         if self.db_client:
             try:
                 movie = self.db_client.get_movie_by_imdb(imdb_id)
                 if movie:
-                    _log("INFO", f"✅ Found via database: {movie.get('title')} (ID: {movie.get('id')})")
+                    self._log("INFO", f"✅ Found via database: {movie.get('title')} (ID: {movie.get('id')})")
                     return movie
                 else:
-                    _log("WARNING", f"Movie not found in database for IMDb ID: {imdb_id}")
+                    self._log("WARNING", f"Movie not found in database for IMDb ID: {imdb_id}")
                     return None
             except Exception as e:
-                _log("ERROR", f"Database lookup failed: {e}")
+                self._log("ERROR", f"Database lookup failed: {e}")
                 return None
         
         # No database client available
-        _log("ERROR", "Database client required for movie lookup - API mode disabled")
+        self._log("ERROR", "Database client required for movie lookup - API mode disabled")
         return None
 
     def _analyze_event_for_import(self, event: Dict[str, Any], movie_info: Dict[str, Any] = None) -> Tuple[bool, str, Optional[str]]:
@@ -202,15 +211,15 @@ class RadarrClient:
                 # Check if both title and year are in the source
                 if movie_title and movie_year:
                     if movie_title in source_clean and movie_year in source_clean:
-                        _log("DEBUG", f"✅ Match found - Title: {movie_title}, Year: {movie_year}")
+                        self._log("DEBUG", f"✅ Match found - Title: {movie_title}, Year: {movie_year}")
                         return True, "matched_title_and_year", date_iso
                         
                 # Also check for downloads path as secondary validation
                 if path_mapper.is_download_path(source):
-                    _log("DEBUG", f"Source is from downloads: {source}")
+                    self._log("DEBUG", f"Source is from downloads: {source}")
                     return True, "from_downloads_path", date_iso
                     
-            _log("DEBUG", f"⚠️ No match found in sources: {source_items}")
+            self._log("DEBUG", f"⚠️ No match found in sources: {source_items}")
             return False, "no_title_year_match", date_iso
         
         # Fallback to basic path validation if no movie info
@@ -225,12 +234,12 @@ class RadarrClient:
         Find earliest real import event with optimized querying.
         Stops as soon as we find valid import events instead of loading everything.
         """
-        _log("INFO", f"Finding earliest import for movie_id {movie_id}")
+        self._log("INFO", f"Finding earliest import for movie_id {movie_id}")
         
         # Get movie info for path validation
         movie_info = self._get(f"/api/v3/movie/{movie_id}")
         if not movie_info or not isinstance(movie_info, dict):
-            _log("ERROR", f"Could not get movie info for ID {movie_id}")
+            self._log("ERROR", f"Could not get movie info for ID {movie_id}")
             return None
         
         earliest_real_import = None
@@ -256,7 +265,7 @@ class RadarrClient:
             if not items:
                 break
             
-            _log("DEBUG", f"Page {page}: Processing {len(items)} events")
+            self._log("DEBUG", f"Page {page}: Processing {len(items)} events")
             
             for event in items:
                 total_processed += 1
@@ -280,7 +289,7 @@ class RadarrClient:
                     else:
                         event_type = int(event_type)
                 except (ValueError, TypeError):
-                    _log("DEBUG", f"Unknown event type: {event_type}")
+                    self._log("DEBUG", f"Unknown event type: {event_type}")
                     continue
                 
                 # Check for grab events (type 1) - but validate it's a real download
@@ -302,9 +311,9 @@ class RadarrClient:
                             # Only count grabs that have actual download metadata
                             if source_title or indexer:
                                 first_grab = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).astimezone(timezone.utc).isoformat(timespec="seconds")
-                                _log("DEBUG", f"Found real grab event with source '{source_title}' from '{indexer}' at {first_grab}")
+                                self._log("DEBUG", f"Found real grab event with source '{source_title}' from '{indexer}' at {first_grab}")
                             else:
-                                _log("DEBUG", f"Skipping grab event without download info at {event.get('date')}")
+                                self._log("DEBUG", f"Skipping grab event without download info at {event.get('date')}")
                         except Exception:
                             pass
                 
@@ -321,7 +330,7 @@ class RadarrClient:
                     try:
                         event_data = json.loads(event_data)
                     except (json.JSONDecodeError, AttributeError) as e:
-                        _log("DEBUG", f"Failed to parse event data JSON: {e}")
+                        self._log("DEBUG", f"Failed to parse event data JSON: {e}")
                         continue
                 elif not isinstance(event_data, dict):
                     continue
@@ -343,9 +352,9 @@ class RadarrClient:
                     f"[{movie_imdb}]" in imported_path or
                     movie_imdb in imported_path
                 ):
-                    _log("INFO", f"Found potential IMDb match in {event_type} event: {imported_path}")
+                    self._log("INFO", f"Found potential IMDb match in {event_type} event: {imported_path}")
                     date_iso = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).astimezone(timezone.utc).isoformat(timespec="seconds")
-                    _log("INFO", f"✅ FOUND IMPORT: exact IMDb match at {date_iso}")
+                    self._log("INFO", f"✅ FOUND IMPORT: exact IMDb match at {date_iso}")
                     earliest_real_import = date_iso
                     break
 
@@ -358,8 +367,8 @@ class RadarrClient:
                     # Look for both title and year in the path
                     if clean_title in clean_path and movie_year in clean_path:
                         date_iso = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).astimezone(timezone.utc).isoformat(timespec="seconds")
-                        _log("INFO", f"Found potential title/year match for event type {event_type}: {clean_title} ({movie_year})")
-                        _log("INFO", f"✅ FOUND IMPORT at {date_iso}")
+                        self._log("INFO", f"Found potential title/year match for event type {event_type}: {clean_title} ({movie_year})")
+                        self._log("INFO", f"✅ FOUND IMPORT at {date_iso}")
                         earliest_real_import = date_iso
                         break
                             
@@ -380,7 +389,7 @@ class RadarrClient:
                             f"[{movie_imdb}]" in source_path or
                             movie_imdb in source_path
                         ):
-                            _log("INFO", f"✅ FOUND IMPORT: IMDb match in path at {date_iso}")
+                            self._log("INFO", f"✅ FOUND IMPORT: IMDb match in path at {date_iso}")
                             earliest_real_import = date_iso
                             break
                         
@@ -388,11 +397,11 @@ class RadarrClient:
                         movie_title = (movie_info.get("title", "") or "").lower().replace(":", ".").replace(" ", ".")
                         movie_year = str(movie_info.get("year", ""))
                         if movie_title and movie_year and movie_title in source_path and movie_year in source_path:
-                            _log("INFO", f"✅ FOUND IMPORT: Title/year match at {date_iso}")
+                            self._log("INFO", f"✅ FOUND IMPORT: Title/year match at {date_iso}")
                             earliest_real_import = date_iso
                             break
                 elif event_type == 3:
-                    _log("DEBUG", f"⚠️  Skipped import event: {reason}")
+                    self._log("DEBUG", f"⚠️  Skipped import event: {reason}")
             
             # If we found a real import, no need to continue
             if earliest_real_import:
@@ -404,27 +413,27 @@ class RadarrClient:
                 
             page += 1
         
-        _log("INFO", f"Processed {total_processed} events across {page-1} pages")
+        self._log("INFO", f"Processed {total_processed} events across {page-1} pages")
         
         if earliest_real_import:
-            _log("INFO", f"✅ Using earliest real import: {earliest_real_import}")
+            self._log("INFO", f"✅ Using earliest real import: {earliest_real_import}")
             return earliest_real_import
             
         if first_grab:
-            _log("WARNING", f"⚠️  No real imports found, using grab date: {first_grab}")
+            self._log("WARNING", f"⚠️  No real imports found, using grab date: {first_grab}")
             return first_grab
             
-        _log("ERROR", f"❌ No import or grab events found for movie_id {movie_id}")
+        self._log("ERROR", f"❌ No import or grab events found for movie_id {movie_id}")
         return None
 
     def movie_files(self, movie_id: int) -> List[Dict[str, Any]]:
         """Get movie files for a movie - DATABASE ONLY mode"""
         if self.db_client:
-            _log("INFO", "Using database for movie files lookup")
+            self._log("INFO", "Using database for movie files lookup")
             # Database handles this internally in get_movie_file_date()
             return []
         
-        _log("ERROR", "Database client required for movie files - API mode disabled")
+        self._log("ERROR", "Database client required for movie files - API mode disabled")
         return []
 
     def earliest_file_dateadded(self, movie_id: int) -> Optional[str]:
@@ -433,10 +442,10 @@ class RadarrClient:
             try:
                 return self.db_client.get_movie_file_date(movie_id)
             except Exception as e:
-                _log("ERROR", f"Database file date query failed: {e}")
+                self._log("ERROR", f"Database file date query failed: {e}")
                 return None
         
-        _log("ERROR", "Database client required for file dates - API mode disabled")
+        self._log("ERROR", "Database client required for file dates - API mode disabled")
         return None
 
     def get_movie_import_date(self, movie_id: int, fallback_to_file_date: bool = True) -> Tuple[Optional[str], str]:
@@ -453,19 +462,19 @@ class RadarrClient:
                 if date_iso:
                     return date_iso, source
                 else:
-                    _log("WARNING", f"No import date found in database for movie_id {movie_id}")
+                    self._log("WARNING", f"No import date found in database for movie_id {movie_id}")
                     return None, "radarr:db.no_date_found"
             except Exception as e:
-                _log("ERROR", f"Database import date query failed: {e}")
+                self._log("ERROR", f"Database import date query failed: {e}")
                 return None, "radarr:db.error"
         
         # No database client available
-        _log("ERROR", "Database client required for import date detection - API mode disabled")
+        self._log("ERROR", "Database client required for import date detection - API mode disabled")
         return None, "radarr:db.not_configured"
 
     def _get_earliest_import_date(self, movie_id: int, movie_info: Dict) -> Optional[str]:
         """Get the earliest import date from Radarr history."""
-        _log("INFO", f"Finding earliest import for movie_id {movie_id}")
+        self._log("INFO", f"Finding earliest import for movie_id {movie_id}")
         
         earliest_real_import = None
         earliest_grab_date = None
@@ -492,7 +501,7 @@ class RadarrClient:
                 # Track earliest grab date as fallback (EventType 1)
                 if event_type == 1 and not earliest_grab_date:
                     earliest_grab_date = event_date
-                    _log("DEBUG", f"Found first grab event at {earliest_grab_date}")
+                    self._log("DEBUG", f"Found first grab event at {earliest_grab_date}")
                     continue
                 
                 # Look for import events (EventType 3)
@@ -500,7 +509,7 @@ class RadarrClient:
                     try:
                         data = json.loads(event.get("data", "{}"))
                         if data.get("importedPath"):
-                            _log("INFO", f"✅ FOUND IMPORT at {event_date}")
+                            self._log("INFO", f"✅ FOUND IMPORT at {event_date}")
                             earliest_real_import = event_date
                             break
                     except (json.JSONDecodeError, AttributeError):
@@ -513,12 +522,12 @@ class RadarrClient:
             total_events += len(history_data)
             page += 1
 
-        _log("INFO", f"Processed {total_events} events across {page}")
+        self._log("INFO", f"Processed {total_events} events across {page}")
 
         if earliest_real_import:
             return earliest_real_import
         if earliest_grab_date:
-            _log("WARNING", f"⚠️  No EventType 3 (import) found, using grab date: {earliest_grab_date}")
+            self._log("WARNING", f"⚠️  No EventType 3 (import) found, using grab date: {earliest_grab_date}")
             return earliest_grab_date
         return None
 

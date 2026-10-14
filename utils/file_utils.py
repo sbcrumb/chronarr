@@ -1,74 +1,49 @@
-"""
-File utility functions for Chronarr
-Common file operations to eliminate code duplication
-"""
+"""File utilities — path resolution, video file discovery, episode parsing."""
 import glob
 import re
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Union
 
 from utils.logging import _log
 
 
-# Video file extensions used throughout the application
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.ts'}
 
-# Episode pattern for TV series files
 EPISODE_PATTERN = re.compile(
     r'.*[sS](\d{1,2})[eE](\d{1,3}).*|.*(\d{1,2})x(\d{1,3}).*'
 )
 
 
 def find_media_path_by_imdb_and_title(
-    title: str, 
-    imdb_id: str, 
-    search_paths: List[Path], 
+    title: str,
+    imdb_id: str,
+    search_paths: List[Path],
     webhook_path: Optional[str] = None,
-    path_mapper = None
+    path_mapper=None
 ) -> Optional[Path]:
-    """
-    Unified media path finder for both TV series and movies
-    
-    Args:
-        title: Media title to search for
-        imdb_id: IMDb ID to search for
-        search_paths: List of paths to search in (tv_paths or movie_paths)
-        webhook_path: Optional webhook path to try first
-        path_mapper: Optional path mapper for webhook path conversion
-    
-    Returns:
-        Path to media directory if found, None otherwise
-    """
-    # Try webhook path first if provided
+    """Find a media directory by trying the webhook path first, then searching configured paths."""
+    # The webhook payload often carries the exact path — try it before scanning directories.
     if webhook_path and path_mapper:
         try:
-            if hasattr(path_mapper, 'sonarr_path_to_container_path'):
-                container_path = path_mapper.sonarr_path_to_container_path(webhook_path)
-            elif hasattr(path_mapper, 'radarr_path_to_container_path'):
-                container_path = path_mapper.radarr_path_to_container_path(webhook_path)
-            else:
-                container_path = webhook_path
-                
+            container_path = path_mapper.map(webhook_path)
             path_obj = Path(container_path)
             if path_obj.exists():
                 return path_obj
         except Exception as e:
             _log("WARNING", f"Failed to process webhook path {webhook_path}: {e}")
     
-    # Search by IMDb ID or title in configured paths
     for media_path in search_paths:
         if not media_path.exists():
             continue
-        
-        # Search by IMDb ID first (more reliable)
+
         if imdb_id:
-            # Use proper glob pattern - escape brackets to match literal [imdb-ID]
+            # Escape brackets so glob treats them as literals, not character classes.
             pattern = str(media_path / f"*\\[imdb-{imdb_id}\\]*")
             matches = glob.glob(pattern)
             if matches:
                 return Path(matches[0])
-        
-        # Search by title as fallback
+
         if title:
             title_clean = clean_title_for_search(title)
             for item in media_path.iterdir():
@@ -81,56 +56,84 @@ def find_media_path_by_imdb_and_title(
 
 
 def clean_title_for_search(title: str) -> str:
-    """
-    Clean title for fuzzy matching
-    
-    Args:
-        title: Raw title string
-        
-    Returns:
-        Cleaned title for comparison
-    """
+    """Strip spaces, dashes, and dots for fuzzy directory name matching."""
     return title.lower().replace(" ", "").replace("-", "").replace(".", "")
 
 
+def is_video_file(item: Path) -> bool:
+    """True if `item` is (or points to) a video file, without requiring the
+    target to currently resolve. is_file() follows symlinks and stats the
+    *target* - on a FUSE/DFS-backed mount (decypharr, rclone, etc.) that
+    lazily activates a file's backing download on first access, a freshly
+    created symlink can briefly fail that stat and is_file() just silently
+    returns False, no exception raised. is_symlink() stats the link itself
+    (lstat), so it can't be fooled by a not-yet-ready target - check that
+    first so a symlinked video file is never invisible to a directory scan
+    just because the mount hasn't warmed it up yet.
+    """
+    return (item.is_symlink() or item.is_file()) and item.suffix.lower() in VIDEO_EXTENSIONS
+
+
 def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
-    """
-    Find all video files in a directory
-    
-    Args:
-        directory: Directory to search
-        recursive: Whether to search recursively
-        
-    Returns:
-        List of video file paths
-    """
     if not directory.exists():
         return []
-    
+
     video_files = []
-    
+
     if recursive:
         for item in directory.rglob('*'):
-            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
+            if is_video_file(item):
                 video_files.append(item)
     else:
         for item in directory.iterdir():
-            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
+            if is_video_file(item):
                 video_files.append(item)
-    
+
     return video_files
 
 
+# Some network/FUSE-backed mounts (e.g. decypharr's DFS backend for debrid/usenet
+# libraries) can report a just-created file as briefly unreadable — ENOTCONN or
+# similar — for a few seconds right after it's symlinked in, while the mount's
+# own backing downloader for that file finishes initializing. That's a timing
+# race in the mount layer, not a real "file is missing" condition, so retrying
+# a few times rides it out instead of failing the whole webhook on a one-off
+# blip. Starting point: 5 attempts, 3s apart (~15s of patience before giving
+# up) — tune these two constants if that's not enough (or is too much) in
+# practice.
+TRANSIENT_FS_RETRIES = 5
+TRANSIENT_FS_RETRY_DELAY = 3.0
+
+
+def list_video_files_with_retry(
+    directory: Path,
+    retries: int = TRANSIENT_FS_RETRIES,
+    delay: float = TRANSIENT_FS_RETRY_DELAY,
+) -> List[Path]:
+    """Return video files directly under `directory` (non-recursive), retrying
+    the whole listing+stat pass on a transient OSError (e.g. ENOTCONN) instead
+    of letting it propagate and fail the caller immediately.
+
+    Re-raises the last OSError once every attempt is exhausted, so a genuinely
+    broken mount still surfaces loudly rather than being silently treated as
+    "no video files found".
+    """
+    last_exc: Optional[OSError] = None
+    for attempt in range(1, retries + 1):
+        try:
+            return [
+                item for item in directory.iterdir()
+                if is_video_file(item)
+            ]
+        except OSError as e:
+            last_exc = e
+            if attempt < retries:
+                _log("WARNING", f"Transient error listing {directory} (attempt {attempt}/{retries}): {e} — retrying in {delay}s")
+                time.sleep(delay)
+    raise last_exc
+
+
 def extract_episode_info(filename: str) -> Optional[Tuple[int, int]]:
-    """
-    Extract season and episode numbers from filename
-    
-    Args:
-        filename: Video filename to parse
-        
-    Returns:
-        Tuple of (season, episode) if found, None otherwise
-    """
     match = EPISODE_PATTERN.match(filename)
     if not match:
         return None
@@ -148,15 +151,7 @@ def extract_episode_info(filename: str) -> Optional[Tuple[int, int]]:
 
 
 def find_episodes_on_disk(series_path: Path) -> Dict[Tuple[int, int], List[Path]]:
-    """
-    Find all episodes on disk and return mapping of (season, episode) -> [video_files]
-    
-    Args:
-        series_path: Path to series directory
-        
-    Returns:
-        Dictionary mapping (season, episode) tuples to lists of video files
-    """
+    """Map (season, episode) tuples to their video files for a series directory."""
     episodes = {}
     
     if not series_path.exists():
@@ -231,17 +226,6 @@ def extract_imdb_id_from_path(path: Union[str, Path]) -> Optional[str]:
     return None
 
 
-def is_video_file(file_path: Path) -> bool:
-    """
-    Check if a file is a video file based on extension
-    
-    Args:
-        file_path: Path to check
-        
-    Returns:
-        True if it's a video file, False otherwise
-    """
-    return file_path.suffix.lower() in VIDEO_EXTENSIONS
 
 
 def safe_directory_scan(directory: Path, pattern: str = "*") -> List[Path]:
