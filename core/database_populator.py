@@ -269,7 +269,7 @@ class DatabasePopulator:
                         existing_path = existing.get('path')
                         if not existing_path or existing_path == 'unknown' or existing_path != path:
                             _log("INFO", f"[{instance}] Movie \"{movie.get('title', 'Unknown')}\" {imdb_id} exists but updating file info: {path}")
-                            self.db.update_movie_file_info(imdb_id, path, has_video_file=True)
+                            self.db.update_movie_file_info(imdb_id, path, has_video_file=True, instance=instance)
 
                             # Add to processing history
                             try:
@@ -535,7 +535,7 @@ class DatabasePopulator:
                                 episode_path = episode.get('path', 'unknown')
                                 if not existing_path or existing_path == 'unknown' or existing_path != episode_path:
                                     _log("INFO", f"[{instance}] Episode \"{series_title}\" {imdb_id} S{season_num:02d}E{episode_num:02d} exists but updating file info: {episode_path}")
-                                    self.db.update_episode_file_info(imdb_id, season_num, episode_num, episode_path, has_video_file=True)
+                                    self.db.update_episode_file_info(imdb_id, season_num, episode_num, episode_path, has_video_file=True, instance=instance)
 
                                     # Add to processing history
                                     try:
