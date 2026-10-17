@@ -1,10 +1,21 @@
 # Chronarr Emby Plugin — Changelog
 
+## v2.0.25 — Changelog Link Fix
+- Changelog link now points straight to this file on GitHub. The old link used a Docker-internal hostname (`http://chronarr:8080`) that most browsers can't resolve.
+
+## v2.0.24 — Changelog Moved Here
+- Config page no longer has its own embedded changelog — it kept going stale (still showed v2.0.22 as current after v2.0.23 shipped). Links here instead.
+
+## v2.0.23 — Offline Grace Period Fixes
+- Real-time sync and the scheduled task could silently stop processing during the offline grace period, even while the plugin reported itself as licensed — the grace period set the license-valid flag but never told a separate internal check that sync also gates on.
+- Offline grace could get stuck forever if the license server was already unreachable on Emby's first startup check — nothing ever retried until a full restart. Now retries hourly on its own.
+- A license server blip on an already-running install skipped grace entirely and went straight to invalid. Periodic re-validation now gets the same 48h grace a first-time failure does.
+
 ## v2.0.22 — License Checksum Fix (same DLL version, no code bump needed)
-- Fixed license validation silently failing for every license issued since the Chronarr rebrand — the plugin's local license format check only recognized the legacy `NFOG-` key prefix; the license server has been issuing `CHRO-` prefixed keys for a while now, so a perfectly valid, server-verified license would still fail this local check and disable all sync. Both prefixes are now accepted.
+- Fixed license validation failing for every license issued since the rebrand — the local format check only recognized the old `NFOG-` prefix, not the current `CHRO-` one. Both accepted now.
 
 ## v2.0.22 — Library Exclusions Fix
-- Fixed library exclusions not actually excluding anything — Emby's virtual-folder API exposes three different ID fields for a library (`Guid`, `ItemId`, `Id`), and the config page was capturing the wrong one (`Id`, a short legacy numeric string on some Emby versions, not a GUID at all). That never matched what the real-time sync and scheduled task compare against, so a checked-off library still got scanned regardless of which library it was. Now reads the library's actual `Guid` field — **re-check and re-save Library Exclusions after updating** so the corrected IDs get stored.
+- Fixed library exclusions not actually excluding anything — the config page was saving a library's legacy numeric ID instead of its real GUID, so saved exclusions never matched anything at runtime. **Re-check and re-save Library Exclusions after updating.**
 
 ## v2.0.20 — Server Name & Admin Pre-fill
 - Server name field is now read-only and sourced automatically from Emby's configured server name
