@@ -18,59 +18,17 @@ Chronarr tracks and manages "dateadded" timestamps for all your movies and TV ep
 
 ## Features
 
-### **Intelligent Date Tracking**
-- **Multiple Date Sources** - Prioritizes Radarr/Sonarr import history, digital release dates, physical releases, and air dates
-- **Import History Integration** - Direct database queries to Radarr/Sonarr for accurate import timestamps
-- **Fallback Logic** - Smart fallback hierarchy ensures every item gets the most accurate date possible
-- **Manual Override** - Web interface allows manual date entry and source management
-- **Skipped Item Tracking** - Identifies and tracks items without valid dates for later resolution
+**Date tracking.** Chronarr prioritizes Radarr/Sonarr import history, falling back to digital release, physical release, or air date when that's missing. Anything it can't resolve on its own shows up as a skipped item in the web UI, where you can set the date and source by hand.
 
-### **Powerful Web Interface**
-- **Movie & TV Management** - Browse, filter, and search your entire collection
-- **Date Editing** - Update dates and sources with smart date picker and pre-populated options
-- **Bulk Operations** - Database population from Radarr/Sonarr with progress tracking
-- **Smart Filtering** - Filter by date status, source type, and video file presence
-- **IMDb ID Migration** - Update placeholder IMDb IDs for manually-added items
-- **Real-time Statistics** - Dashboard with source distribution, missing dates, and recent activity
+**Multi-instance.** Point Chronarr at more than one Radarr and/or Sonarr — a standard + 4K pair, for example. Each instance is synced, filtered, and badged independently, so nothing crosses over between libraries.
 
-### **Database-First Architecture**
-- **PostgreSQL Backend** - Production-ready relational database with ACID compliance
-- **Efficient Queries** - Optimized indexes and batch operations
-- **Data Integrity** - Foreign keys, constraints, and validation
-- **Processing History** - Full audit trail of all database operations
-- **Connection Pooling** - High-performance database connection management
+**Web interface.** Browse and search your whole collection, filter by date status or source type, bulk-populate from Radarr/Sonarr with progress tracking, and migrate a placeholder IMDb ID to the real one once it's known.
 
-### **Radarr & Sonarr Integration**
-- **Direct Database Access** - Required for Radarr, optional for Sonarr (PostgreSQL & SQLite support)
-- **API Integration** - Sonarr API support for metadata and series lookups
-- **Webhook Support** - Real-time updates on import, upgrade, and rename events
-- **Multi-Instance Support** - Run multiple Radarr instances (e.g., standard + 4K) and/or multiple Sonarr instances, each tracked independently with per-instance badges and filtering
-- **Bulk Import** - One-click population of entire Radarr/Sonarr libraries across all instances
-- **Path Mapping** - Intelligent path translation for Docker/remote setups
+**Radarr & Sonarr integration.** Direct database access (required for Radarr, optional for Sonarr — both PostgreSQL and SQLite) plus webhooks for real-time updates on import, upgrade, and rename. Path mapping handles the translation between host and container paths.
 
-### **Jellyfin Plugin**
-- **Third-Party Plugin** - Install via custom repository URL
-- **Automatic Date Sync** - Syncs accurate import dates from Chronarr to Jellyfin
-- **Real-time Updates** - Monitors library scans and updates dates on the fly
-- **Easy Installation** - Add repository URL and install from Jellyfin dashboard
+**Emby & Jellyfin plugins.** Push the corrected date into your media server as library events happen, so Recently Added reflects when something was actually imported — not the last time a metadata scan touched it.
 
-### **Production Ready**
-- **Docker Compose** - 3-container architecture (core, web, database)
-- **Auto-Configuration** - Config files auto-generated from embedded examples on first run
-- **Health Monitoring** - Kubernetes-ready health checks and status endpoints
-- **Graceful Shutdown** - Proper signal handling for container orchestration
-- **Async Operations** - Non-blocking I/O for responsive web interface
-- **Comprehensive Logging** - Structured logging with multiple log levels
-
-## Use Cases
-
-- **Library Organization** - Sort and filter media by actual acquisition date, not modified time
-- **Collection Management** - Track when items were added vs when they were released
-- **Jellyfin Integration** - Sync accurate import dates to Jellyfin via the official plugin
-- **Migration Safety** - Preserve dateadded timestamps across Radarr/Sonarr database migrations
-- **Manual Additions** - Assign proper dates to manually-added content
-- **Upgrade Tracking** - Maintain original import dates even after quality upgrades
-- **Statistical Analysis** - Understand library growth patterns and collection habits
+**Deployment.** Three-container Docker Compose setup (core, web, PostgreSQL), config auto-generated from embedded examples on first run, health checks, and structured logging.
 
 ## Quick Start
 
