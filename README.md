@@ -18,63 +18,21 @@ Chronarr tracks and manages "dateadded" timestamps for all your movies and TV ep
 
 ## Features
 
-### **Intelligent Date Tracking**
-- **Multiple Date Sources** - Prioritizes Radarr/Sonarr import history, digital release dates, physical releases, and air dates
-- **Import History Integration** - Direct database queries to Radarr/Sonarr for accurate import timestamps
-- **Fallback Logic** - Smart fallback hierarchy ensures every item gets the most accurate date possible
-- **Manual Override** - Web interface allows manual date entry and source management
-- **Skipped Item Tracking** - Identifies and tracks items without valid dates for later resolution
+**Date tracking.** Chronarr prioritizes Radarr/Sonarr import history, falling back to digital release, physical release, or air date when that's missing. Anything it can't resolve on its own shows up as a skipped item in the web UI, where you can set the date and source by hand.
 
-### **Powerful Web Interface**
-- **Movie & TV Management** - Browse, filter, and search your entire collection
-- **Date Editing** - Update dates and sources with smart date picker and pre-populated options
-- **Bulk Operations** - Database population from Radarr/Sonarr with progress tracking
-- **Smart Filtering** - Filter by date status, source type, and video file presence
-- **IMDb ID Migration** - Update placeholder IMDb IDs for manually-added items
-- **Real-time Statistics** - Dashboard with source distribution, missing dates, and recent activity
+**Multi-instance.** Point Chronarr at more than one Radarr and/or Sonarr — a standard + 4K pair, for example. Each instance is synced, filtered, and badged independently, so nothing crosses over between libraries.
 
-### **Database-First Architecture**
-- **PostgreSQL Backend** - Production-ready relational database with ACID compliance
-- **Efficient Queries** - Optimized indexes and batch operations
-- **Data Integrity** - Foreign keys, constraints, and validation
-- **Processing History** - Full audit trail of all database operations
-- **Connection Pooling** - High-performance database connection management
+**Web interface.** Browse and search your whole collection, filter by date status or source type, bulk-populate from Radarr/Sonarr with progress tracking, and migrate a placeholder IMDb ID to the real one once it's known.
 
-### **Radarr & Sonarr Integration**
-- **Direct Database Access** - Required for Radarr, optional for Sonarr (PostgreSQL & SQLite support)
-- **API Integration** - Sonarr API support for metadata and series lookups
-- **Webhook Support** - Real-time updates on import, upgrade, and rename events
-- **Multi-Instance Support** - Run multiple Radarr instances (e.g., standard + 4K) and/or multiple Sonarr instances, each tracked independently with per-instance badges and filtering
-- **Bulk Import** - One-click population of entire Radarr/Sonarr libraries across all instances
-- **Path Mapping** - Intelligent path translation for Docker/remote setups
+**Radarr & Sonarr integration.** Direct database access (required for Radarr, optional for Sonarr — both PostgreSQL and SQLite) plus webhooks for real-time updates on import, upgrade, and rename. Path mapping handles the translation between host and container paths.
 
-### **Jellyfin Plugin**
-- **Third-Party Plugin** - Install via custom repository URL
-- **Automatic Date Sync** - Syncs accurate import dates from Chronarr to Jellyfin
-- **Real-time Updates** - Monitors library scans and updates dates on the fly
-- **Easy Installation** - Add repository URL and install from Jellyfin dashboard
+**Emby & Jellyfin plugins.** Push the corrected date into your media server as library events happen, so Recently Added reflects when something was actually imported — not the last time a metadata scan touched it.
 
-### **Production Ready**
-- **Docker Compose** - 3-container architecture (core, web, database)
-- **Auto-Configuration** - Config files auto-generated from embedded examples on first run
-- **Health Monitoring** - Kubernetes-ready health checks and status endpoints
-- **Graceful Shutdown** - Proper signal handling for container orchestration
-- **Async Operations** - Non-blocking I/O for responsive web interface
-- **Comprehensive Logging** - Structured logging with multiple log levels
-
-## Use Cases
-
-- **Library Organization** - Sort and filter media by actual acquisition date, not modified time
-- **Collection Management** - Track when items were added vs when they were released
-- **Jellyfin Integration** - Sync accurate import dates to Jellyfin via the official plugin
-- **Migration Safety** - Preserve dateadded timestamps across Radarr/Sonarr database migrations
-- **Manual Additions** - Assign proper dates to manually-added content
-- **Upgrade Tracking** - Maintain original import dates even after quality upgrades
-- **Statistical Analysis** - Understand library growth patterns and collection habits
+**Deployment.** Three-container Docker Compose setup (core, web, PostgreSQL), config auto-generated from embedded examples on first run, health checks, and structured logging.
 
 ## Quick Start
 
-**One-command setup with auto-configuration!**
+This auto-configures everything on first run.
 
 ### 1. Download and Start
 
@@ -211,7 +169,7 @@ Then in the web interface:
 3. Select **Movies** and/or **TV Shows**
 4. Click **Start Population**
 
-Watch as Chronarr imports all your media with proper dates!
+Chronarr will import your existing media with the correct dates.
 
 > **📖 For detailed setup instructions, see [QUICKSTART.md](QUICKSTART.md)**
 
@@ -256,8 +214,8 @@ Chronarr uses a 3-container Docker Compose architecture:
          │                       │                         │
          ▼                       ▼                         ▼
     ┌─────────────────────────────────────┐     ┌──────────────────┐
-    │   Radarr/Sonarr Databases & APIs    │     │  Jellyfin Server │
-    └─────────────────────────────────────┘     │  + Plugin        │
+    │   Radarr/Sonarr Databases & APIs    │     │  Emby/Jellyfin   │
+    └─────────────────────────────────────┘     │  Server + Plugin │
                                                  └──────────────────┘
 ```
 
@@ -269,7 +227,7 @@ Chronarr uses a 3-container Docker Compose architecture:
 
 ## Date Source Priority
 
-Chronarr uses an intelligent priority system to determine the best date for each item:
+Chronarr resolves each item's date using this priority order:
 
 ### Movies
 1. **Radarr Import Date** - Direct from Radarr's import history (most accurate)
@@ -381,7 +339,7 @@ Each named instance gets its own webhook endpoint (`/radarr_4k/webhook`, `/sonar
 
 **SQLite Docker Configuration (multi-instance):**
 
-Each SQLite database needs its own volume mount in `docker-compose.yml`. The container path you choose must match the `_DB_PATH` value in your `.env`:
+Same volume-mount requirement as Quick Start step 3 above, just once per instance — each SQLite database needs its own mount in `docker-compose.yml`, and the container path you choose must match the `_DB_PATH` value in your `.env`:
 
 ```yaml
 # In docker-compose.yml, under chronarr-core volumes:
@@ -396,31 +354,13 @@ The `radarr.db` file is usually at the top level of Radarr's config directory. I
 
 The web interface uses a dark sidebar for navigation. Sections expand to show per-instance sub-items; clicking an instance filters the view to that instance only. An "All" sub-item shows the full library with colored instance badges on each row.
 
-### Dashboard
-- **Statistics** - Total movies, episodes, dates populated, missing dates
-- **Source Distribution** - Pie charts showing date source breakdown
-- **Recent Activity** - Last 7 days of processing history
-- **Skipped Items** - Items without valid dates
+**Dashboard.** Totals for movies/episodes and missing dates, a pie chart of date-source breakdown, the last 7 days of processing history, and a list of items Chronarr couldn't resolve a date for.
 
-### Movies
-- **Search & Filter** - By title, path, IMDb ID, date status, source
-- **Instance Filter** - Click an instance in the sidebar or view all with badges
-- **Bulk Actions** - Delete, edit dates, update IMDb IDs
-- **Smart Sorting** - By date added, release date, title
-- **Debug Tools** - Raw database inspection for troubleshooting
+**Movies.** Search and filter by title, path, IMDb ID, date status, or source; sort by date added, release date, or title; bulk delete, edit dates, or update IMDb IDs; a debug view for raw database inspection. Filter to one instance from the sidebar, or view all with badges.
 
-### TV Shows
-- **Series Management** - View all series with episode counts and progress
-- **Episode Browsing** - Detailed episode lists with dates and sources
-- **Season Filtering** - Filter episodes by season
-- **Delete Series** - Remove an entire series and all its episode records
-- **Instance Filter** - Click an instance in the sidebar or view all with badges
-- **Batch Updates** - Update multiple episodes at once
+**TV Shows.** The same idea for series and episodes — episode counts and progress per series, detailed per-episode date/source lists filterable by season, batch updates, and deleting an entire series (all its episode records included) in one action.
 
-### Tools
-- **Database Population** - One-click import from Radarr/Sonarr across all instances
-- **Progress Tracking** - Real-time progress bars and statistics
-- **Validation** - Pre-population checks for connectivity and permissions
+**Tools.** One-click database population from Radarr/Sonarr across all configured instances, with real-time progress and pre-population connectivity/permission checks.
 
 ## API Endpoints
 
@@ -472,41 +412,30 @@ For a second instance (e.g., `RADARR_4K_URL`), use `http://chronarr-core:8080/ra
 
 For a second instance (e.g., `SONARR_ANIME_URL`), use `http://chronarr-core:8080/sonarr_anime/webhook`.
 
-## Jellyfin Integration
+## Media Server Integration
 
-Chronarr includes a Jellyfin plugin that automatically syncs episode and movie dates to Jellyfin, ensuring your media library displays the correct import dates from Chronarr instead of scan dates.
+Chronarr has plugins for both Jellyfin and Emby that sync the real import date into your media server as library events happen, so PremiereDate/DateCreated reflects when something was actually added — not the last time a scan touched it. An optional scheduled task re-syncs periodically on top of the real-time updates.
 
-### Features
-- **Automatic Date Sync** - Syncs PremiereDate to DateCreated for TV episodes and movies
-- **Real-time Updates** - Monitors Jellyfin library scans and updates dates on the fly
-- **Scheduled Tasks** - Optional scheduled task for periodic synchronization
-- **Chronarr Integration** - Pulls accurate import dates from Chronarr's database
+### Jellyfin
 
-### Installation
+1. **Add the Chronarr plugin repository** — Dashboard → Plugins → Repositories → **+**, then enter:
+   ```
+   https://raw.githubusercontent.com/sbcrumb/chronarr-jellyfin-plugin/main/manifest.json
+   ```
+2. **Install** — Plugins → Catalog → find and install **Chronarr**, then restart Jellyfin.
+3. **Configure** — Dashboard → Plugins → Chronarr, enter your Chronarr API URL (e.g. `http://chronarr-core:8080`), save.
 
-1. **Add the Chronarr Plugin Repository** to Jellyfin:
-   - Navigate to **Dashboard → Plugins → Repositories**
-   - Click the **+** button to add a new repository
-   - Enter the repository URL:
-     ```
-     https://raw.githubusercontent.com/sbcrumb/chronarr-jellyfin-plugin/main/manifest.json
-     ```
+Requires Jellyfin 10.8.0+ and the Chronarr webhook service running. More detail: [chronarr-jellyfin-plugin](https://github.com/sbcrumb/chronarr-jellyfin-plugin).
 
-2. **Install the Plugin**:
-   - Go to **Plugins → Catalog**
-   - Find and install **Chronarr**
-   - Restart Jellyfin
+### Emby
 
-3. **Configure the Plugin**:
-   - Go to **Dashboard → Plugins → Chronarr**
-   - Enter your Chronarr API URL (e.g., `http://chronarr-core:8080`)
-   - Save settings
+Emby doesn't support repository-URL plugin installs the way Jellyfin does, so this one's a manual drop-in:
 
-### Requirements
-- Jellyfin 10.8.0 or higher
-- Chronarr webhook service running
+1. Download `Chronarr.Emby.Plugin.dll` from [`Emby-DLL/`](Emby-DLL/) in this repository.
+2. Copy it into Emby's plugins directory (Docker: `/config/plugins` inside the container) and restart Emby.
+3. Go to Dashboard → Plugins → Chronarr, enter your Chronarr API URL, save.
 
-For more information, visit the [Chronarr Jellyfin Plugin Repository](https://github.com/sbcrumb/chronarr-jellyfin-plugin).
+Requires the Chronarr webhook service running.
 
 ## Troubleshooting
 
@@ -542,27 +471,7 @@ docker exec -it chronarr-core psql -h radarr-db -U radarr -d radarr-main
 
 ### Symlinked / Debrid Libraries (decypharr, rclone, strm-backed mounts, etc.)
 
-If your library uses symlinks into a FUSE/debrid-backed mount (decypharr's DFS, rclone, similar tools), and episodes/movies intermittently fail to get a date with errors like `Transport endpoint is not connected` (`ENOTCONN`) in the core container's logs even though the file plays fine in Emby/Jellyfin/Plex — this is almost always a **Docker mount propagation** issue, not a Chronarr bug.
-
-**Why it happens:** the FUSE mount (e.g. `/mnt/decypharr`) gets bind-mounted into the `chronarr-core` container at container start. If the underlying mount is ever remounted on the host afterward (the debrid tool's own container restarting, its cache cycling, etc.), Docker doesn't automatically propagate that into containers unless the mount is explicitly configured with **shared propagation**. Without it, Chronarr's container keeps holding a stale, dead handle to the *old* mount — even though the host itself, and anything that mounted fresh, sees the real file just fine. Restarting `chronarr-core` "fixes" it temporarily because that gives the container a fresh bind-mount — but it comes back the next time the underlying mount cycles.
-
-**Fix — set up shared mount propagation so a remount propagates automatically, no restart needed:**
-
-1. In `docker-compose.yml`, add `rslave` propagation to the relevant volume under `chronarr-core`:
-   ```yaml
-   volumes:
-     - /mnt/decypharr:/mnt/decypharr:rslave
-   ```
-2. On the host, mark that mountpoint as shared (this is what `rslave` listens for):
-   ```bash
-   sudo mount --make-rshared /mnt/decypharr
-   ```
-3. This does **not** persist across the debrid tool's container restarting (or a host reboot) on its own — it needs to be reapplied every time the underlying mount gets recreated. The simplest robust fix is a self-healing cron entry (run as root):
-   ```bash
-   * * * * * findmnt -o PROPAGATION /mnt/decypharr --noheadings 2>/dev/null | grep -q shared || mount --make-rshared /mnt/decypharr
-   ```
-
-Restart `chronarr-core` once after adding the compose change for it to take effect.
+Dates intermittently failing with `Transport endpoint is not connected` in the core container's logs, even though the file plays fine in Emby/Jellyfin/Plex? That's a Docker mount-propagation issue, not a Chronarr bug — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the cause and the fix.
 
 ### Performance Issues
 - Enable direct database access for Radarr/Sonarr (much faster than API)
@@ -644,9 +553,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - **GitHub Issues**: [https://github.com/sbcrumb/chronarr/issues](https://github.com/sbcrumb/chronarr/issues)
 
-## Upgrading from v2 to v3
+## Upgrading to 2.1.0
 
-v3 is a drop-in upgrade for single-instance setups. Pull the new image and restart — no config changes are required.
+This is the release described in the Changelog below (sidebar nav, multi-instance support, and everything else listed under v2.1.0). It's a drop-in upgrade for single-instance setups — pull the new image and restart, no config changes required.
 
 **What you'll notice immediately:**
 - The horizontal tab bar is replaced by a collapsible sidebar. Dashboard, Movies, TV Shows, Reports, and Tools are all still there.
@@ -663,27 +572,17 @@ v3 is a drop-in upgrade for single-instance setups. Pull the new image and resta
 ## Changelog
 
 ### v2.1.0
-- 🏠 **Sidebar navigation** - Replaced horizontal tab bar with a collapsible dark sidebar; instance sub-items expand under Movies and TV Shows
-- 🔀 **Multi-instance support** - Configure multiple Radarr and/or Sonarr instances; each is tracked separately and shown with colored badges in the UI. Fully backward compatible — existing single-instance setups need no changes
-- 🏷️ **Instance badges** - Every row in the Movies and TV tables shows a colored badge identifying its instance; badge colors are consistent between the sidebar and the table
-- 🚀 **Cold-start populate fix** - Database population on startup now iterates all configured instances, not just the first
-- 🗑️ **Delete series** - Remove an entire TV series and all its episode records from the database in one click
-- 🔧 **Instance-aware edit** - Date edits, smart fixes, and skipped-item updates are now scoped to the correct instance
-- 🧹 **Series title cleanup** - Series titles derived from folder paths no longer include media-manager ID suffixes (e.g., `[imdb-tt1234567]`)
-- 🧙 **Setup wizard** - Guided `.env`/`.env.secrets` generation with per-instance connection testing and backup/restore
-- 📜 **Readable logs + log viewer** - Configurable log level, compact webhook summaries, per-webhook request IDs, and an in-browser log viewer (Tools tab)
-- 🔍 **Unresolved Lookups page** - Emby/Jellyfin plugin lookups that come back "not found" now persist in the web UI for review instead of only showing up in the logs
-- 🔗 **Series IMDb ID auto-migration** - Automatically detects and merges a series whose IMDb ID changed between syncs, instead of creating a duplicate entry
+- **Sidebar navigation** - replaced the horizontal tab bar with a collapsible dark sidebar; instance sub-items expand under Movies and TV Shows
+- **Multi-instance support** - configure multiple Radarr and/or Sonarr instances, each tracked and badged separately. Fully backward compatible — existing single-instance setups need no changes
+- **Instance badges** - every row in the Movies and TV tables shows a colored badge identifying its instance, consistent with the sidebar
+- **Cold-start populate fix** - startup population now iterates all configured instances, not just the first
+- **Delete series** - remove an entire TV series and all its episode records in one click
+- **Instance-aware edit** - date edits, smart fixes, and skipped-item updates are now scoped to the correct instance
+- **Series title cleanup** - titles derived from folder paths no longer include media-manager ID suffixes (e.g. `[imdb-tt1234567]`)
+- **Setup wizard** - guided `.env`/`.env.secrets` generation with per-instance connection testing and backup/restore
+- **Readable logs + log viewer** - configurable log level, compact webhook summaries, per-webhook request IDs, and an in-browser log viewer (Tools tab)
+- **Unresolved Lookups page** - Emby/Jellyfin plugin lookups that come back "not found" persist in the web UI for review instead of only showing up in the logs
+- **Series IMDb ID auto-migration** - detects and merges a series whose IMDb ID changed between syncs, instead of creating a duplicate entry
 
 ### v2.0.0 (2025-11-05)
-- 🎉 **Initial release** - Comprehensive date and chronology management for Radarr and Sonarr
-- 🎯 **Smart date tracking** - Multiple sources with intelligent fallback hierarchy
-- 🗄️ **Database-first** - PostgreSQL backend with full ACID compliance
-- 🌐 **Web interface** - Complete movie and TV show management
-- 🔗 **Radarr/Sonarr integration** - API and direct database access support (PostgreSQL and SQLite)
-- 📊 **Dashboard** - Real-time statistics and monitoring
-- 🔧 **IMDb ID migration** - Update placeholder IDs for manual entries
-- 📈 **Processing history** - Full audit trail of all operations
-- ⚡ **Performance** - Async operations and connection pooling
-- 🐳 **Docker** - 3-container architecture with health checks
-- ✨ **Auto-configuration** - Config files auto-generated from embedded examples on first run
+Initial release — smart date tracking with a multi-source fallback hierarchy, PostgreSQL-backed storage with full processing history, a web dashboard, Radarr/Sonarr integration (API and direct database access, PostgreSQL and SQLite), IMDb ID migration for manual entries, and a 3-container Docker setup with health checks and auto-configuration.
