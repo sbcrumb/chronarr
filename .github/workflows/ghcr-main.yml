@@ -113,4 +113,4 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
           repository: ${{ secrets.DOCKER_HUB_USERNAME }}/chronarr
-          readme-filepath: ./README.md
+          readme-filepath: ./DOCKERHUB.md
