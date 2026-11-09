@@ -4,10 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chronarr - Database Management</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=sidebar-nav">
+    <link rel="stylesheet" href="/static/css/styles.css?v=mobile-nav">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
+    <!-- Hidden on desktop (CSS media query); fixed hamburger button that opens the
+         sidebar as an overlay on small screens, since the sidebar has no other
+         entry point once it's off-screen. -->
+    <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Toggle navigation" onclick="toggleMobileNav()">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeMobileNav()"></div>
     <div class="app-container">
         <!-- Sidebar -->
         <aside class="sidebar">
@@ -633,6 +640,6 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=unresolved-lookups-2"></script>
+    <script src="/static/js/app.js?v=mobile-nav"></script>
 </body>
 </html>
