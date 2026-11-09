@@ -50,6 +50,17 @@ body {
     flex-shrink: 0;
 }
 
+/* Mobile nav toggle + backdrop — both no-ops on desktop; only matter inside the
+   640px media query below, where the sidebar becomes an off-screen overlay with
+   no other way to open it. */
+.mobile-nav-toggle {
+    display: none;
+}
+
+.sidebar-backdrop {
+    display: none;
+}
+
 .sidebar-brand {
     padding: 1.125rem 1rem;
     display: flex;
@@ -528,7 +539,8 @@ body {
     background: white;
     border-radius: 0.5rem;
     box-shadow: var(--shadow);
-    overflow: hidden;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
     margin-bottom: 1rem;
 }
 
@@ -962,16 +974,54 @@ body {
 }
 
 @media (max-width: 640px) {
-    .app-container {
-        flex-direction: column;
+    /* The sidebar becomes a slide-in overlay instead of stacking above the
+       content — with ~10 top-level nav entries (Dashboard, Movies + sub-items,
+       TV + sub-items, Reports, Tools + sub-items, Setup) a stacked sidebar
+       pushed every page's actual content below a full screen of nav buttons
+       first. Off-screen by default, toggled via .mobile-open (see
+       toggleMobileNav() in app.js). */
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 80%;
+        max-width: 300px;
+        min-width: unset;
+        height: 100vh;
+        min-height: unset;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        z-index: 1100;
     }
 
-    .sidebar {
-        width: 100%;
-        min-width: unset;
-        height: auto;
-        min-height: unset;
-        position: static;
+    .sidebar.mobile-open {
+        transform: translateX(0);
+    }
+
+    .mobile-nav-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: fixed;
+        top: 0.75rem;
+        left: 0.75rem;
+        z-index: 1200;
+        width: 2.5rem;
+        height: 2.5rem;
+        border: none;
+        border-radius: 0.375rem;
+        background: #1a1d23;
+        color: #fff;
+        font-size: 1.1rem;
+        box-shadow: var(--shadow-lg);
+    }
+
+    .sidebar-backdrop.active {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1050;
     }
 
     .sidebar-sub-items.expanded {
@@ -981,6 +1031,8 @@ body {
     .main-content {
         min-height: unset;
         padding: 1rem;
+        /* clears the fixed hamburger button */
+        padding-top: 4rem;
     }
 
     .content-header {
@@ -1011,6 +1063,10 @@ body {
 
     .tool-page {
         max-width: none;
+    }
+
+    .modal-content {
+        width: 95%;
     }
 }
 

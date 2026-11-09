@@ -37,7 +37,24 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Tab management
+// Mobile sidebar overlay (see the 640px media query in styles.css). No-ops
+// safely on desktop — the .mobile-open/.active classes only do anything
+// inside that media query, so these are harmless to call unconditionally.
+function toggleMobileNav() {
+    document.querySelector('.sidebar').classList.toggle('mobile-open');
+    document.getElementById('sidebar-backdrop').classList.toggle('active');
+}
+
+function closeMobileNav() {
+    document.querySelector('.sidebar').classList.remove('mobile-open');
+    document.getElementById('sidebar-backdrop').classList.remove('active');
+}
+
 function switchTab(tabName) {
+    // Close the mobile nav overlay on navigation — otherwise it stays open
+    // covering the page the user just picked.
+    closeMobileNav();
+
     // Update sidebar item active states
     document.querySelectorAll('.sidebar-item[data-tab]').forEach(btn => btn.classList.remove('active'));
     const activeBtn = document.querySelector(`.sidebar-item[data-tab="${tabName}"]`);
