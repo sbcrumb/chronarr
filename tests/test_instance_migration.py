@@ -215,3 +215,70 @@ def test_migrate_series_instance_reverse_call_moves_episode_back(db):
         assert cursor.fetchone() is not None
         cursor.execute("SELECT * FROM episodes WHERE imdb_id = %s AND instance = %s", ("tt2000005", "sonarr_strm"))
         assert cursor.fetchall() == []
+
+
+# --- adopt-dates (keep an instance's location, but take the other's dates) ---
+
+def test_adopt_dates_movie_backfills_date_and_keeps_instance(db):
+    db.upsert_movie_dates("tt5000000", released="2020-01-01", dateadded="2021-01-01T00:00:00",
+                          source="radarr", title="Stale", year=2020, instance="radarr")
+    db.upsert_movie_dates("tt5000000", released="2020-01-01", dateadded="2026-11-10T00:00:00",
+                          source="radarr", title="Fresh reimport", year=2020, instance="radarr_strm")
+
+    assert db.adopt_dates_movie("tt5000000", keep_instance="radarr_strm", source_instance="radarr") is True
+
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", ("tt5000000", "radarr_strm"))
+        kept = cursor.fetchone()
+        assert kept["dateadded"] == "2021-01-01T00:00:00"  # adopted from the stale row
+        assert kept["title"] == "Fresh reimport"  # everything else about the kept row is untouched
+
+        cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", ("tt5000000", "radarr"))
+        assert cursor.fetchone() is None  # the stale source row is gone
+
+
+def test_adopt_dates_movie_missing_either_side_returns_false(db):
+    db.upsert_movie("tt5000001", path="/mnt/strm/Movie", instance="radarr_strm")
+    assert db.adopt_dates_movie("tt5000001", keep_instance="radarr_strm", source_instance="radarr") is False
+
+    db.upsert_movie("tt5000002", path="/mnt/nas/Movie", instance="radarr")
+    assert db.adopt_dates_movie("tt5000002", keep_instance="radarr_strm", source_instance="radarr") is False
+
+
+def test_adopt_dates_series_backfills_only_older_dates(db):
+    db.upsert_series("tt6000000", path="/mnt/nas/Show", instance="sonarr")
+    db.upsert_episode_date("tt6000000", 1, 1, aired="2020-01-01", dateadded="2020-10-10T02:40:00",
+                           source="sonarr", instance="sonarr")
+    db.upsert_episode_date("tt6000000", 1, 2, aired="2020-01-08", dateadded="2026-01-01T00:00:00",
+                           source="sonarr", instance="sonarr")  # not actually older — must not overwrite
+
+    db.upsert_series("tt6000000", path="/mnt/strm/Show", instance="sonarr_strm")
+    db.upsert_episode_date("tt6000000", 1, 1, aired="2020-01-01", dateadded="2026-11-10T16:50:37",
+                           source="sonarr", instance="sonarr_strm")
+    db.upsert_episode_date("tt6000000", 1, 2, aired="2020-01-08", dateadded="2024-06-06T00:00:00",
+                           source="sonarr", instance="sonarr_strm")
+
+    updated = db.adopt_dates_series("tt6000000", keep_instance="sonarr_strm", source_instance="sonarr")
+
+    assert updated == 1  # only S01E01's date was actually older on the source
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT season, episode, dateadded FROM episodes
+            WHERE imdb_id = %s AND instance = %s ORDER BY episode
+        """, ("tt6000000", "sonarr_strm"))
+        rows = {(r["season"], r["episode"]): r["dateadded"] for r in cursor.fetchall()}
+        assert rows[(1, 1)] == "2020-10-10T02:40:00"  # adopted
+        assert rows[(1, 2)] == "2024-06-06T00:00:00"  # untouched — source's date wasn't older
+
+        cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", ("tt6000000", "sonarr"))
+        assert cursor.fetchone() is None  # stale source dropped entirely
+
+        cursor.execute("SELECT * FROM episodes WHERE imdb_id = %s AND instance = %s", ("tt6000000", "sonarr"))
+        assert cursor.fetchall() == []
+
+
+def test_adopt_dates_series_missing_either_side_returns_none(db):
+    db.upsert_series("tt6000001", path="/mnt/strm/Show", instance="sonarr_strm")
+    assert db.adopt_dates_series("tt6000001", keep_instance="sonarr_strm", source_instance="sonarr") is None

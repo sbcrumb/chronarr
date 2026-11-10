@@ -356,3 +356,24 @@ class InstanceMigrationRequest(BaseModel):
     to_instance: str
     new_path: Optional[str] = None
     episodes: Optional[List[List[int]]] = None
+
+
+class DuplicateResolveRequest(BaseModel):
+    """Settings page's duplicate-titles report: collapse one listed
+    duplicate. keep_instance is where the title's real content actually
+    lives and stays; other_instance is the stale row being dealt with.
+
+    adopt_dates=False (default): other_instance's row wins outright — same
+    as calling instance_migration(from=other_instance, to=keep_instance).
+    adopt_dates=True: keep_instance's own row/instance is left alone, but
+    its dates are backfilled from other_instance's wherever other_instance's
+    are actually older — for the case where the content has already moved
+    (e.g. via Doorman) but Chronarr's own row for it only has a fresh
+    import date, while the stale leftover on other_instance still has the
+    real original one.
+    """
+    media_type: str  # "movie" or "series"
+    imdb_id: str
+    keep_instance: str
+    other_instance: str
+    adopt_dates: bool = False

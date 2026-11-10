@@ -77,7 +77,7 @@ def test_duplicates_list_is_proxied_with_media_type_query(client):
 def test_duplicates_resolve_is_proxied_with_body(client):
     with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"moved": true}')) as mock_urlopen:
         resp = client.post("/api/duplicates/resolve", json={
-            "media_type": "movie", "imdb_id": "tt1", "from_instance": "radarr", "to_instance": "radarr_strm"
+            "media_type": "movie", "imdb_id": "tt1", "keep_instance": "radarr_strm", "other_instance": "radarr"
         })
 
     assert resp.status_code == 200
