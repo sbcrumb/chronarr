@@ -2385,10 +2385,11 @@ def register_database_admin_routes(app, dependencies):
             raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
 
     @app.get("/api/settings/integration-key")
-    async def api_settings_integration_key_status():
+    async def api_settings_integration_key_status(request: Request):
         """Proxy the Doorman-integration-key configured/not-configured status
-        from the core container — same reasoning as /api/instances above:
-        core owns the env files, the setup page just displays what it says."""
+        (and, with ?reveal=true, the key itself) from the core container —
+        same reasoning as /api/instances above: core owns the env files, the
+        setup page just displays what it says."""
         import urllib.request
         import urllib.error
         import json
@@ -2397,7 +2398,8 @@ def register_database_admin_routes(app, dependencies):
 
         core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
         core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
-        core_url = f"http://{core_host}:{core_port}/api/settings/integration-key"
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/settings/integration-key" + (f"?{query}" if query else "")
 
         try:
             req = urllib.request.Request(core_url)
@@ -2414,6 +2416,37 @@ def register_database_admin_routes(app, dependencies):
         the core container — it owns .env.secrets, same as every other
         wizard write."""
         return await _proxy_post_to_core("/api/settings/integration-key", await request.json())
+
+    @app.get("/api/duplicates")
+    async def api_duplicates(request: Request):
+        """Proxy the duplicate-instance report from the core container —
+        core owns the database, the setup page just displays what it says."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/duplicates" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/duplicates/resolve")
+    async def api_duplicates_resolve(request: Request):
+        """Proxy resolving a listed duplicate (keep one instance's data, drop
+        the other's) to the core container — same database-owning reasoning
+        as everything else proxied here."""
+        return await _proxy_post_to_core("/api/duplicates/resolve", await request.json())
 
     @app.get("/api/wizard/instance-details")
     async def wizard_instance_details(request: Request):

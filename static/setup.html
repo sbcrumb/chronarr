@@ -479,7 +479,17 @@
                     This endpoint refuses every call until a key is set here.
                 </p>
                 <p>Status: <strong id="integration-key-status">checking&hellip;</strong></p>
-                <div class="wizard-actions">
+                <details id="reveal-key-details" ontoggle="onRevealIntegrationKeyToggle(this)">
+                    <summary>Show current key</summary>
+                    <div class="wizard-actions" style="margin-top: 0.5rem;" id="revealed-key-row" hidden>
+                        <input type="text" readonly id="revealed-key-input" style="flex: 1; min-width: 220px; font-family: monospace;" onclick="this.select()">
+                        <button type="button" class="btn-secondary" onclick="copyRevealedKey(this)">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                    </div>
+                    <p id="revealed-key-empty" class="hint-text" style="margin: 0.5rem 0 0;" hidden>No key configured.</p>
+                </details>
+                <div class="wizard-actions" style="margin-top: 0.75rem;">
                     <input type="password" id="integration-key-input" placeholder="new key — leave blank and save to clear" style="flex: 1; min-width: 220px;">
                     <button class="btn-secondary" onclick="saveIntegrationKey()">
                         <i class="fas fa-save"></i> Save
@@ -489,6 +499,29 @@
                     </button>
                 </div>
                 <div class="wizard-result" id="integration-key-result"></div>
+            </div>
+
+            <!-- Duplicate Titles -->
+            <div class="setup-section">
+                <h2><i class="fas fa-clone"></i> Duplicate Titles</h2>
+                <p class="hint-text" style="margin-top: 0;">
+                    Titles tracked under the same show on more than one instance — most often a title moved by hand
+                    between instances before <code>POST /api/instance-migration</code> existed to do that in place.
+                    A series showing here isn't necessarily wrong: Doorman can legitimately split a show's seasons
+                    across two instances on purpose, which looks the same at a glance — check whether the season/episode
+                    numbers below actually overlap before merging. "Keep" drops the <em>other</em> instance's row(s) for
+                    that title and keeps this one's dates/history.
+                </p>
+                <div class="wizard-actions">
+                    <select id="duplicates-media-type" onchange="loadDuplicates()">
+                        <option value="movie">Movies</option>
+                        <option value="series">Series</option>
+                    </select>
+                    <button class="btn-secondary" onclick="loadDuplicates()">
+                        <i class="fas fa-rotate"></i> Refresh
+                    </button>
+                </div>
+                <div id="duplicates-list" style="margin-top: 0.75rem;"></div>
             </div>
         </div>
     </div>
@@ -700,9 +733,15 @@
                 input.value = '';
                 resultEl.innerHTML = `<div class="result-success">${key ? 'Key saved' : 'Key cleared'} — takes effect immediately.</div>`;
                 loadIntegrationKeyStatus();
+                refreshRevealedKeyIfOpen();
             } catch (err) {
                 resultEl.innerHTML = `<div class="result-error">Could not save: ${escHtml(err.message)}</div>`;
             }
+        }
+
+        function refreshRevealedKeyIfOpen() {
+            const details = document.getElementById('reveal-key-details');
+            if (details && details.open) onRevealIntegrationKeyToggle(details);
         }
 
         async function generateIntegrationKey() {
@@ -716,11 +755,11 @@
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 document.getElementById('integration-key-input').value = '';
-                // This is the only time the plaintext is ever sent back —
-                // nothing re-displays it after this, so it has to be copied now.
+                // Shown immediately here either way, but "Show current key"
+                // above also reveals it on request from now on.
                 resultEl.innerHTML = `
                     <div class="result-success">
-                        New key generated and saved — copy it now, it won't be shown again:
+                        New key generated and saved:
                         <div class="wizard-actions" style="margin-top: 0.5rem;">
                             <input type="text" readonly value="${escHtml(data.key)}" id="generated-integration-key" style="flex: 1; min-width: 220px; font-family: monospace;" onclick="this.select()">
                             <button type="button" class="btn-secondary" onclick="copyGeneratedKey(this)">
@@ -730,6 +769,7 @@
                     </div>
                 `;
                 loadIntegrationKeyStatus();
+                refreshRevealedKeyIfOpen();
             } catch (err) {
                 resultEl.innerHTML = `<div class="result-error">Could not generate: ${escHtml(err.message)}</div>`;
             }
@@ -744,6 +784,125 @@
                 fallbackCopy(input, btn);
             }
         }
+
+        async function onRevealIntegrationKeyToggle(details) {
+            if (!details.open) return;  // only fetch when opened, not on collapse
+            const row = document.getElementById('revealed-key-row');
+            const emptyMsg = document.getElementById('revealed-key-empty');
+            const input = document.getElementById('revealed-key-input');
+            try {
+                const resp = await fetch('/api/settings/integration-key?reveal=true');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.key) {
+                    input.value = data.key;
+                    row.hidden = false;
+                    emptyMsg.hidden = true;
+                } else {
+                    row.hidden = true;
+                    emptyMsg.hidden = false;
+                    emptyMsg.textContent = 'No key configured.';
+                }
+            } catch (err) {
+                row.hidden = true;
+                emptyMsg.hidden = false;
+                emptyMsg.textContent = `Could not load: ${err.message}`;
+            }
+        }
+
+        function copyRevealedKey(btn) {
+            const input = document.getElementById('revealed-key-input');
+            if (!input) return;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(input.value).then(() => showCopied(btn)).catch(() => fallbackCopy(input, btn));
+            } else {
+                fallbackCopy(input, btn);
+            }
+        }
+
+        // --- Duplicate Titles ---
+
+        function formatDate(value) {
+            if (!value) return '—';
+            const d = new Date(value);
+            return isNaN(d) ? escHtml(String(value)) : d.toLocaleString();
+        }
+
+        async function loadDuplicates() {
+            const mediaType = document.getElementById('duplicates-media-type').value;
+            const listEl = document.getElementById('duplicates-list');
+            listEl.innerHTML = '<p class="hint-text">Loading&hellip;</p>';
+            try {
+                const resp = await fetch(`/api/duplicates?media_type=${encodeURIComponent(mediaType)}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                renderDuplicates(mediaType, data.duplicates || []);
+            } catch (err) {
+                listEl.innerHTML = `<span class="error-note"><i class="fas fa-times-circle"></i> Could not load duplicates: ${escHtml(err.message)}</span>`;
+            }
+        }
+
+        function renderDuplicates(mediaType, groups) {
+            const listEl = document.getElementById('duplicates-list');
+            if (groups.length === 0) {
+                listEl.innerHTML = '<p class="hint-text">None found.</p>';
+                return;
+            }
+            listEl.innerHTML = groups.map((group, groupIdx) => {
+                const rowsHtml = group.rows.map((row, rowIdx) => {
+                    const detail = mediaType === 'movie'
+                        ? `Added: ${formatDate(row.dateadded)}`
+                        : `${row.episode_count} episode(s), seasons [${(row.seasons || []).join(', ')}] — earliest added: ${formatDate(row.earliest_dateadded)}`;
+                    return `
+                        <div class="instance-row">
+                            <div></div>
+                            <div><strong>${escHtml(row.instance)}</strong><br><span class="hint-text">${detail}</span></div>
+                            <button type="button" class="btn-secondary" onclick="resolveDuplicate(${groupIdx}, '${escHtml(row.instance)}')">
+                                <i class="fas fa-check"></i> Keep this one
+                            </button>
+                        </div>
+                    `;
+                }).join('');
+                return `
+                    <div class="setup-section" style="margin-bottom: 0.75rem;">
+                        <strong>${escHtml(group.title || group.imdb_id)}</strong>
+                        <span class="hint-text">(${escHtml(group.imdb_id)})</span>
+                        <div id="duplicate-result-${groupIdx}" class="wizard-result"></div>
+                        ${rowsHtml}
+                    </div>
+                `;
+            }).join('');
+            window._duplicateGroups = groups;  // resolveDuplicate reads instance/media_type back from here
+        }
+
+        async function resolveDuplicate(groupIdx, keepInstance) {
+            const mediaType = document.getElementById('duplicates-media-type').value;
+            const group = (window._duplicateGroups || [])[groupIdx];
+            const resultEl = document.getElementById(`duplicate-result-${groupIdx}`);
+            if (!group) return;
+            const otherInstances = group.rows.map(r => r.instance).filter(i => i !== keepInstance);
+            try {
+                for (const dropInstance of otherInstances) {
+                    const resp = await fetch('/api/duplicates/resolve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            media_type: mediaType,
+                            imdb_id: group.imdb_id,
+                            from_instance: dropInstance,
+                            to_instance: keepInstance
+                        })
+                    });
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                }
+                resultEl.innerHTML = `<div class="result-success">Kept ${escHtml(keepInstance)} — reloading&hellip;</div>`;
+                loadDuplicates();
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">Could not resolve: ${escHtml(err.message)}</div>`;
+            }
+        }
+
+        loadDuplicates();
 
         loadInstances();
         loadIntegrationKeyStatus();

@@ -1626,10 +1626,15 @@ async def delete_movie(imdb_id: str, dependencies: dict):
         }
 
 
-async def get_integration_key_status(dependencies: dict):
-    """Settings page: is a Doorman integration key currently set? Never
-    returns the key itself, only whether one is configured."""
-    return {"configured": bool(_current_integration_key())}
+async def get_integration_key_status(dependencies: dict, reveal: bool = False):
+    """Settings page: is a Doorman integration key currently set? reveal=true
+    also returns the key itself — same "Show current key" convention as
+    Doorman's own API key page and the existing Radarr/Sonarr instance
+    wizard, which already show their saved keys back on request."""
+    key = _current_integration_key()
+    if reveal and key:
+        return {"configured": True, "key": key}
+    return {"configured": bool(key)}
 
 
 async def set_integration_key(payload: IntegrationKeyRequest, dependencies: dict):
@@ -1689,6 +1694,29 @@ async def instance_migration(payload: InstanceMigrationRequest, dependencies: di
     if not moved:
         return {"moved": False, "reason": f"no {media_type} tracked for {payload.imdb_id} on instance {payload.from_instance}"}
     return {"moved": True}
+
+
+async def resolve_duplicate_instance(payload: InstanceMigrationRequest, dependencies: dict):
+    """Settings page's "keep this one" action on a listed duplicate — same
+    underlying move as instance_migration, just invoked by someone already
+    in Chronarr's own Settings page rather than an external router, so it
+    isn't gated behind the Doorman integration key. `from_instance` is the
+    one being dropped, `to_instance` the one being kept (its data wins on
+    the collision migrate_*_instance already handles)."""
+    return await instance_migration(payload, dependencies)
+
+
+async def list_duplicate_instances(dependencies: dict, media_type: str = "movie"):
+    """Settings page: titles tracked under the same imdb_id on more than one
+    instance — mostly titles moved by hand before migrate_*_instance existed
+    to do this in place. See db.find_duplicate_movies/find_duplicate_series
+    for how a genuine duplicate is told apart from a Doorman season split."""
+    db = dependencies["db"]
+    media_type = (media_type or "").strip().lower()
+    if media_type not in ("movie", "series"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'series'")
+    groups = db.find_duplicate_movies() if media_type == "movie" else db.find_duplicate_series()
+    return {"media_type": media_type, "duplicates": groups}
 
 
 async def cleanup_orphaned_episodes(dependencies: dict):
@@ -3543,8 +3571,8 @@ def register_routes(app, dependencies: dict):
         return {"radarr": radarr_list, "sonarr": sonarr_list}
 
     @app.get("/api/settings/integration-key")
-    async def _get_integration_key_status():
-        return await get_integration_key_status(dependencies)
+    async def _get_integration_key_status(reveal: bool = False):
+        return await get_integration_key_status(dependencies, reveal)
 
     @app.post("/api/settings/integration-key")
     async def _set_integration_key(payload: IntegrationKeyRequest):
@@ -3554,6 +3582,18 @@ def register_routes(app, dependencies: dict):
     async def _instance_migration(payload: InstanceMigrationRequest, request: Request):
         _require_integration_key(request)
         return await instance_migration(payload, dependencies)
+
+    @app.get("/api/duplicates")
+    async def _list_duplicate_instances(media_type: str = "movie"):
+        # Unauthenticated like the rest of the settings/wizard surface — this
+        # is a UI report for the person already in Chronarr's own Settings
+        # page, not something Doorman calls, so it doesn't need the Doorman
+        # integration key.
+        return await list_duplicate_instances(dependencies, media_type)
+
+    @app.post("/api/duplicates/resolve")
+    async def _resolve_duplicate_instance(payload: InstanceMigrationRequest):
+        return await resolve_duplicate_instance(payload, dependencies)
 
     @app.get("/api/wizard/instance-details")
     async def _wizard_instance_details(media_type: str, name: str = ""):

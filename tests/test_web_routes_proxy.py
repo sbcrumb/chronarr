@@ -43,6 +43,16 @@ def test_integration_key_status_is_proxied_to_core(client):
     assert called_url.endswith("/api/settings/integration-key")
 
 
+def test_integration_key_reveal_query_param_is_forwarded(client):
+    with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"configured": true, "key": "abc123"}')) as mock_urlopen:
+        resp = client.get("/api/settings/integration-key?reveal=true")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"configured": True, "key": "abc123"}
+    called_url = mock_urlopen.call_args[0][0].full_url
+    assert called_url.endswith("/api/settings/integration-key?reveal=true")
+
+
 def test_integration_key_set_is_proxied_to_core_with_body(client):
     with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"configured": true}')) as mock_urlopen:
         resp = client.post("/api/settings/integration-key", json={"key": "sekret"})
@@ -52,3 +62,26 @@ def test_integration_key_set_is_proxied_to_core_with_body(client):
     sent_request = mock_urlopen.call_args[0][0]
     assert sent_request.method == "POST"
     assert sent_request.data == b'{"key": "sekret"}'
+
+
+def test_duplicates_list_is_proxied_with_media_type_query(client):
+    with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"media_type": "movie", "duplicates": []}')) as mock_urlopen:
+        resp = client.get("/api/duplicates?media_type=movie")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"media_type": "movie", "duplicates": []}
+    called_url = mock_urlopen.call_args[0][0].full_url
+    assert called_url.endswith("/api/duplicates?media_type=movie")
+
+
+def test_duplicates_resolve_is_proxied_with_body(client):
+    with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"moved": true}')) as mock_urlopen:
+        resp = client.post("/api/duplicates/resolve", json={
+            "media_type": "movie", "imdb_id": "tt1", "from_instance": "radarr", "to_instance": "radarr_strm"
+        })
+
+    assert resp.status_code == 200
+    assert resp.json() == {"moved": True}
+    sent_request = mock_urlopen.call_args[0][0]
+    assert sent_request.method == "POST"
+    assert sent_request.full_url.endswith("/api/duplicates/resolve")

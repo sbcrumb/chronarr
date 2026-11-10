@@ -778,6 +778,77 @@ class ChronarrDatabase:
                     cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, new_instance))
             return True
 
+    def find_duplicate_movies(self) -> List[Dict[str, Any]]:
+        """Movies tracked under the same imdb_id on more than one instance —
+        normal right after moving one by hand, before migrate_movie_instance
+        existed to do this in place instead. One group per imdb_id; each
+        row's own dateadded is what the caller judges "real original" vs
+        "fresh re-import" from before picking which instance to migrate
+        FROM via POST /api/instance-migration."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT imdb_id FROM movies GROUP BY imdb_id HAVING COUNT(*) > 1")
+            imdb_ids = [row['imdb_id'] for row in cursor.fetchall()]
+
+            groups = []
+            for imdb_id in imdb_ids:
+                cursor.execute("""
+                    SELECT instance, title, year, path, dateadded, released
+                    FROM movies WHERE imdb_id = %s ORDER BY instance
+                """, (imdb_id,))
+                rows = [dict(r) for r in cursor.fetchall()]
+                groups.append({
+                    "imdb_id": imdb_id,
+                    "title": next((r["title"] for r in rows if r.get("title")), None),
+                    "rows": rows,
+                })
+            return groups
+
+    def find_duplicate_series(self) -> List[Dict[str, Any]]:
+        """Series tracked under the same imdb_id on more than one instance —
+        see find_duplicate_movies. NOT necessarily a leftover duplicate on
+        its own: Doorman can legitimately split a series' seasons across two
+        instances on purpose, which looks identical here (same imdb_id, two
+        instances). episode_counts per instance is what lets the caller tell
+        the two apart — overlapping season/episode numbers on both sides
+        means a genuine stale duplicate; disjoint ones mean a real split and
+        this group should be left alone.
+        """
+        from utils.file_utils import extract_title_from_directory_name
+        from pathlib import Path
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT imdb_id FROM series GROUP BY imdb_id HAVING COUNT(*) > 1")
+            imdb_ids = [row['imdb_id'] for row in cursor.fetchall()]
+
+            groups = []
+            for imdb_id in imdb_ids:
+                cursor.execute("SELECT instance, path FROM series WHERE imdb_id = %s ORDER BY instance",
+                                (imdb_id,))
+                series_rows = cursor.fetchall()
+                title = None
+                rows = []
+                for s in series_rows:
+                    path = s.get('path')
+                    if title is None and path:
+                        title = extract_title_from_directory_name(Path(path).name)
+                    cursor.execute("""
+                        SELECT season, episode, dateadded FROM episodes
+                        WHERE imdb_id = %s AND instance = %s ORDER BY season, episode
+                    """, (imdb_id, s['instance']))
+                    episodes = [dict(e) for e in cursor.fetchall()]
+                    dates = [e["dateadded"] for e in episodes if e.get("dateadded")]
+                    rows.append({
+                        "instance": s['instance'],
+                        "path": path,
+                        "episode_count": len(episodes),
+                        "seasons": sorted({e["season"] for e in episodes}),
+                        "earliest_dateadded": min(dates) if dates else None,
+                    })
+                groups.append({"imdb_id": imdb_id, "title": title, "rows": rows})
+            return groups
+
     def get_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         with self.get_connection() as conn:
