@@ -225,6 +225,24 @@ def remove_instance_keys(path: Path, prefix: str, instance_label: str = "") -> b
     return changed
 
 
+def read_env_value(path: Path, key: str) -> str:
+    """Read one KEY=value line straight off disk, "" if absent or the file
+    doesn't exist. Used for settings (like the Doorman integration key) that
+    need to take effect immediately on save — re-read per use instead of
+    cached at startup, so there's nothing to restart.
+    """
+    if not path.exists():
+        return ""
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() == key:
+            return v.strip()
+    return ""
+
+
 def read_env_files(env_path: Path, secrets_path: Path) -> Dict[str, str]:
     """Read both files' raw text, for a backup. A missing file comes back as "".
 

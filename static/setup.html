@@ -468,6 +468,25 @@
                 </div>
                 <div class="wizard-result" id="restore-result"></div>
             </div>
+
+            <!-- Integrations -->
+            <div class="setup-section">
+                <h2><i class="fas fa-plug"></i> Integrations</h2>
+                <p class="hint-text" style="margin-top: 0;">
+                    A shared secret for external routers (e.g. Doorman) that call
+                    <code>POST /api/instance-migration</code> to move a tracked title between two instances in place
+                    — preserving its history instead of the destination's next import creating a fresh entry.
+                    This endpoint refuses every call until a key is set here.
+                </p>
+                <p>Status: <strong id="integration-key-status">checking&hellip;</strong></p>
+                <div class="wizard-actions">
+                    <input type="password" id="integration-key-input" placeholder="new key — leave blank and save to clear" style="flex: 1; min-width: 220px;">
+                    <button class="btn-secondary" onclick="saveIntegrationKey()">
+                        <i class="fas fa-save"></i> Save
+                    </button>
+                </div>
+                <div class="wizard-result" id="integration-key-result"></div>
+            </div>
         </div>
     </div>
 
@@ -651,7 +670,40 @@
             }
         }
 
+        async function loadIntegrationKeyStatus() {
+            const statusEl = document.getElementById('integration-key-status');
+            try {
+                const resp = await fetch('/api/settings/integration-key');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                statusEl.textContent = data.configured ? 'configured' : 'not set';
+                statusEl.style.color = data.configured ? 'var(--success, #2e7d32)' : 'var(--muted, inherit)';
+            } catch (err) {
+                statusEl.textContent = 'unknown (could not check)';
+            }
+        }
+
+        async function saveIntegrationKey() {
+            const input = document.getElementById('integration-key-input');
+            const resultEl = document.getElementById('integration-key-result');
+            const key = input.value;
+            try {
+                const resp = await fetch('/api/settings/integration-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key })
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                input.value = '';
+                resultEl.innerHTML = `<div class="result-success">${key ? 'Key saved' : 'Key cleared'} — takes effect immediately.</div>`;
+                loadIntegrationKeyStatus();
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">Could not save: ${escHtml(err.message)}</div>`;
+            }
+        }
+
         loadInstances();
+        loadIntegrationKeyStatus();
 
         // --- Add Instance wizard ---
         //
