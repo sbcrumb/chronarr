@@ -2384,6 +2384,37 @@ def register_database_admin_routes(app, dependencies):
         except (urllib.error.URLError, socket.timeout) as e:
             raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
 
+    @app.get("/api/settings/integration-key")
+    async def api_settings_integration_key_status():
+        """Proxy the Doorman-integration-key configured/not-configured status
+        from the core container — same reasoning as /api/instances above:
+        core owns the env files, the setup page just displays what it says."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        core_url = f"http://{core_host}:{core_port}/api/settings/integration-key"
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/settings/integration-key")
+    async def api_settings_integration_key_set(request: Request):
+        """Proxy setting/generating/clearing the Doorman integration key to
+        the core container — it owns .env.secrets, same as every other
+        wizard write."""
+        return await _proxy_post_to_core("/api/settings/integration-key", await request.json())
+
     @app.get("/api/wizard/instance-details")
     async def wizard_instance_details(request: Request):
         """Proxy an instance's full config (for pre-filling Edit) from the core container."""
