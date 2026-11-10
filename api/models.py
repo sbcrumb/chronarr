@@ -327,3 +327,27 @@ class WizardEnvRestoreRequest(BaseModel):
     env_secrets: str
     chronarr_version: Optional[str] = None
     exported_at: Optional[str] = None
+
+
+class IntegrationKeyRequest(BaseModel):
+    """Settings page: set (or clear, with an empty key) the shared secret an
+    external router (Doorman) presents on POST /api/instance-migration."""
+    key: str = ""
+
+
+class InstanceMigrationRequest(BaseModel):
+    """Doorman's own call: move a tracked title from one instance to another
+    in place, preserving dateadded/metadata — the merge primitive that
+    replaces letting the destination's next import create a fresh row.
+
+    episodes, series only: a list of [season, episode] pairs to move; omit
+    (or leave empty) to move the whole series. Calling this again with
+    from_instance/to_instance swapped is how a partial move gets corrected
+    after the fact — see core.database.migrate_series_instance.
+    """
+    media_type: str  # "movie" or "series"
+    imdb_id: str
+    from_instance: str
+    to_instance: str
+    new_path: Optional[str] = None
+    episodes: Optional[List[List[int]]] = None

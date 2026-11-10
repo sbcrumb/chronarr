@@ -22,11 +22,13 @@ from api.models import (
     SonarrWebhook, RadarrWebhook, MaintainarrWebhook, HealthResponse, TVSeasonRequest, TVEpisodeRequest,
     MovieUpdateRequest, EpisodeUpdateRequest, BulkUpdateRequest, OrphanedCleanupRequest,
     CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse,
-    WizardConnectionTestRequest, WizardSaveInstanceRequest, WizardEnvRestoreRequest, WizardDeleteInstanceRequest
+    WizardConnectionTestRequest, WizardSaveInstanceRequest, WizardEnvRestoreRequest, WizardDeleteInstanceRequest,
+    IntegrationKeyRequest, InstanceMigrationRequest
 )
 # Import logging utility
 from utils.logging import _log
 from utils.imdb_utils import parse_imdb_from_path, find_imdb_in_directory  # Phase 3: Replaced NFOManager
+from config.env_writer import read_env_value, upsert_env_file
 # Web routes removed - handled by separate web container
 
 # Global scan status tracking for detailed progress
@@ -80,6 +82,34 @@ async def _verify_webhook_signature(request: Request, body: bytes, secret: str, 
     expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig_header):
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+
+# ---------------------------
+# Integration key (external routers like Doorman calling POST /api/instance-migration)
+# ---------------------------
+
+_INTEGRATION_KEY_ENV = "CHRONARR_INTEGRATION_KEY"
+_SECRETS_PATH = Path(".env.secrets")
+
+
+def _current_integration_key() -> str:
+    """Re-read from disk every call — set from the Settings page, takes
+    effect immediately, nothing to restart."""
+    return read_env_value(_SECRETS_PATH, _INTEGRATION_KEY_ENV)
+
+
+def _require_integration_key(request: Request) -> None:
+    """Gate a mutating external-integration endpoint. Unlike the Sonarr/Radarr
+    webhook secrets, this one is NOT optional-if-unset — these endpoints write
+    to the database on another service's say-so, so an unconfigured key means
+    the endpoint refuses everything until someone sets one, rather than
+    silently accepting unauthenticated calls."""
+    expected = _current_integration_key()
+    if not expected:
+        raise HTTPException(status_code=503, detail="No integration key configured — set one on the Settings page first")
+    provided = request.headers.get("X-Chronarr-Key", "")
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Chronarr-Key")
 
 
 # ---------------------------
@@ -1593,6 +1623,63 @@ async def delete_movie(imdb_id: str, dependencies: dict):
             "error": str(e),
             "imdb_id": imdb_id
         }
+
+
+async def get_integration_key_status(dependencies: dict):
+    """Settings page: is a Doorman integration key currently set? Never
+    returns the key itself, only whether one is configured."""
+    return {"configured": bool(_current_integration_key())}
+
+
+async def set_integration_key(payload: IntegrationKeyRequest, dependencies: dict):
+    """Settings page: set (payload.key non-empty) or clear (empty) the shared
+    secret external routers present on POST /api/instance-migration. Takes
+    effect immediately — nothing to restart."""
+    key = payload.key.strip()
+    if key:
+        upsert_env_file(_SECRETS_PATH, {_INTEGRATION_KEY_ENV: key})
+        return {"configured": True}
+    # Clearing: blank the value rather than removing the line, same
+    # upsert_env_file mechanics as everything else that touches this file.
+    upsert_env_file(_SECRETS_PATH, {_INTEGRATION_KEY_ENV: ""})
+    return {"configured": False}
+
+
+async def instance_migration(payload: InstanceMigrationRequest, dependencies: dict):
+    """Move a tracked title from one instance to another in place — see
+    core.database.migrate_movie_instance / migrate_series_instance. This is
+    the merge primitive an external router (Doorman) calls after moving a
+    title between two real Radarr/Sonarr instances behind it, so the
+    destination's own next import doesn't look like a brand-new title and
+    lose dateadded/watch history.
+    """
+    db = dependencies["db"]
+    media_type = (payload.media_type or "").strip().lower()
+    if media_type not in ("movie", "series"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'series'")
+    if not payload.imdb_id or not payload.from_instance or not payload.to_instance:
+        raise HTTPException(status_code=400, detail="imdb_id, from_instance and to_instance are required")
+    if payload.from_instance == payload.to_instance:
+        raise HTTPException(status_code=400, detail="from_instance and to_instance must differ")
+
+    try:
+        if media_type == "movie":
+            moved = db.migrate_movie_instance(
+                payload.imdb_id, payload.from_instance, payload.to_instance, new_path=payload.new_path
+            )
+        else:
+            episodes = [tuple(pair) for pair in payload.episodes] if payload.episodes else None
+            moved = db.migrate_series_instance(
+                payload.imdb_id, payload.from_instance, payload.to_instance,
+                episodes=episodes, new_path=payload.new_path
+            )
+    except Exception as e:
+        _log("ERROR", f"instance-migration failed for {payload.imdb_id} ({payload.from_instance} -> {payload.to_instance}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not moved:
+        return {"moved": False, "reason": f"no {media_type} tracked for {payload.imdb_id} on instance {payload.from_instance}"}
+    return {"moved": True}
 
 
 async def cleanup_orphaned_episodes(dependencies: dict):
@@ -3445,6 +3532,19 @@ def register_routes(app, dependencies: dict):
             for inst in cfg.sonarr_instances
         ]
         return {"radarr": radarr_list, "sonarr": sonarr_list}
+
+    @app.get("/api/settings/integration-key")
+    async def _get_integration_key_status():
+        return await get_integration_key_status(dependencies)
+
+    @app.post("/api/settings/integration-key")
+    async def _set_integration_key(payload: IntegrationKeyRequest):
+        return await set_integration_key(payload, dependencies)
+
+    @app.post("/api/instance-migration")
+    async def _instance_migration(payload: InstanceMigrationRequest, request: Request):
+        _require_integration_key(request)
+        return await instance_migration(payload, dependencies)
 
     @app.get("/api/wizard/instance-details")
     async def _wizard_instance_details(media_type: str, name: str = ""):

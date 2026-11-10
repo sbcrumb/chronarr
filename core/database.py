@@ -659,6 +659,125 @@ class ChronarrDatabase:
             cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (old_imdb_id, instance))
             return True
 
+    def migrate_movie_instance(self, imdb_id: str, old_instance: str, new_instance: str,
+                                new_path: Optional[str] = None) -> bool:
+        """Move a tracked movie from one instance to another, preserving all other
+        data — the instance-equivalent of migrate_movie_imdb_id above. Used when an
+        external router (Doorman) moves a title between two real Radarr instances
+        behind it, so the destination's own import doesn't look like a brand-new
+        movie and lose dateadded/history."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, old_instance))
+            old_record = cursor.fetchone()
+            if not old_record:
+                return False
+
+            old_data = dict(old_record)
+
+            cursor.execute("SELECT * FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, new_instance))
+            if cursor.fetchone():
+                # Destination already has a row (e.g. moved by hand before this
+                # existed) — keep what it already has rather than overwrite it,
+                # and just drop the now-stale source row.
+                cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, old_instance))
+                return True
+
+            cursor.execute("""
+                INSERT INTO movies (imdb_id, instance, title, year, path, released, dateadded, source,
+                                   has_video_file, last_updated, skipped, skip_reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (imdb_id, new_instance, old_data.get('title'), old_data.get('year'),
+                  new_path or old_data.get('path'), old_data.get('released'), old_data.get('dateadded'),
+                  old_data.get('source'), old_data.get('has_video_file'), datetime.utcnow(),
+                  old_data.get('skipped'), old_data.get('skip_reason')))
+
+            cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, old_instance))
+            return True
+
+    def migrate_series_instance(self, imdb_id: str, old_instance: str, new_instance: str,
+                                 episodes: Optional[List[tuple]] = None,
+                                 new_path: Optional[str] = None) -> bool:
+        """Move a tracked series — or just specific (season, episode) pairs of it —
+        from one instance to another, preserving dateadded/metadata instead of
+        letting the destination's next import create a fresh row.
+
+        episodes=None moves the whole series (and every one of its episode rows).
+        A list moves only those episodes; the series row itself is left on
+        old_instance if it's still there (a split placement, some seasons on each
+        instance) — the destination series row is created first if it doesn't
+        already exist, so the moved episode rows have a parent to satisfy the FK.
+
+        Calling this with old_instance/new_instance swapped is also how a partial
+        move gets corrected after Doorman's own move verification finds some
+        episodes never actually arrived on the new instance — moving just those
+        specific episodes back is the same operation run in reverse.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, old_instance))
+            old_series = cursor.fetchone()
+            if not old_series:
+                return False
+            old_series_data = dict(old_series)
+
+            cursor.execute("SELECT * FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, new_instance))
+            dest_series_exists = cursor.fetchone() is not None
+            if not dest_series_exists:
+                cursor.execute("""
+                    INSERT INTO series (imdb_id, instance, path, last_updated, metadata)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (imdb_id, new_instance, new_path or old_series_data.get('path'),
+                      datetime.utcnow(), old_series_data.get('metadata')))
+
+            if episodes is None:
+                # Whole series: move every episode currently under the old
+                # instance through the same collision-safe loop below, rather
+                # than a blind bulk UPDATE — a stale destination series row
+                # (e.g. moved by hand before this existed) can already own
+                # some of the same (season, episode) rows, and a bulk UPDATE
+                # would violate the primary key on the first one it hits.
+                cursor.execute("SELECT season, episode FROM episodes WHERE imdb_id = %s AND instance = %s",
+                                (imdb_id, old_instance))
+                episodes = [(row['season'], row['episode']) for row in cursor.fetchall()]
+
+            for season, episode in episodes:
+                cursor.execute("""
+                    SELECT 1 FROM episodes WHERE imdb_id = %s AND instance = %s AND season = %s AND episode = %s
+                """, (imdb_id, new_instance, season, episode))
+                if cursor.fetchone():
+                    # Same collision reasoning as migrate_series_imdb_id: the
+                    # destination already won for this episode, so the source
+                    # row just gets dropped rather than violating the PK.
+                    cursor.execute("""
+                        DELETE FROM episodes WHERE imdb_id = %s AND instance = %s AND season = %s AND episode = %s
+                    """, (imdb_id, old_instance, season, episode))
+                    continue
+                cursor.execute("""
+                    UPDATE episodes SET instance = %s, skipped = FALSE, skip_reason = NULL
+                    WHERE imdb_id = %s AND instance = %s AND season = %s AND episode = %s
+                """, (new_instance, imdb_id, old_instance, season, episode))
+
+            # If every episode just left the source series and none are left
+            # under it, the source row is a phantom — drop it the same way a
+            # whole-series move does.
+            cursor.execute("SELECT 1 FROM episodes WHERE imdb_id = %s AND instance = %s LIMIT 1",
+                            (imdb_id, old_instance))
+            if cursor.fetchone() is None:
+                cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, old_instance))
+
+            # Mirror: if the destination series row was freshly created above but
+            # ended up with no episodes (every one hit the collision branch),
+            # it's a phantom too.
+            if not dest_series_exists:
+                cursor.execute("SELECT 1 FROM episodes WHERE imdb_id = %s AND instance = %s LIMIT 1",
+                                (imdb_id, new_instance))
+                if cursor.fetchone() is None:
+                    cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, new_instance))
+            return True
+
     def get_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         with self.get_connection() as conn:
