@@ -479,7 +479,17 @@
                     This endpoint refuses every call until a key is set here.
                 </p>
                 <p>Status: <strong id="integration-key-status">checking&hellip;</strong></p>
-                <div class="wizard-actions">
+                <details id="reveal-key-details" ontoggle="onRevealIntegrationKeyToggle(this)">
+                    <summary>Show current key</summary>
+                    <div class="wizard-actions" style="margin-top: 0.5rem;" id="revealed-key-row" hidden>
+                        <input type="text" readonly id="revealed-key-input" style="flex: 1; min-width: 220px; font-family: monospace;" onclick="this.select()">
+                        <button type="button" class="btn-secondary" onclick="copyRevealedKey(this)">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                    </div>
+                    <p id="revealed-key-empty" class="hint-text" style="margin: 0.5rem 0 0;" hidden>No key configured.</p>
+                </details>
+                <div class="wizard-actions" style="margin-top: 0.75rem;">
                     <input type="password" id="integration-key-input" placeholder="new key — leave blank and save to clear" style="flex: 1; min-width: 220px;">
                     <button class="btn-secondary" onclick="saveIntegrationKey()">
                         <i class="fas fa-save"></i> Save
@@ -700,9 +710,15 @@
                 input.value = '';
                 resultEl.innerHTML = `<div class="result-success">${key ? 'Key saved' : 'Key cleared'} — takes effect immediately.</div>`;
                 loadIntegrationKeyStatus();
+                refreshRevealedKeyIfOpen();
             } catch (err) {
                 resultEl.innerHTML = `<div class="result-error">Could not save: ${escHtml(err.message)}</div>`;
             }
+        }
+
+        function refreshRevealedKeyIfOpen() {
+            const details = document.getElementById('reveal-key-details');
+            if (details && details.open) onRevealIntegrationKeyToggle(details);
         }
 
         async function generateIntegrationKey() {
@@ -716,11 +732,11 @@
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 document.getElementById('integration-key-input').value = '';
-                // This is the only time the plaintext is ever sent back —
-                // nothing re-displays it after this, so it has to be copied now.
+                // Shown immediately here either way, but "Show current key"
+                // above also reveals it on request from now on.
                 resultEl.innerHTML = `
                     <div class="result-success">
-                        New key generated and saved — copy it now, it won't be shown again:
+                        New key generated and saved:
                         <div class="wizard-actions" style="margin-top: 0.5rem;">
                             <input type="text" readonly value="${escHtml(data.key)}" id="generated-integration-key" style="flex: 1; min-width: 220px; font-family: monospace;" onclick="this.select()">
                             <button type="button" class="btn-secondary" onclick="copyGeneratedKey(this)">
@@ -730,6 +746,7 @@
                     </div>
                 `;
                 loadIntegrationKeyStatus();
+                refreshRevealedKeyIfOpen();
             } catch (err) {
                 resultEl.innerHTML = `<div class="result-error">Could not generate: ${escHtml(err.message)}</div>`;
             }
@@ -737,6 +754,41 @@
 
         function copyGeneratedKey(btn) {
             const input = document.getElementById('generated-integration-key');
+            if (!input) return;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(input.value).then(() => showCopied(btn)).catch(() => fallbackCopy(input, btn));
+            } else {
+                fallbackCopy(input, btn);
+            }
+        }
+
+        async function onRevealIntegrationKeyToggle(details) {
+            if (!details.open) return;  // only fetch when opened, not on collapse
+            const row = document.getElementById('revealed-key-row');
+            const emptyMsg = document.getElementById('revealed-key-empty');
+            const input = document.getElementById('revealed-key-input');
+            try {
+                const resp = await fetch('/api/settings/integration-key?reveal=true');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.key) {
+                    input.value = data.key;
+                    row.hidden = false;
+                    emptyMsg.hidden = true;
+                } else {
+                    row.hidden = true;
+                    emptyMsg.hidden = false;
+                    emptyMsg.textContent = 'No key configured.';
+                }
+            } catch (err) {
+                row.hidden = true;
+                emptyMsg.hidden = false;
+                emptyMsg.textContent = `Could not load: ${err.message}`;
+            }
+        }
+
+        function copyRevealedKey(btn) {
+            const input = document.getElementById('revealed-key-input');
             if (!input) return;
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(input.value).then(() => showCopied(btn)).catch(() => fallbackCopy(input, btn));

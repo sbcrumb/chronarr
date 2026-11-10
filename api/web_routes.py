@@ -2385,10 +2385,11 @@ def register_database_admin_routes(app, dependencies):
             raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
 
     @app.get("/api/settings/integration-key")
-    async def api_settings_integration_key_status():
+    async def api_settings_integration_key_status(request: Request):
         """Proxy the Doorman-integration-key configured/not-configured status
-        from the core container — same reasoning as /api/instances above:
-        core owns the env files, the setup page just displays what it says."""
+        (and, with ?reveal=true, the key itself) from the core container —
+        same reasoning as /api/instances above: core owns the env files, the
+        setup page just displays what it says."""
         import urllib.request
         import urllib.error
         import json
@@ -2397,7 +2398,8 @@ def register_database_admin_routes(app, dependencies):
 
         core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
         core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
-        core_url = f"http://{core_host}:{core_port}/api/settings/integration-key"
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/settings/integration-key" + (f"?{query}" if query else "")
 
         try:
             req = urllib.request.Request(core_url)

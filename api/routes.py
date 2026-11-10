@@ -1626,10 +1626,15 @@ async def delete_movie(imdb_id: str, dependencies: dict):
         }
 
 
-async def get_integration_key_status(dependencies: dict):
-    """Settings page: is a Doorman integration key currently set? Never
-    returns the key itself, only whether one is configured."""
-    return {"configured": bool(_current_integration_key())}
+async def get_integration_key_status(dependencies: dict, reveal: bool = False):
+    """Settings page: is a Doorman integration key currently set? reveal=true
+    also returns the key itself — same "Show current key" convention as
+    Doorman's own API key page and the existing Radarr/Sonarr instance
+    wizard, which already show their saved keys back on request."""
+    key = _current_integration_key()
+    if reveal and key:
+        return {"configured": True, "key": key}
+    return {"configured": bool(key)}
 
 
 async def set_integration_key(payload: IntegrationKeyRequest, dependencies: dict):
@@ -3543,8 +3548,8 @@ def register_routes(app, dependencies: dict):
         return {"radarr": radarr_list, "sonarr": sonarr_list}
 
     @app.get("/api/settings/integration-key")
-    async def _get_integration_key_status():
-        return await get_integration_key_status(dependencies)
+    async def _get_integration_key_status(reveal: bool = False):
+        return await get_integration_key_status(dependencies, reveal)
 
     @app.post("/api/settings/integration-key")
     async def _set_integration_key(payload: IntegrationKeyRequest):

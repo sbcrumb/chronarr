@@ -43,6 +43,16 @@ def test_integration_key_status_is_proxied_to_core(client):
     assert called_url.endswith("/api/settings/integration-key")
 
 
+def test_integration_key_reveal_query_param_is_forwarded(client):
+    with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"configured": true, "key": "abc123"}')) as mock_urlopen:
+        resp = client.get("/api/settings/integration-key?reveal=true")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"configured": True, "key": "abc123"}
+    called_url = mock_urlopen.call_args[0][0].full_url
+    assert called_url.endswith("/api/settings/integration-key?reveal=true")
+
+
 def test_integration_key_set_is_proxied_to_core_with_body(client):
     with patch("urllib.request.urlopen", return_value=_fake_urlopen(b'{"configured": true}')) as mock_urlopen:
         resp = client.post("/api/settings/integration-key", json={"key": "sekret"})

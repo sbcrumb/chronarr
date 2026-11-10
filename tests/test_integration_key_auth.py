@@ -75,3 +75,14 @@ def test_plain_status_check_never_includes_the_key(secrets_file):
     asyncio.run(routes.set_integration_key(IntegrationKeyRequest(generate=True), {}))
     status = asyncio.run(routes.get_integration_key_status({}))
     assert status == {"configured": True}  # no "key" field at all
+
+
+def test_reveal_returns_the_saved_key(secrets_file):
+    generated = asyncio.run(routes.set_integration_key(IntegrationKeyRequest(generate=True), {}))
+    revealed = asyncio.run(routes.get_integration_key_status({}, reveal=True))
+    assert revealed == {"configured": True, "key": generated["key"]}
+
+
+def test_reveal_with_nothing_configured_omits_the_key(secrets_file):
+    revealed = asyncio.run(routes.get_integration_key_status({}, reveal=True))
+    assert revealed == {"configured": False}
