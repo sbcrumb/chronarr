@@ -857,9 +857,14 @@
                         <div class="instance-row">
                             <div></div>
                             <div><strong>${escHtml(row.instance)}</strong><br><span class="hint-text">${detail}</span></div>
-                            <button type="button" class="btn-secondary" onclick="resolveDuplicate(${groupIdx}, '${escHtml(row.instance)}')">
-                                <i class="fas fa-check"></i> Keep this one
-                            </button>
+                            <div class="wizard-actions" style="margin-top: 0;">
+                                <button type="button" class="btn-secondary" onclick="resolveDuplicate(${groupIdx}, '${escHtml(row.instance)}', false)">
+                                    <i class="fas fa-check"></i> Keep this one
+                                </button>
+                                <button type="button" class="btn-secondary" onclick="resolveDuplicate(${groupIdx}, '${escHtml(row.instance)}', true)" title="Stay on this instance, but backfill its dates from the other row(s) wherever theirs is actually older">
+                                    <i class="fas fa-calendar-check"></i> Keep here, adopt older dates
+                                </button>
+                            </div>
                         </div>
                     `;
                 }).join('');
@@ -875,27 +880,29 @@
             window._duplicateGroups = groups;  // resolveDuplicate reads instance/media_type back from here
         }
 
-        async function resolveDuplicate(groupIdx, keepInstance) {
+        async function resolveDuplicate(groupIdx, keepInstance, adoptDates) {
             const mediaType = document.getElementById('duplicates-media-type').value;
             const group = (window._duplicateGroups || [])[groupIdx];
             const resultEl = document.getElementById(`duplicate-result-${groupIdx}`);
             if (!group) return;
             const otherInstances = group.rows.map(r => r.instance).filter(i => i !== keepInstance);
             try {
-                for (const dropInstance of otherInstances) {
+                for (const otherInstance of otherInstances) {
                     const resp = await fetch('/api/duplicates/resolve', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             media_type: mediaType,
                             imdb_id: group.imdb_id,
-                            from_instance: dropInstance,
-                            to_instance: keepInstance
+                            keep_instance: keepInstance,
+                            other_instance: otherInstance,
+                            adopt_dates: adoptDates
                         })
                     });
                     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 }
-                resultEl.innerHTML = `<div class="result-success">Kept ${escHtml(keepInstance)} — reloading&hellip;</div>`;
+                const action = adoptDates ? 'Adopted older dates onto' : 'Kept';
+                resultEl.innerHTML = `<div class="result-success">${action} ${escHtml(keepInstance)} — reloading&hellip;</div>`;
                 loadDuplicates();
             } catch (err) {
                 resultEl.innerHTML = `<div class="result-error">Could not resolve: ${escHtml(err.message)}</div>`;

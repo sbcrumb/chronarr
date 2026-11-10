@@ -778,6 +778,80 @@ class ChronarrDatabase:
                     cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, new_instance))
             return True
 
+    def adopt_dates_movie(self, imdb_id: str, keep_instance: str, source_instance: str) -> bool:
+        """For a duplicate where the title's real content already lives on
+        keep_instance (e.g. after a Doorman move) but its row only has a
+        fresh/wrong dateadded, while source_instance — the stale leftover —
+        still has the real original one: copy source_instance's dateadded/
+        released onto keep_instance's row, then drop source_instance
+        entirely. The mirror of migrate_movie_instance, which moves the
+        whole row including its instance; this keeps the instance exactly
+        as it is and only adopts the other row's dates.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT dateadded, released FROM movies WHERE imdb_id = %s AND instance = %s",
+                            (imdb_id, source_instance))
+            source = cursor.fetchone()
+            if not source:
+                return False
+            cursor.execute("SELECT 1 FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, keep_instance))
+            if not cursor.fetchone():
+                return False
+            cursor.execute("""
+                UPDATE movies SET dateadded = %s, released = COALESCE(%s, released)
+                WHERE imdb_id = %s AND instance = %s
+            """, (source.get('dateadded'), source.get('released'), imdb_id, keep_instance))
+            cursor.execute("DELETE FROM movies WHERE imdb_id = %s AND instance = %s", (imdb_id, source_instance))
+            return True
+
+    def adopt_dates_series(self, imdb_id: str, keep_instance: str, source_instance: str) -> Optional[int]:
+        """Series counterpart to adopt_dates_movie. A series has no
+        dateadded of its own — the real dates live per-episode — so this
+        copies dateadded/aired onto keep_instance's episodes from
+        source_instance's matching (season, episode) rows wherever
+        source_instance's is actually earlier (a genuinely older original
+        date, not just a different one), then drops source_instance's
+        series and episodes entirely. Returns how many episodes were
+        updated (0 is a legitimate success — nothing needed adopting), or
+        None if either instance doesn't actually have this series tracked.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, source_instance))
+            if not cursor.fetchone():
+                return None
+            cursor.execute("SELECT 1 FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, keep_instance))
+            if not cursor.fetchone():
+                return None
+
+            cursor.execute("""
+                SELECT season, episode, dateadded, aired FROM episodes
+                WHERE imdb_id = %s AND instance = %s
+            """, (imdb_id, source_instance))
+            source_eps = {(r['season'], r['episode']): r for r in cursor.fetchall()}
+
+            cursor.execute("SELECT season, episode, dateadded FROM episodes WHERE imdb_id = %s AND instance = %s",
+                            (imdb_id, keep_instance))
+            keep_eps = cursor.fetchall()
+
+            updated = 0
+            for row in keep_eps:
+                src = source_eps.get((row['season'], row['episode']))
+                if not src or not src.get('dateadded'):
+                    continue
+                if row.get('dateadded') and row['dateadded'] <= src['dateadded']:
+                    continue  # keep_instance's own date is already as old or older
+                cursor.execute("""
+                    UPDATE episodes SET dateadded = %s, aired = COALESCE(%s, aired)
+                    WHERE imdb_id = %s AND instance = %s AND season = %s AND episode = %s
+                """, (src['dateadded'], src.get('aired'), imdb_id, keep_instance, row['season'], row['episode']))
+                updated += 1
+
+            cursor.execute("DELETE FROM episodes WHERE imdb_id = %s AND instance = %s", (imdb_id, source_instance))
+            cursor.execute("DELETE FROM series WHERE imdb_id = %s AND instance = %s", (imdb_id, source_instance))
+            return updated
+
     def find_duplicate_movies(self) -> List[Dict[str, Any]]:
         """Movies tracked under the same imdb_id on more than one instance —
         normal right after moving one by hand, before migrate_movie_instance

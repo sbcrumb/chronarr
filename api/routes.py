@@ -24,7 +24,7 @@ from api.models import (
     MovieUpdateRequest, EpisodeUpdateRequest, BulkUpdateRequest, OrphanedCleanupRequest,
     CreateScheduledCleanupRequest, UpdateScheduledCleanupRequest, ScheduledCleanupResponse, CleanupExecutionResponse,
     WizardConnectionTestRequest, WizardSaveInstanceRequest, WizardEnvRestoreRequest, WizardDeleteInstanceRequest,
-    IntegrationKeyRequest, InstanceMigrationRequest
+    IntegrationKeyRequest, InstanceMigrationRequest, DuplicateResolveRequest
 )
 # Import logging utility
 from utils.logging import _log
@@ -1696,14 +1696,41 @@ async def instance_migration(payload: InstanceMigrationRequest, dependencies: di
     return {"moved": True}
 
 
-async def resolve_duplicate_instance(payload: InstanceMigrationRequest, dependencies: dict):
-    """Settings page's "keep this one" action on a listed duplicate — same
-    underlying move as instance_migration, just invoked by someone already
-    in Chronarr's own Settings page rather than an external router, so it
-    isn't gated behind the Doorman integration key. `from_instance` is the
-    one being dropped, `to_instance` the one being kept (its data wins on
-    the collision migrate_*_instance already handles)."""
-    return await instance_migration(payload, dependencies)
+async def resolve_duplicate_instance(payload: DuplicateResolveRequest, dependencies: dict):
+    """Settings page's action on a listed duplicate: either drop
+    other_instance's row outright (same underlying move as
+    instance_migration, just invoked by someone already in Chronarr's own
+    Settings page rather than an external router, so it isn't gated behind
+    the Doorman integration key), or, with adopt_dates, backfill
+    keep_instance's dates from other_instance's without touching which
+    instance the title lives on."""
+    db = dependencies["db"]
+    media_type = (payload.media_type or "").strip().lower()
+    if media_type not in ("movie", "series"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'series'")
+    if not payload.imdb_id or not payload.keep_instance or not payload.other_instance:
+        raise HTTPException(status_code=400, detail="imdb_id, keep_instance and other_instance are required")
+    if payload.keep_instance == payload.other_instance:
+        raise HTTPException(status_code=400, detail="keep_instance and other_instance must differ")
+
+    if not payload.adopt_dates:
+        return await instance_migration(InstanceMigrationRequest(
+            media_type=media_type, imdb_id=payload.imdb_id,
+            from_instance=payload.other_instance, to_instance=payload.keep_instance,
+        ), dependencies)
+
+    try:
+        if media_type == "movie":
+            resolved = db.adopt_dates_movie(payload.imdb_id, payload.keep_instance, payload.other_instance)
+        else:
+            resolved = db.adopt_dates_series(payload.imdb_id, payload.keep_instance, payload.other_instance) is not None
+    except Exception as e:
+        _log("ERROR", f"adopt-dates failed for {payload.imdb_id} ({payload.other_instance} -> {payload.keep_instance}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not resolved:
+        return {"resolved": False, "reason": f"no {media_type} tracked for {payload.imdb_id} on both instances"}
+    return {"resolved": True}
 
 
 async def list_duplicate_instances(dependencies: dict, media_type: str = "movie"):
@@ -3592,7 +3619,7 @@ def register_routes(app, dependencies: dict):
         return await list_duplicate_instances(dependencies, media_type)
 
     @app.post("/api/duplicates/resolve")
-    async def _resolve_duplicate_instance(payload: InstanceMigrationRequest):
+    async def _resolve_duplicate_instance(payload: DuplicateResolveRequest):
         return await resolve_duplicate_instance(payload, dependencies)
 
     @app.get("/api/wizard/instance-details")
