@@ -484,6 +484,9 @@
                     <button class="btn-secondary" onclick="saveIntegrationKey()">
                         <i class="fas fa-save"></i> Save
                     </button>
+                    <button class="btn-secondary" onclick="generateIntegrationKey()">
+                        <i class="fas fa-dice"></i> Generate random key
+                    </button>
                 </div>
                 <div class="wizard-result" id="integration-key-result"></div>
             </div>
@@ -699,6 +702,46 @@
                 loadIntegrationKeyStatus();
             } catch (err) {
                 resultEl.innerHTML = `<div class="result-error">Could not save: ${escHtml(err.message)}</div>`;
+            }
+        }
+
+        async function generateIntegrationKey() {
+            const resultEl = document.getElementById('integration-key-result');
+            try {
+                const resp = await fetch('/api/settings/integration-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ generate: true })
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                document.getElementById('integration-key-input').value = '';
+                // This is the only time the plaintext is ever sent back —
+                // nothing re-displays it after this, so it has to be copied now.
+                resultEl.innerHTML = `
+                    <div class="result-success">
+                        New key generated and saved — copy it now, it won't be shown again:
+                        <div class="wizard-actions" style="margin-top: 0.5rem;">
+                            <input type="text" readonly value="${escHtml(data.key)}" id="generated-integration-key" style="flex: 1; min-width: 220px; font-family: monospace;" onclick="this.select()">
+                            <button type="button" class="btn-secondary" onclick="copyGeneratedKey(this)">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                    </div>
+                `;
+                loadIntegrationKeyStatus();
+            } catch (err) {
+                resultEl.innerHTML = `<div class="result-error">Could not generate: ${escHtml(err.message)}</div>`;
+            }
+        }
+
+        function copyGeneratedKey(btn) {
+            const input = document.getElementById('generated-integration-key');
+            if (!input) return;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(input.value).then(() => showCopied(btn)).catch(() => fallbackCopy(input, btn));
+            } else {
+                fallbackCopy(input, btn);
             }
         }
 
