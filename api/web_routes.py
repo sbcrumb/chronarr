@@ -2417,6 +2417,37 @@ def register_database_admin_routes(app, dependencies):
         wizard write."""
         return await _proxy_post_to_core("/api/settings/integration-key", await request.json())
 
+    @app.get("/api/duplicates")
+    async def api_duplicates(request: Request):
+        """Proxy the duplicate-instance report from the core container —
+        core owns the database, the setup page just displays what it says."""
+        import urllib.request
+        import urllib.error
+        import json
+        import os
+        import socket
+
+        core_host = os.environ.get("CORE_INTERNAL_HOST", "chronarr")
+        core_port = os.environ.get("CORE_INTERNAL_PORT", "8080")
+        query = request.url.query
+        core_url = f"http://{core_host}:{core_port}/api/duplicates" + (f"?{query}" if query else "")
+
+        try:
+            req = urllib.request.Request(core_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"Core API error: {e.reason}")
+        except (urllib.error.URLError, socket.timeout) as e:
+            raise HTTPException(status_code=503, detail=f"Could not reach core container: {e}")
+
+    @app.post("/api/duplicates/resolve")
+    async def api_duplicates_resolve(request: Request):
+        """Proxy resolving a listed duplicate (keep one instance's data, drop
+        the other's) to the core container — same database-owning reasoning
+        as everything else proxied here."""
+        return await _proxy_post_to_core("/api/duplicates/resolve", await request.json())
+
     @app.get("/api/wizard/instance-details")
     async def wizard_instance_details(request: Request):
         """Proxy an instance's full config (for pre-filling Edit) from the core container."""
