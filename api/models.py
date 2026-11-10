@@ -331,8 +331,13 @@ class WizardEnvRestoreRequest(BaseModel):
 
 class IntegrationKeyRequest(BaseModel):
     """Settings page: set (or clear, with an empty key) the shared secret an
-    external router (Doorman) presents on POST /api/instance-migration."""
+    external router (Doorman) presents on POST /api/instance-migration.
+    generate=true ignores `key` and has the server pick a random one instead
+    — the response is the only time the plaintext is ever sent back, since
+    it's otherwise write-only (same as the Doorman API key wizard's own
+    "generate" action)."""
     key: str = ""
+    generate: bool = False
 
 
 class InstanceMigrationRequest(BaseModel):

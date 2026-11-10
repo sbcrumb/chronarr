@@ -5,6 +5,7 @@ import os
 import re
 import hmac
 import hashlib
+import secrets
 import json
 import uuid
 import requests
@@ -1632,9 +1633,17 @@ async def get_integration_key_status(dependencies: dict):
 
 
 async def set_integration_key(payload: IntegrationKeyRequest, dependencies: dict):
-    """Settings page: set (payload.key non-empty) or clear (empty) the shared
-    secret external routers present on POST /api/instance-migration. Takes
-    effect immediately — nothing to restart."""
+    """Settings page: set (payload.key non-empty), generate (payload.generate),
+    or clear (both empty/false) the shared secret external routers present on
+    POST /api/instance-migration. Takes effect immediately — nothing to
+    restart."""
+    if payload.generate:
+        key = secrets.token_hex(24)
+        upsert_env_file(_SECRETS_PATH, {_INTEGRATION_KEY_ENV: key})
+        # The only response that ever carries the plaintext back — the
+        # Settings page has to show it once so it can be copied into
+        # Doorman's own config, since nothing re-displays it after this.
+        return {"configured": True, "key": key}
     key = payload.key.strip()
     if key:
         upsert_env_file(_SECRETS_PATH, {_INTEGRATION_KEY_ENV: key})
