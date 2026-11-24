@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from config.settings import config
 from utils.logging import _log
 from utils.imdb_utils import find_imdb_in_directory, parse_imdb_from_path  # Phase 3: Replaced NFOManager
+from utils.file_utils import path_exists_with_retry
 
 
 def _tag(instance: str, req_id: str = None) -> str:
@@ -112,7 +113,7 @@ class WebhookBatcher:
                 return
 
             path_obj = Path(path_str)
-            if not path_obj.exists():
+            if not path_exists_with_retry(path_obj):
                 _log("ERROR", f"[{tag}] BATCH PROCESSING FAILED: Path does not exist: {path_obj}")
                 _log("ERROR", f"[{tag}] This indicates a path mapping issue - webhook rejected to prevent wrong processing")
                 return

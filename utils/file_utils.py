@@ -28,7 +28,7 @@ def find_media_path_by_imdb_and_title(
         try:
             container_path = path_mapper.map(webhook_path)
             path_obj = Path(container_path)
-            if path_obj.exists():
+            if path_exists_with_retry(path_obj):
                 return path_obj
         except Exception as e:
             _log("WARNING", f"Failed to process webhook path {webhook_path}: {e}")
@@ -103,6 +103,28 @@ def find_video_files(directory: Path, recursive: bool = True) -> List[Path]:
 # practice.
 TRANSIENT_FS_RETRIES = 5
 TRANSIENT_FS_RETRY_DELAY = 3.0
+
+
+def path_exists_with_retry(
+    path: Path,
+    retries: int = TRANSIENT_FS_RETRIES,
+    delay: float = TRANSIENT_FS_RETRY_DELAY,
+) -> bool:
+    """Like Path.exists(), but gives a just-added movie/series folder a few
+    seconds to become visible on a network/FUSE-backed mount (the same race
+    list_video_files_with_retry() rides out for files already inside a
+    folder) before reporting it missing. A webhook's folder-exists check
+    runs right as the title lands, so it's the most exposed to this timing
+    window — a one-shot False here previously meant the webhook was dropped
+    for good, with no record created until a manual full scan found it.
+    """
+    for attempt in range(1, retries + 1):
+        if path.exists():
+            return True
+        if attempt < retries:
+            _log("WARNING", f"Path not yet visible: {path} (attempt {attempt}/{retries}) — retrying in {delay}s")
+            time.sleep(delay)
+    return False
 
 
 def list_video_files_with_retry(

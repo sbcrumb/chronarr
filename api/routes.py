@@ -29,6 +29,7 @@ from api.models import (
 # Import logging utility
 from utils.logging import _log
 from utils.imdb_utils import parse_imdb_from_path, find_imdb_in_directory  # Phase 3: Replaced NFOManager
+from utils.file_utils import path_exists_with_retry
 from config.env_writer import read_env_value, upsert_env_file
 # Web routes removed - handled by separate web container
 
@@ -387,8 +388,12 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks, de
         container_path = path_mapper.radarr_path_to_container_path(movie_path)
         _log("DEBUG", f"[{instance}:{req_id}] Mapped Radarr path {movie_path} -> {container_path}")
         
-        # CRITICAL: Verify the mapped path actually exists
-        if not Path(container_path).exists():
+        # CRITICAL: Verify the mapped path actually exists. Retries first — on a
+        # network/FUSE-backed mount the folder can briefly not be visible yet
+        # right as the webhook arrives (same timing race list_video_files_with_retry
+        # rides out below); a one-shot check here used to drop the webhook for
+        # good instead of giving it a few seconds to catch up.
+        if not path_exists_with_retry(Path(container_path)):
             _log("ERROR", f"[{instance}:{req_id}] RADARR WEBHOOK REJECTED: Mapped path does not exist: {container_path}")
             _log("ERROR", f"[{instance}:{req_id}] This prevents processing wrong movies due to path mapping issues")
             return {"status": "error", "message": f"Mapped movie path does not exist: {container_path}"}
